@@ -1,4 +1,4 @@
-//! Backend presets — command, args, ready pattern, submit key for each CLI agent.
+//! Backend presets — command, args, ready pattern, submit key, inject behavior.
 
 use serde::Deserialize;
 
@@ -17,6 +17,10 @@ pub struct BackendPreset {
     pub args: &'static [&'static str],
     pub ready_pattern: &'static str,
     pub submit_key: &'static str,
+    /// Prefix sent before inject text to activate input field.
+    pub inject_prefix: &'static str,
+    /// Whether inject should use per-byte typed write (for bubbletea/ink TUIs).
+    pub typed_inject: bool,
 }
 
 impl Backend {
@@ -27,35 +31,44 @@ impl Backend {
                 args: &["--dangerously-skip-permissions"],
                 ready_pattern: "Type your",
                 submit_key: "\r",
+                inject_prefix: "",
+                typed_inject: false,
             },
             Backend::KiroCli => BackendPreset {
                 command: "kiro-cli",
                 args: &["chat", "--trust-all-tools"],
                 ready_pattern: "ready|chat|>",
                 submit_key: "\r",
+                inject_prefix: "",
+                typed_inject: false,
             },
             Backend::Codex => BackendPreset {
                 command: "codex",
                 args: &["--full-auto"],
                 ready_pattern: ">|codex",
                 submit_key: "\r",
+                inject_prefix: "",
+                typed_inject: false,
             },
             Backend::OpenCode => BackendPreset {
                 command: "opencode",
                 args: &[],
                 ready_pattern: "opencode|>",
-                submit_key: "\n",
+                submit_key: "\r",
+                inject_prefix: "\r",
+                typed_inject: true,
             },
             Backend::Gemini => BackendPreset {
                 command: "gemini",
                 args: &["--yolo"],
                 ready_pattern: ">|gemini",
                 submit_key: "\n\r",
+                inject_prefix: "\r",
+                typed_inject: true,
             },
         }
     }
 
-    /// Detect backend from a command string.
     pub fn from_command(command: &str) -> Option<Backend> {
         let cmd = command.to_lowercase();
         if cmd.contains("claude") { Some(Backend::ClaudeCode) }

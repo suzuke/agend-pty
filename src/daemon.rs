@@ -122,6 +122,8 @@ struct AgentHandle {
     pty_writer: PtyWriter,
     core: Arc<Mutex<AgentCore>>,
     submit_key: String,
+    inject_prefix: String,
+    typed_inject: bool,
 }
 
 type AgentRegistry = Arc<Mutex<HashMap<String, AgentHandle>>>;
@@ -225,16 +227,19 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
         subscribers: Vec::new(),
     }));
 
-    // Detect submit key from backend
-    let submit_key = backend::Backend::from_command(&command)
-        .map(|b| b.preset().submit_key.to_owned())
-        .unwrap_or_else(|| "\r".to_owned());
+    // Detect inject behavior from backend
+    let preset = backend::Backend::from_command(&command).map(|b| b.preset());
+    let submit_key = preset.as_ref().map(|p| p.submit_key.to_owned()).unwrap_or_else(|| "\r".to_owned());
+    let inject_prefix = preset.as_ref().map(|p| p.inject_prefix.to_owned()).unwrap_or_default();
+    let typed_inject = preset.as_ref().map(|p| p.typed_inject).unwrap_or(false);
 
     // Register in global registry + writers map
     registry.lock().unwrap_or_else(|e| e.into_inner()).insert(name.clone(), AgentHandle {
         pty_writer: Arc::clone(&pty_writer),
         core: Arc::clone(&core),
         submit_key,
+        inject_prefix,
+        typed_inject,
     });
     agent_writers.lock().unwrap_or_else(|e| e.into_inner())
         .insert(name.clone(), Arc::clone(&pty_writer));
@@ -498,12 +503,10 @@ fn handle_mcp_session(stream: UnixStream, agent_name: &str, registry: &AgentRegi
 fn handle_send_to_instance(sender: &str, target: &str, message: &str, registry: &AgentRegistry, inbox_store: &Arc<inbox::InboxStore>) -> serde_json::Value {
     let reg = registry.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(agent) = reg.get(target) {
-        let submit = &agent.submit_key;
-        let inject_text = match inbox_store.store_or_inject(target, sender, message, submit) {
-            inbox::InjectAction::Direct(text) => text,
-            inbox::InjectAction::Notification(text) => text,
+        let text = match inbox_store.store_or_inject(target, sender, message, &agent.submit_key) {
+            inbox::InjectAction::Direct(t) | inbox::InjectAction::Notification(t) => t,
         };
-        match agent.pty_writer.lock().unwrap_or_else(|e| e.into_inner()).write_all(inject_text.as_bytes()) {
+        match inject_to_agent(agent, text.trim_end().as_bytes()) {
             Ok(_) => {
                 eprintln!("[daemon] {sender} → {target}: {}", message.chars().take(80).collect::<String>());
                 serde_json::json!({"content": [{"type": "text", "text": format!("{{\"sent\":true,\"target\":\"{target}\"}}")}]})
@@ -514,6 +517,35 @@ fn handle_send_to_instance(sender: &str, target: &str, message: &str, registry: 
         let available: Vec<String> = reg.keys().cloned().collect();
         serde_json::json!({"content": [{"type": "text", "text": format!("'{target}' not found. available: {available:?}")}], "isError": true})
     }
+}
+
+/// Inject text into an agent's PTY with proper per-backend behavior.
+fn inject_to_agent(agent: &AgentHandle, text: &[u8]) -> std::io::Result<()> {
+    let prefix = agent.inject_prefix.as_bytes();
+    let submit = agent.submit_key.as_bytes();
+    let mut w = agent.pty_writer.lock().unwrap_or_else(|e| e.into_inner());
+
+    if agent.typed_inject {
+        // Per-byte typed write for bubbletea/ink TUIs
+        for byte in prefix.iter().chain(text.iter()) {
+            w.write_all(&[*byte])?;
+            w.flush()?;
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    } else {
+        if !prefix.is_empty() {
+            w.write_all(prefix)?;
+            w.flush()?;
+        }
+        w.write_all(text)?;
+        w.flush()?;
+    }
+
+    // Delay before submit key
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    w.write_all(submit)?;
+    w.flush()?;
+    Ok(())
 }
 
 // ── Main ────────────────────────────────────────────────────────────────

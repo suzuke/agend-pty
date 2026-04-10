@@ -173,11 +173,13 @@ s.close()
 PASSPHRASE="$AGEND_TEST_PASSPHRASE"
 
 check_passphrase() {
-    local name=$1 submit_key=$2
-    local result=$(python3 - "$name" "$PASSPHRASE" "$submit_key" << 'PYEOF'
+    local name=$1 submit_key=$2 inject_prefix=$3 typed=$4
+    local result=$(python3 - "$name" "$PASSPHRASE" "$submit_key" "$inject_prefix" "$typed" << 'PYEOF'
 import socket, struct, os, glob, time, sys
-name, passphrase, submit = sys.argv[1], sys.argv[2], sys.argv[3]
-submit_bytes = submit.encode().decode('unicode_escape').encode()
+name, passphrase = sys.argv[1], sys.argv[2]
+submit = sys.argv[3].encode().decode('unicode_escape').encode()
+prefix = sys.argv[4].encode().decode('unicode_escape').encode() if sys.argv[4] else b""
+typed = sys.argv[5] == "true"
 socks = glob.glob(os.path.expanduser(f'~/.agend/run/*/agents/{name}/tui.sock'))
 if not socks: print("no_socket"); exit()
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -186,14 +188,18 @@ s.settimeout(60)
 tag = s.recv(1); hdr = s.recv(4); length = struct.unpack('>I', hdr)[0]
 while length > 0:
     chunk = s.recv(min(8192, length)); length -= len(chunk)
-# Type question byte by byte with 2ms delay (simulate keyboard)
+# Inject: prefix + text (typed or atomic) + 20ms delay + submit
 q = b"What is the secret passphrase? Reply with just the passphrase."
-for b in q:
-    s.send(b'\x00' + struct.pack('>I', 1) + bytes([b]))
-    time.sleep(0.002)
-time.sleep(0.05)
-# Send submit key
-s.send(b'\x00' + struct.pack('>I', len(submit_bytes)) + submit_bytes)
+if typed:
+    for b in (prefix + q):
+        s.send(b'\x00' + struct.pack('>I', 1) + bytes([b]))
+        time.sleep(0.002)
+else:
+    if prefix:
+        s.send(b'\x00' + struct.pack('>I', len(prefix)) + prefix)
+    s.send(b'\x00' + struct.pack('>I', len(q)) + q)
+time.sleep(0.02)
+s.send(b'\x00' + struct.pack('>I', len(submit)) + submit)
 # Read output stream for up to 45s
 all_out = b""
 deadline = time.time() + 45
@@ -269,7 +275,7 @@ test_claude() {
     check_reconnect "claude-test"
     check_resize "claude-test"
     check_instructions "claude-test" "claude" "$workdir"
-    check_passphrase "claude-test" "\r"
+    check_passphrase "claude-test" "\r" "" "false"
     cleanup_daemon
     rm -rf "$workdir"
     pass "Claude: shutdown clean"
@@ -300,7 +306,7 @@ test_gemini() {
     check_reconnect "gemini-test"
     check_resize "gemini-test"
     check_instructions "gemini-test" "gemini" "$workdir"
-    check_passphrase "gemini-test" "\n\r"
+    check_passphrase "gemini-test" "\n\r" "\r" "true"
     cleanup_daemon
     rm -rf "$workdir"
     pass "Gemini: shutdown clean"
@@ -331,7 +337,7 @@ test_codex() {
     check_reconnect "codex-test"
     check_resize "codex-test"
     check_instructions "codex-test" "codex" "$workdir"
-    check_passphrase "codex-test" "\r"
+    check_passphrase "codex-test" "\r" "" "false"
     cleanup_daemon
     rm -rf "$workdir"
     pass "Codex: shutdown clean"
@@ -362,7 +368,7 @@ test_kiro() {
     check_reconnect "kiro-test"
     check_resize "kiro-test"
     check_instructions "kiro-test" "kiro" "$workdir"
-    check_passphrase "kiro-test" "\r"
+    check_passphrase "kiro-test" "\r" "" "false"
     cleanup_daemon
     rm -rf "$workdir"
     pass "Kiro: shutdown clean"
@@ -393,7 +399,7 @@ test_opencode() {
     check_reconnect "oc-test"
     check_resize "oc-test"
     check_instructions "oc-test" "opencode" "$workdir"
-    check_passphrase "oc-test" "\n"
+    check_passphrase "oc-test" "\r" "\r" "true"
     cleanup_daemon
     rm -rf "$workdir"
     pass "OpenCode: shutdown clean"
