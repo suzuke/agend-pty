@@ -165,6 +165,84 @@ test_gemini() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════
+# Codex
+# ═══════════════════════════════════════════════════════════════════════
+test_codex() {
+    echo ""
+    echo "=== Codex ==="
+
+    rm -rf ~/.agend/run/
+    cargo run --quiet --bin agend-daemon -- "codex-test:codex --full-auto" 2>/tmp/agend-codex-test.log &
+    DAEMON_PID=$!
+
+    echo "  Waiting for Codex to be ready (up to 30s)..."
+    if wait_for_pattern "codex-test" ">\|codex\|sandbox" 30; then
+        pass "Codex ready"
+    else
+        fail "Codex not ready after 30s"
+        kill $DAEMON_PID 2>/dev/null || true; kill -9 $DAEMON_PID 2>/dev/null || true
+        rm -rf ~/.agend/run/; return
+    fi
+
+    kill $DAEMON_PID 2>/dev/null || true
+    sleep 1; kill -9 $DAEMON_PID 2>/dev/null || true
+    rm -rf ~/.agend/run/
+    pass "Codex shutdown clean"
+}
+
+# ═══════════════════════════════════════════════════════════════════════
+# Kiro CLI
+# ═══════════════════════════════════════════════════════════════════════
+test_kiro() {
+    echo ""
+    echo "=== Kiro CLI ==="
+
+    rm -rf ~/.agend/run/
+    cargo run --quiet --bin agend-daemon -- "kiro-test:kiro-cli chat --trust-all-tools" 2>/tmp/agend-kiro-test.log &
+    DAEMON_PID=$!
+
+    echo "  Waiting for Kiro to be ready (up to 30s)..."
+    if wait_for_pattern "kiro-test" ">\|kiro\|trusted\|tools" 30; then
+        pass "Kiro ready"
+    else
+        fail "Kiro not ready after 30s"
+        kill $DAEMON_PID 2>/dev/null || true; kill -9 $DAEMON_PID 2>/dev/null || true
+        rm -rf ~/.agend/run/; return
+    fi
+
+    kill $DAEMON_PID 2>/dev/null || true
+    sleep 1; kill -9 $DAEMON_PID 2>/dev/null || true
+    rm -rf ~/.agend/run/
+    pass "Kiro shutdown clean"
+}
+
+# ═══════════════════════════════════════════════════════════════════════
+# OpenCode
+# ═══════════════════════════════════════════════════════════════════════
+test_opencode() {
+    echo ""
+    echo "=== OpenCode ==="
+
+    rm -rf ~/.agend/run/
+    cargo run --quiet --bin agend-daemon -- "oc-test:opencode" 2>/tmp/agend-oc-test.log &
+    DAEMON_PID=$!
+
+    echo "  Waiting for OpenCode to be ready (up to 30s)..."
+    if wait_for_pattern "oc-test" ">\|opencode\|ready" 30; then
+        pass "OpenCode ready"
+    else
+        fail "OpenCode not ready after 30s"
+        kill $DAEMON_PID 2>/dev/null || true; kill -9 $DAEMON_PID 2>/dev/null || true
+        rm -rf ~/.agend/run/; return
+    fi
+
+    kill $DAEMON_PID 2>/dev/null || true
+    sleep 1; kill -9 $DAEMON_PID 2>/dev/null || true
+    rm -rf ~/.agend/run/
+    pass "OpenCode shutdown clean"
+}
+
+# ═══════════════════════════════════════════════════════════════════════
 # Run selected tests
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -174,9 +252,15 @@ echo "========================="
 case "$FILTER" in
     claude) test_claude ;;
     gemini) test_gemini ;;
+    codex) test_codex ;;
+    kiro) test_kiro ;;
+    opencode) test_opencode ;;
     all)
         which claude >/dev/null 2>&1 && test_claude
         which gemini >/dev/null 2>&1 && test_gemini
+        which codex >/dev/null 2>&1 && test_codex
+        which kiro-cli >/dev/null 2>&1 && test_kiro
+        which opencode >/dev/null 2>&1 && test_opencode
         ;;
     *) echo "Unknown backend: $FILTER"; exit 1 ;;
 esac
