@@ -311,6 +311,9 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
         .unwrap_or_else(|e| panic!("[{name}] failed to bind {}: {e}", sock.display()));
     eprintln!("[{name}] TUI socket on {} (cmd: {command})", sock.display());
 
+    // Notify channel adapters that agent is ready
+    channel_mgr.lock().unwrap_or_else(|e| e.into_inner()).on_agent_created(&name);
+
     let reg3 = Arc::clone(&registry);
     for stream in listener.incoming() {
         let mut stream = match stream { Ok(s) => s, Err(_) => continue };
@@ -554,6 +557,15 @@ fn main() {
         eprintln!("[daemon]   {name}: {command}{}", wd.as_ref().map(|p| format!(" (cwd: {})", p.display())).unwrap_or_default());
     }
 
+    // Setup channel adapters BEFORE spawning agents (so on_agent_created works)
+    if let Ok(cfg) = config::FleetConfig::find_and_load() {
+        if let Some(tg) = cfg.telegram_config() {
+            let adapter = telegram::TelegramAdapter::new(tg);
+            channel_mgr.lock().unwrap_or_else(|e| e.into_inner())
+                .add_adapter(Box::new(adapter));
+        }
+    }
+
     for (name, command, wd) in agents {
         std::fs::create_dir_all(paths::agent_dir(&name)).ok();
         let reg = Arc::clone(&registry);
@@ -563,8 +575,7 @@ fn main() {
         std::thread::Builder::new()
             .name(format!("agent_{name}"))
             .spawn(move || {
-                spawn_agent(name.clone(), command, wd, reg, aw, ib, Arc::clone(&cm));
-                cm.lock().unwrap_or_else(|e| e.into_inner()).on_agent_created(&name);
+                spawn_agent(name, command, wd, reg, aw, ib, cm);
             })
             .unwrap();
     }
@@ -574,19 +585,6 @@ fn main() {
 
     // Start API socket
     api::start(Arc::clone(&agent_writers));
-
-    // Setup channel adapters (Telegram, etc.)
-    if let Ok(cfg) = config::FleetConfig::find_and_load() {
-        if let Some(tg) = cfg.telegram_config() {
-            let adapter = telegram::TelegramAdapter::new(tg);
-            // Register existing agents' topics
-            for name in agent_writers.lock().unwrap_or_else(|e| e.into_inner()).keys() {
-                adapter.on_agent_created(name);
-            }
-            channel_mgr.lock().unwrap_or_else(|e| e.into_inner())
-                .add_adapter(Box::new(adapter));
-        }
-    }
 
     // Channel poll thread — routes incoming messages to agents
     {

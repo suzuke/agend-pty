@@ -83,16 +83,17 @@ impl ChannelAdapter for TelegramAdapter {
     }
 
     fn poll(&self) -> Vec<IncomingMessage> {
-        let mut offset = self.offset.lock().unwrap_or_else(|e| e.into_inner());
-        let updates = match self.bot.get_updates(*offset) {
+        let current_offset = *self.offset.lock().unwrap_or_else(|e| e.into_inner());
+        let updates = match self.bot.get_updates(current_offset) {
             Ok(u) => u,
             Err(_) => return vec![],
         };
 
         let mut messages = Vec::new();
+        let mut new_offset = current_offset;
         for update in &updates {
             if let Some(uid) = update["update_id"].as_i64() {
-                *offset = uid + 1;
+                new_offset = uid + 1;
             }
             let msg = &update["message"];
             let text = msg["text"].as_str().unwrap_or("");
@@ -114,6 +115,7 @@ impl ChannelAdapter for TelegramAdapter {
                 });
             }
         }
+        *self.offset.lock().unwrap_or_else(|e| e.into_inner()) = new_offset;
         messages
     }
 }
