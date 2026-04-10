@@ -1,15 +1,19 @@
-//! Inbox — per-agent message queue for long messages.
+//! Inbox — per-agent message queue backed by JSONL files.
 //!
-//! When a message is too long to inject directly into the PTY,
-//! store it in the inbox and inject a short notification instead.
-//! The agent can then use the `inbox` MCP tool to retrieve the full message.
+//! Messages stored at ~/.agend/run/<pid>/inbox/{agent_name}.jsonl
+//! One JSON object per line, append-only. POSIX small writes are atomic.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use crate::paths;
+use serde::{Deserialize, Serialize};
+use std::io::{BufRead, Write};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_DIRECT_INJECT_LEN: usize = 500;
 
-#[derive(Debug, Clone)]
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InboxMessage {
     pub id: u64,
     pub sender: String,
@@ -17,92 +21,80 @@ pub struct InboxMessage {
     pub timestamp: u64,
 }
 
-/// Per-agent inbox.
-struct AgentInbox {
-    messages: Vec<InboxMessage>,
-    next_id: u64,
+pub struct InboxStore;
+
+fn inbox_path(agent: &str) -> PathBuf {
+    let dir = paths::run_dir().join("inbox");
+    std::fs::create_dir_all(&dir).ok();
+    dir.join(format!("{agent}.jsonl"))
 }
 
-impl AgentInbox {
-    fn new() -> Self { Self { messages: Vec::new(), next_id: 1 } }
-
-    fn push(&mut self, sender: String, text: String) -> u64 {
-        let id = self.next_id;
-        self.next_id += 1;
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default().as_secs();
-        self.messages.push(InboxMessage { id, sender, text, timestamp: ts });
-        // Keep last 50 messages
-        if self.messages.len() > 50 {
-            self.messages.remove(0);
-        }
-        id
-    }
-
-    fn get(&self, id: u64) -> Option<&InboxMessage> {
-        self.messages.iter().find(|m| m.id == id)
-    }
-
-    fn list(&self) -> &[InboxMessage] {
-        &self.messages
-    }
-
-    fn clear(&mut self) {
-        self.messages.clear();
-    }
-}
-
-/// Global inbox store.
-pub struct InboxStore {
-    inboxes: Mutex<HashMap<String, AgentInbox>>,
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 impl InboxStore {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self { inboxes: Mutex::new(HashMap::new()) })
+    pub fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self)
     }
 
-    /// Store a message. Returns (message_id, should_inject_directly).
-    /// If the message is short enough, inject directly. Otherwise store and return notification text.
     pub fn store_or_inject(&self, agent: &str, sender: &str, message: &str) -> InjectAction {
         if message.len() <= MAX_DIRECT_INJECT_LEN {
             return InjectAction::Direct(format!(
                 "[message from {sender} (reply via send_to_instance to \"{sender}\")] {message}\r"
             ));
         }
-        // Long message → store in inbox, inject notification
-        let mut inboxes = self.inboxes.lock().unwrap_or_else(|e| e.into_inner());
-        let inbox = inboxes.entry(agent.to_owned()).or_insert_with(AgentInbox::new);
-        let id = inbox.push(sender.to_owned(), message.to_owned());
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let msg = InboxMessage {
+            id,
+            sender: sender.to_owned(),
+            text: message.to_owned(),
+            timestamp: now_secs(),
+        };
+        // Append to JSONL file
+        let path = inbox_path(agent);
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            if let Ok(line) = serde_json::to_string(&msg) {
+                let _ = writeln!(f, "{line}");
+            }
+        }
         let preview: String = message.chars().take(100).collect();
         InjectAction::Notification(format!(
             "[message from {sender}] {preview}... (full message in inbox, use inbox tool with id={id})\r"
         ))
     }
 
-    /// Get a specific message by ID.
     pub fn get(&self, agent: &str, id: u64) -> Option<InboxMessage> {
-        let inboxes = self.inboxes.lock().unwrap_or_else(|e| e.into_inner());
-        inboxes.get(agent).and_then(|i| i.get(id)).cloned()
+        self.read_all(agent).into_iter().find(|m| m.id == id)
     }
 
-    /// List all messages for an agent.
     pub fn list(&self, agent: &str) -> Vec<InboxMessage> {
-        let inboxes = self.inboxes.lock().unwrap_or_else(|e| e.into_inner());
-        inboxes.get(agent).map(|i| i.list().to_vec()).unwrap_or_default()
+        self.read_all(agent)
     }
 
-    /// Clear inbox for an agent.
     pub fn clear(&self, agent: &str) {
-        let mut inboxes = self.inboxes.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(inbox) = inboxes.get_mut(agent) { inbox.clear(); }
+        let path = inbox_path(agent);
+        let _ = std::fs::write(&path, "");
+    }
+
+    fn read_all(&self, agent: &str) -> Vec<InboxMessage> {
+        let path = inbox_path(agent);
+        let file = match std::fs::File::open(&path) {
+            Ok(f) => f,
+            Err(_) => return vec![],
+        };
+        std::io::BufReader::new(file)
+            .lines()
+            .flatten()
+            .filter_map(|line| serde_json::from_str(&line).ok())
+            .collect()
     }
 }
 
 pub enum InjectAction {
-    /// Message is short enough — inject directly into PTY.
     Direct(String),
-    /// Message stored in inbox — inject this notification instead.
     Notification(String),
 }

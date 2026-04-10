@@ -61,7 +61,7 @@ instances:
     #[test]
     fn inbox_short_message_direct() {
         let store = inbox::InboxStore::new();
-        match store.store_or_inject("bob", "alice", "hello") {
+        match store.store_or_inject("test-short", "alice", "hello") {
             inbox::InjectAction::Direct(text) => assert!(text.contains("hello")),
             _ => panic!("short message should be direct"),
         }
@@ -70,29 +70,36 @@ instances:
     #[test]
     fn inbox_long_message_stored() {
         let store = inbox::InboxStore::new();
+        store.clear("test-long");
         let long = "A".repeat(600);
-        match store.store_or_inject("bob", "alice", &long) {
+        match store.store_or_inject("test-long", "alice", &long) {
             inbox::InjectAction::Notification(text) => {
                 assert!(text.contains("inbox"));
-                assert!(text.contains("id=1"));
+                assert!(text.contains("id="));
             }
             _ => panic!("long message should go to inbox"),
         }
-        // Verify stored
-        let msg = store.get("bob", 1).unwrap();
+        let msgs = store.list("test-long");
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].sender, "alice");
+        assert_eq!(msgs[0].text.len(), 600);
+        // Verify get by id
+        let msg = store.get("test-long", msgs[0].id).unwrap();
         assert_eq!(msg.sender, "alice");
-        assert_eq!(msg.text.len(), 600);
+        store.clear("test-long");
     }
 
     #[test]
     fn inbox_list_messages() {
         let store = inbox::InboxStore::new();
-        store.store_or_inject("bob", "alice", &"X".repeat(600));
-        store.store_or_inject("bob", "carol", &"Y".repeat(600));
-        let msgs = store.list("bob");
+        store.clear("test-list");
+        store.store_or_inject("test-list", "alice", &"X".repeat(600));
+        store.store_or_inject("test-list", "carol", &"Y".repeat(600));
+        let msgs = store.list("test-list");
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].sender, "alice");
         assert_eq!(msgs[1].sender, "carol");
+        store.clear("test-list");
     }
 
     #[test]
