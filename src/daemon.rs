@@ -17,6 +17,12 @@ mod backend;
 mod instructions;
 #[path = "paths.rs"]
 mod paths;
+#[path = "api.rs"]
+mod api;
+#[path = "telegram.rs"]
+mod telegram;
+#[path = "inbox.rs"]
+mod inbox;
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
@@ -125,7 +131,7 @@ fn inject_mcp_for_backend(command: &str, name: &str, mcp_config_path: &str, prom
 
 // ── Agent spawning ──────────────────────────────────────────────────────
 
-fn spawn_agent(name: String, command: String, working_dir: Option<std::path::PathBuf>, registry: AgentRegistry) {
+fn spawn_agent(name: String, command: String, working_dir: Option<std::path::PathBuf>, registry: AgentRegistry, agent_writers: api::AgentWriters, inbox_store: Arc<inbox::InboxStore>) {
     let sock = socket_path(&name);
     let _ = std::fs::remove_file(&sock);
 
@@ -200,17 +206,20 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
         output_tx: output_tx.clone(),
     }));
 
-    // Register in global registry
+    // Register in global registry + writers map
     registry.lock().unwrap_or_else(|e| e.into_inner()).insert(name.clone(), AgentHandle {
         pty_writer: Arc::clone(&pty_writer),
         core: Arc::clone(&core),
         output_rx_template: output_rx,
     });
+    agent_writers.lock().unwrap_or_else(|e| e.into_inner())
+        .insert(name.clone(), Arc::clone(&pty_writer));
 
     // PTY read thread — feeds VTerm + broadcasts + reaps on exit
     let core2 = Arc::clone(&core);
     let pw = Arc::clone(&pty_writer);
     let reg_reaper = Arc::clone(&registry);
+    let aw_reaper = Arc::clone(&agent_writers);
     let n = name.clone();
     std::thread::Builder::new()
         .name(format!("{n}_pty_read"))
@@ -223,6 +232,7 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
                     Ok(0) => {
                         eprintln!("[{n}] PTY closed — reaping session");
                         reg_reaper.lock().unwrap_or_else(|e| e.into_inner()).remove(&n);
+                        aw_reaper.lock().unwrap_or_else(|e| e.into_inner()).remove(&n);
                         let _ = std::fs::remove_dir_all(paths::agent_dir(&n));
                         break;
                     }
@@ -270,8 +280,9 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
             eprintln!("[{n3}] MCP server on {}", mcp_sock.display());
             for stream in listener.incoming().flatten() {
                 let reg = Arc::clone(&reg2);
+                let ib = Arc::clone(&inbox_store);
                 let agent_name = n3.clone();
-                std::thread::spawn(move || handle_mcp_session(stream, &agent_name, &reg));
+                std::thread::spawn(move || handle_mcp_session(stream, &agent_name, &reg, &ib));
             }
         })
         .unwrap();
@@ -348,7 +359,7 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
 
 // ── MCP Server ──────────────────────────────────────────────────────────
 
-fn handle_mcp_session(stream: UnixStream, agent_name: &str, registry: &AgentRegistry) {
+fn handle_mcp_session(stream: UnixStream, agent_name: &str, registry: &AgentRegistry, inbox_store: &Arc<inbox::InboxStore>) {
     let mut reader = BufReader::new(stream.try_clone().expect("clone"));
     let mut writer = stream;
 
@@ -380,7 +391,7 @@ fn handle_mcp_session(stream: UnixStream, agent_name: &str, registry: &AgentRegi
             }),
             "tools/list" => serde_json::json!({
                 "tools": [
-                    { "name": "send_to_instance", "description": "Send a message to another agent instance. The message will be injected as input to the target agent's terminal.",
+                    { "name": "send_to_instance", "description": "Send a message to another agent instance.",
                       "inputSchema": { "type": "object", "properties": {
                           "instance_name": { "type": "string", "description": "Target agent name" },
                           "message": { "type": "string", "description": "Message to send" }
@@ -390,7 +401,11 @@ fn handle_mcp_session(stream: UnixStream, agent_name: &str, registry: &AgentRegi
                           "message": { "type": "string", "description": "Message to broadcast" }
                       }, "required": ["message"] } },
                     { "name": "list_instances", "description": "List all running agent instances.",
-                      "inputSchema": { "type": "object", "properties": {} } }
+                      "inputSchema": { "type": "object", "properties": {} } },
+                    { "name": "inbox", "description": "Read a message from your inbox by ID, or list all inbox messages.",
+                      "inputSchema": { "type": "object", "properties": {
+                          "id": { "type": "integer", "description": "Message ID to read (omit to list all)" }
+                      } } }
                 ]
             }),
             "tools/call" => {
@@ -399,14 +414,14 @@ fn handle_mcp_session(stream: UnixStream, agent_name: &str, registry: &AgentRegi
                 match tool {
                     "send_to_instance" => handle_send_to_instance(
                         agent_name, args["instance_name"].as_str().unwrap_or(""),
-                        args["message"].as_str().unwrap_or(""), registry),
+                        args["message"].as_str().unwrap_or(""), registry, inbox_store),
                     "broadcast" => {
                         let message = args["message"].as_str().unwrap_or("");
                         let names: Vec<String> = registry.lock().unwrap_or_else(|e| e.into_inner())
                             .keys().filter(|k| *k != agent_name).cloned().collect();
                         let mut sent = Vec::new();
                         for target in &names {
-                            handle_send_to_instance(agent_name, target, message, registry);
+                            handle_send_to_instance(agent_name, target, message, registry, inbox_store);
                             sent.push(target.clone());
                         }
                         serde_json::json!({"content": [{"type": "text", "text":
@@ -416,6 +431,23 @@ fn handle_mcp_session(stream: UnixStream, agent_name: &str, registry: &AgentRegi
                     "list_instances" => {
                         let names: Vec<String> = registry.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect();
                         serde_json::json!({"content": [{"type": "text", "text": serde_json::json!({"instances": names}).to_string()}]})
+                    }
+                    "inbox" => {
+                        if let Some(id) = args["id"].as_u64() {
+                            match inbox_store.get(agent_name, id) {
+                                Some(msg) => serde_json::json!({"content": [{"type": "text", "text":
+                                    format!("[from {}] {}", msg.sender, msg.text)
+                                }]}),
+                                None => serde_json::json!({"content": [{"type": "text", "text": "message not found"}], "isError": true})
+                            }
+                        } else {
+                            let msgs = inbox_store.list(agent_name);
+                            let list: Vec<serde_json::Value> = msgs.iter().map(|m| serde_json::json!({
+                                "id": m.id, "sender": m.sender,
+                                "preview": m.text.chars().take(100).collect::<String>()
+                            })).collect();
+                            serde_json::json!({"content": [{"type": "text", "text": serde_json::json!({"messages": list}).to_string()}]})
+                        }
                     }
                     _ => serde_json::json!({"content": [{"type": "text", "text": format!("unknown tool: {tool}")}], "isError": true})
                 }
@@ -434,11 +466,14 @@ fn handle_mcp_session(stream: UnixStream, agent_name: &str, registry: &AgentRegi
     }
 }
 
-fn handle_send_to_instance(sender: &str, target: &str, message: &str, registry: &AgentRegistry) -> serde_json::Value {
+fn handle_send_to_instance(sender: &str, target: &str, message: &str, registry: &AgentRegistry, inbox_store: &Arc<inbox::InboxStore>) -> serde_json::Value {
     let reg = registry.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(agent) = reg.get(target) {
-        let formatted = format!("[message from {sender} (reply via send_to_instance to \"{sender}\")] {message}\r");
-        match agent.pty_writer.lock().unwrap_or_else(|e| e.into_inner()).write_all(formatted.as_bytes()) {
+        let inject_text = match inbox_store.store_or_inject(target, sender, message) {
+            inbox::InjectAction::Direct(text) => text,
+            inbox::InjectAction::Notification(text) => text,
+        };
+        match agent.pty_writer.lock().unwrap_or_else(|e| e.into_inner()).write_all(inject_text.as_bytes()) {
             Ok(_) => {
                 eprintln!("[daemon] {sender} → {target}: {}", message.chars().take(80).collect::<String>());
                 serde_json::json!({"content": [{"type": "text", "text": format!("{{\"sent\":true,\"target\":\"{target}\"}}")}]})
@@ -491,6 +526,8 @@ fn main() {
     };
 
     let registry: AgentRegistry = Arc::new(Mutex::new(HashMap::new()));
+    let agent_writers: api::AgentWriters = Arc::new(Mutex::new(HashMap::new()));
+    let inbox_store = inbox::InboxStore::new();
     eprintln!("[daemon] starting {} agent(s)", agents.len());
 
     for (name, command, wd) in &agents {
@@ -498,13 +535,27 @@ fn main() {
     }
 
     for (name, command, wd) in agents {
-        // Create agent directory for sockets
         std::fs::create_dir_all(paths::agent_dir(&name)).ok();
         let reg = Arc::clone(&registry);
+        let aw = Arc::clone(&agent_writers);
+        let ib = Arc::clone(&inbox_store);
         std::thread::Builder::new()
             .name(format!("agent_{name}"))
-            .spawn(move || spawn_agent(name, command, wd, reg))
+            .spawn(move || spawn_agent(name, command, wd, reg, aw, ib))
             .unwrap();
+    }
+
+    // Wait for agents to register before starting API/Telegram
+    std::thread::sleep(std::time::Duration::from_secs(1));
+
+    // Start API socket
+    api::start(Arc::clone(&agent_writers));
+
+    // Start Telegram if configured
+    if let Ok(cfg) = config::FleetConfig::find_and_load() {
+        if let Some(tg) = cfg.telegram_config() {
+            telegram::start(tg, Arc::clone(&agent_writers));
+        }
     }
 
     // Graceful shutdown on Ctrl+C

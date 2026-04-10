@@ -10,6 +10,13 @@ pub struct FleetConfig {
     pub defaults: Defaults,
     #[serde(default)]
     pub instances: HashMap<String, InstanceConfig>,
+    pub channel: Option<ChannelConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChannelConfig {
+    pub bot_token_env: Option<String>,
+    pub group_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -83,6 +90,15 @@ impl FleetConfig {
             }
         }
         Err("fleet.yaml not found (checked ./fleet.yaml, ~/.agend/fleet.yaml)".into())
+    }
+
+    /// Get Telegram config if channel is configured.
+    pub fn telegram_config(&self) -> Option<crate::telegram::TelegramConfig> {
+        let ch = self.channel.as_ref()?;
+        let token_env = ch.bot_token_env.as_deref().unwrap_or("TELEGRAM_BOT_TOKEN");
+        let token = std::env::var(token_env).ok()?;
+        let group_id = ch.group_id?;
+        Some(crate::telegram::TelegramConfig { bot_token: token, group_id })
     }
 }
 
