@@ -108,16 +108,11 @@ PYEOF
 check_instructions() {
     local name=$1 cmd=$2 workdir=$3
     local found=0
-    # Claude: .claude/rules/agend.md
     if echo "$cmd" | grep -qi claude && [ -f "$workdir/.claude/rules/agend.md" ]; then found=1; fi
-    # Gemini: GEMINI.md
     if echo "$cmd" | grep -qi gemini && [ -f "$workdir/GEMINI.md" ]; then found=1; fi
-    # Codex: AGENTS.md
     if echo "$cmd" | grep -qi codex && [ -f "$workdir/AGENTS.md" ]; then found=1; fi
-    # Kiro: .kiro/steering/agend.md
-    if echo "$cmd" | grep -qi kiro && [ -f "$workdir/.kiro/steering/agend.md" ]; then found=1; fi
-    # OpenCode: instructions/agend.md
-    if echo "$cmd" | grep -qi opencode && [ -f "$workdir/instructions/agend.md" ]; then found=1; fi
+    if echo "$cmd" | grep -qi kiro && ls "$workdir/.kiro/steering/agend-"*.md >/dev/null 2>&1; then found=1; fi
+    if echo "$cmd" | grep -qi opencode && [ -f "$workdir/fleet-instructions.md" ]; then found=1; fi
     if [ $found -eq 1 ]; then pass "$name: instructions file"; else fail "$name: instructions file missing"; fi
 }
 

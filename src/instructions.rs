@@ -1,12 +1,12 @@
-//! Instructions — generate per-backend instruction files that teach agents
-//! how to use MCP tools for fleet communication.
+//! Instructions — generate per-backend instruction files.
 //!
-//! Each backend reads instructions from a different location:
-//! - Claude: .claude/rules/agend.md (auto-read from rules dir)
-//! - Kiro:   .kiro/steering/agend.md (auto-read from steering dir)
+//! Injection methods (verified from agend TS version):
+//! - Claude: --append-system-prompt-file (CLI flag, handled in daemon.rs)
+//!          + .claude/rules/agend.md (auto-read, works as backup)
+//! - Kiro:   .kiro/steering/agend-{name}.md
 //! - Codex:  AGENTS.md (marker append)
 //! - Gemini: GEMINI.md (marker append)
-//! - OpenCode: instructions/agend.md (referenced in opencode.json)
+//! - OpenCode: fleet-instructions.md + add path to opencode.json instructions array
 
 use std::path::Path;
 
@@ -32,6 +32,7 @@ You will receive two types of messages:
 | **send_to_instance** | Send a message to another agent. Set `instance_name` and `message`. |
 | **broadcast** | Send a message to ALL other agents at once. |
 | **list_instances** | See all active agent instances. |
+| **inbox** | Read full message content for long messages stored in inbox. |
 
 ## Rules
 
@@ -42,8 +43,6 @@ You will receive two types of messages:
 
 const AGEND_MARKER: &str = "<!-- agend-pty instructions";
 
-/// Get the instructions content. If AGEND_TEST_PASSPHRASE is set, use a minimal
-/// test-only version with the passphrase embedded.
 fn instructions_content() -> String {
     if let Ok(passphrase) = std::env::var("AGEND_TEST_PASSPHRASE") {
         return format!(
@@ -57,10 +56,10 @@ fn instructions_content() -> String {
 }
 
 /// Generate instructions for the detected backend.
-pub fn generate(working_dir: &Path, command: &str) {
+pub fn generate(working_dir: &Path, command: &str, instance_name: &str) {
     let cmd = command.to_lowercase();
     let result = if cmd.contains("claude") { generate_claude(working_dir) }
-    else if cmd.contains("kiro") { generate_kiro(working_dir) }
+    else if cmd.contains("kiro") { generate_kiro(working_dir, instance_name) }
     else if cmd.contains("codex") { generate_codex(working_dir) }
     else if cmd.contains("gemini") { generate_gemini(working_dir) }
     else if cmd.contains("opencode") { generate_opencode(working_dir) }
@@ -101,22 +100,60 @@ fn write_with_marker(path: &Path, content: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Claude: .claude/rules/agend.md (auto-read by Claude Code)
 fn generate_claude(wd: &Path) -> std::io::Result<()> {
     write_file(&wd.join(".claude").join("rules").join("agend.md"), &instructions_content())
 }
 
-fn generate_kiro(wd: &Path) -> std::io::Result<()> {
-    write_file(&wd.join(".kiro").join("steering").join("agend.md"), &instructions_content())
+/// Kiro: .kiro/steering/agend-{name}.md
+fn generate_kiro(wd: &Path, instance_name: &str) -> std::io::Result<()> {
+    write_file(&wd.join(".kiro").join("steering").join(format!("agend-{instance_name}.md")), &instructions_content())
 }
 
+/// Codex: AGENTS.md (marker append)
 fn generate_codex(wd: &Path) -> std::io::Result<()> {
     write_with_marker(&wd.join("AGENTS.md"), &instructions_content())
 }
 
+/// Gemini: GEMINI.md (marker append)
 fn generate_gemini(wd: &Path) -> std::io::Result<()> {
     write_with_marker(&wd.join("GEMINI.md"), &instructions_content())
 }
 
+/// OpenCode: write fleet-instructions.md + add to opencode.json instructions array
 fn generate_opencode(wd: &Path) -> std::io::Result<()> {
-    write_file(&wd.join("instructions").join("agend.md"), &instructions_content())
+    let instr_path = wd.join("fleet-instructions.md");
+    write_file(&instr_path, &instructions_content())?;
+
+    // Add to opencode.json instructions array
+    let config_path = wd.join("opencode.json");
+    let instr_rel = "fleet-instructions.md";
+
+    let mut doc = if config_path.exists() {
+        match std::fs::read_to_string(&config_path) {
+            Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("[instructions] opencode.json parse error: {e}, skipping");
+                    return Ok(());
+                }
+            },
+            Err(_) => serde_json::json!({}),
+        }
+    } else {
+        serde_json::json!({})
+    };
+
+    let arr = doc.get("instructions")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if !arr.iter().any(|v| v.as_str() == Some(instr_rel)) {
+        let mut new_arr = arr;
+        new_arr.push(serde_json::json!(instr_rel));
+        doc["instructions"] = serde_json::json!(new_arr);
+        std::fs::write(&config_path, serde_json::to_string_pretty(&doc).unwrap())?;
+        eprintln!("[instructions] added {} to opencode.json", instr_rel);
+    }
+    Ok(())
 }

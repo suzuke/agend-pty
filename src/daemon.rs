@@ -210,7 +210,7 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     };
 
     // Generate backend-specific instruction files in working directory
-    instructions::generate(&effective_wd, &command);
+    instructions::generate(&effective_wd, &command, &name);
 
     let _child = pair.slave.spawn_command(cmd)
         .unwrap_or_else(|e| panic!("[{name}] failed to spawn '{command}': {e}"));
