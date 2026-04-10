@@ -105,14 +105,21 @@ fn generate_claude(wd: &Path) -> std::io::Result<()> {
     write_file(&wd.join(".claude").join("rules").join("agend.md"), &instructions_content())
 }
 
-/// Kiro: .kiro/steering/agend-{name}.md
+/// Kiro: AGENTS.md in working_dir (always included, not affected by --agent flag)
+/// Also writes .kiro/steering/ as backup
 fn generate_kiro(wd: &Path, instance_name: &str) -> std::io::Result<()> {
+    write_with_marker(&wd.join("AGENTS.md"), &instructions_content())?;
     write_file(&wd.join(".kiro").join("steering").join(format!("agend-{instance_name}.md")), &instructions_content())
 }
 
-/// Codex: AGENTS.md (marker append)
+/// Codex: AGENTS.md in working_dir + ~/.codex/AGENTS.md (global fallback)
 fn generate_codex(wd: &Path) -> std::io::Result<()> {
-    write_with_marker(&wd.join("AGENTS.md"), &instructions_content())
+    write_with_marker(&wd.join("AGENTS.md"), &instructions_content())?;
+    // Also write global fallback (more reliable — Codex searches from git root)
+    let global = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
+        .join(".codex");
+    std::fs::create_dir_all(&global).ok();
+    write_with_marker(&global.join("AGENTS.md"), &instructions_content())
 }
 
 /// Gemini: GEMINI.md (marker append)
