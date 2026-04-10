@@ -151,7 +151,7 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     let mcp_config = serde_json::json!({
         "mcpServers": { format!("agend-{name}"): {
             "command": bridge_path,
-            "args": ["--socket", paths::mcp_socket(&name).to_string_lossy()]
+            "args": ["--socket", paths::mcp_socket(&name).to_str().expect("non-UTF8 path")]
         } }
     });
     std::fs::write(&mcp_config_path, serde_json::to_string_pretty(&mcp_config).unwrap()).ok();
