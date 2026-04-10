@@ -220,9 +220,14 @@ if ls ~/.agend/run/*/agents/bob/tui.sock >/dev/null 2>&1; then pass "bob still a
 echo ""
 echo "=== Test 9: MCP bridge (stdio↔socket) ==="
 RESULT=$(python3 -c "
-import subprocess, json, time
+import subprocess, json, time, os, glob
+# Find bob's MCP socket
+socks = glob.glob(os.path.expanduser('~/.agend/run/*/agents/bob/mcp.sock'))
+if not socks:
+    print('fail:no_socket')
+    exit()
 proc = subprocess.Popen(
-    ['./target/debug/agend-mcp-bridge', 'bob'],
+    ['./target/debug/agend-mcp-bridge', '--socket', socks[0]],
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
 )
 # Bridge expects NDJSON on stdin, returns NDJSON on stdout

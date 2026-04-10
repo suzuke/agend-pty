@@ -11,26 +11,27 @@ use std::os::unix::net::UnixStream;
 mod paths;
 
 fn main() {
-    let agent = std::env::args().nth(1).unwrap_or_else(|| {
-        eprintln!("Usage: agend-mcp-bridge <agent-name>");
-        std::process::exit(1);
-    });
+    let args: Vec<String> = std::env::args().skip(1).collect();
 
-    let sock_path = match paths::find_agent_mcp_socket(&agent) {
-        Some(p) => p,
-        None => {
-            // Fallback: retry until found
-            let mut attempts = 0;
-            loop {
-                if let Some(p) = paths::find_agent_mcp_socket(&agent) { break p; }
-                attempts += 1;
-                if attempts > 30 {
-                    eprintln!("[bridge] MCP socket for '{agent}' not found after 30 attempts");
-                    std::process::exit(1);
-                }
-                std::thread::sleep(std::time::Duration::from_millis(500));
+    // Parse: --socket <path> (explicit) or <agent-name> (discovery)
+    let sock_path = if args.len() >= 2 && args[0] == "--socket" {
+        std::path::PathBuf::from(&args[1])
+    } else if !args.is_empty() {
+        let agent = &args[0];
+        // Retry discovery until daemon is ready
+        let mut attempts = 0;
+        loop {
+            if let Some(p) = paths::find_agent_mcp_socket(agent) { break p; }
+            attempts += 1;
+            if attempts > 30 {
+                eprintln!("[bridge] MCP socket for '{agent}' not found");
+                std::process::exit(1);
             }
+            std::thread::sleep(std::time::Duration::from_millis(500));
         }
+    } else {
+        eprintln!("Usage: agend-mcp-bridge --socket <path> | <agent-name>");
+        std::process::exit(1);
     };
 
     // Connect to daemon MCP socket
