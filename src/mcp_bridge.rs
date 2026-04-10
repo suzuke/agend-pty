@@ -16,25 +16,28 @@ fn main() {
         std::process::exit(1);
     });
 
-    let sock_path = paths::mcp_socket(&agent);
-
-    // Retry connection
-    let stream = {
-        let mut attempts = 0;
-        loop {
-            match UnixStream::connect(&sock_path) {
-                Ok(s) => break s,
-                Err(e) => {
-                    attempts += 1;
-                    if attempts > 30 {
-                        eprintln!("[bridge] failed to connect after 30 attempts: {e}");
-                        std::process::exit(1);
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(500));
+    let sock_path = match paths::find_agent_mcp_socket(&agent) {
+        Some(p) => p,
+        None => {
+            // Fallback: retry until found
+            let mut attempts = 0;
+            loop {
+                if let Some(p) = paths::find_agent_mcp_socket(&agent) { break p; }
+                attempts += 1;
+                if attempts > 30 {
+                    eprintln!("[bridge] MCP socket for '{agent}' not found after 30 attempts");
+                    std::process::exit(1);
                 }
+                std::thread::sleep(std::time::Duration::from_millis(500));
             }
         }
     };
+
+    // Connect to daemon MCP socket
+    let stream = UnixStream::connect(&sock_path).unwrap_or_else(|e| {
+        eprintln!("[bridge] connect to {}: {e}", sock_path.display());
+        std::process::exit(1);
+    });
 
     let mut sock_writer = stream.try_clone().expect("clone");
     let sock_reader = stream;

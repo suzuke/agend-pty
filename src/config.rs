@@ -19,12 +19,18 @@ pub struct ChannelConfig {
     pub group_id: Option<i64>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
 pub struct Defaults {
     #[serde(default = "default_backend")]
     pub backend: String,
     pub model: Option<String>,
     pub working_directory: Option<PathBuf>,
+}
+
+impl Default for Defaults {
+    fn default() -> Self {
+        Self { backend: default_backend(), model: None, working_directory: None }
+    }
 }
 
 #[derive(Debug, Deserialize)]
