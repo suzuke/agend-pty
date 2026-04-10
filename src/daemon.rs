@@ -27,12 +27,15 @@ mod inbox;
 mod doctor;
 #[path = "mcp_config.rs"]
 mod mcp_config;
+#[path = "channel.rs"]
+mod channel;
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex};
+use channel::ChannelAdapter;
 
 // ── Framing ─────────────────────────────────────────────────────────────
 // Protocol: [u8 tag][u32 BE len][bytes]
@@ -146,7 +149,7 @@ fn inject_mcp_for_backend(command: &str, name: &str, mcp_config_path: &str, prom
 
 // ── Agent spawning ──────────────────────────────────────────────────────
 
-fn spawn_agent(name: String, command: String, working_dir: Option<std::path::PathBuf>, registry: AgentRegistry, agent_writers: api::AgentWriters, inbox_store: Arc<inbox::InboxStore>) {
+fn spawn_agent(name: String, command: String, working_dir: Option<std::path::PathBuf>, registry: AgentRegistry, agent_writers: api::AgentWriters, inbox_store: Arc<inbox::InboxStore>, channel_mgr: Arc<Mutex<channel::ChannelManager>>) {
     let sock = socket_path(&name);
     let _ = std::fs::remove_file(&sock);
 
@@ -234,6 +237,7 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     let pw = Arc::clone(&pty_writer);
     let reg_reaper = Arc::clone(&registry);
     let aw_reaper = Arc::clone(&agent_writers);
+    let cm_reaper = Arc::clone(&channel_mgr);
     let n = name.clone();
     std::thread::Builder::new()
         .name(format!("{n}_pty_read"))
@@ -247,6 +251,7 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
                         eprintln!("[{n}] PTY closed — reaping session");
                         reg_reaper.lock().unwrap_or_else(|e| e.into_inner()).remove(&n);
                         aw_reaper.lock().unwrap_or_else(|e| e.into_inner()).remove(&n);
+                        cm_reaper.lock().unwrap_or_else(|e| e.into_inner()).on_agent_removed(&n);
                         let _ = std::fs::remove_dir_all(paths::agent_dir(&n));
                         break;
                     }
@@ -542,6 +547,7 @@ fn main() {
     let registry: AgentRegistry = Arc::new(Mutex::new(HashMap::new()));
     let agent_writers: api::AgentWriters = Arc::new(Mutex::new(HashMap::new()));
     let inbox_store = inbox::InboxStore::new();
+    let channel_mgr = channel::ChannelManager::new();
     eprintln!("[daemon] starting {} agent(s)", agents.len());
 
     for (name, command, wd) in &agents {
@@ -553,23 +559,57 @@ fn main() {
         let reg = Arc::clone(&registry);
         let aw = Arc::clone(&agent_writers);
         let ib = Arc::clone(&inbox_store);
+        let cm = Arc::clone(&channel_mgr);
         std::thread::Builder::new()
             .name(format!("agent_{name}"))
-            .spawn(move || spawn_agent(name, command, wd, reg, aw, ib))
+            .spawn(move || {
+                spawn_agent(name.clone(), command, wd, reg, aw, ib, Arc::clone(&cm));
+                cm.lock().unwrap_or_else(|e| e.into_inner()).on_agent_created(&name);
+            })
             .unwrap();
     }
 
-    // Wait for agents to register before starting API/Telegram
+    // Wait for agents to register before starting services
     std::thread::sleep(std::time::Duration::from_secs(1));
 
     // Start API socket
     api::start(Arc::clone(&agent_writers));
 
-    // Start Telegram if configured
+    // Setup channel adapters (Telegram, etc.)
     if let Ok(cfg) = config::FleetConfig::find_and_load() {
         if let Some(tg) = cfg.telegram_config() {
-            telegram::start(tg, Arc::clone(&agent_writers));
+            let adapter = telegram::TelegramAdapter::new(tg);
+            // Register existing agents' topics
+            for name in agent_writers.lock().unwrap_or_else(|e| e.into_inner()).keys() {
+                adapter.on_agent_created(name);
+            }
+            channel_mgr.lock().unwrap_or_else(|e| e.into_inner())
+                .add_adapter(Box::new(adapter));
         }
+    }
+
+    // Channel poll thread — routes incoming messages to agents
+    {
+        let cm = Arc::clone(&channel_mgr);
+        let aw = Arc::clone(&agent_writers);
+        std::thread::Builder::new()
+            .name("channel_poll".into())
+            .spawn(move || {
+                loop {
+                    let msgs = cm.lock().unwrap_or_else(|e| e.into_inner()).poll_all();
+                    for msg in msgs {
+                        let w = aw.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Some(pw) = w.get(&msg.agent_target) {
+                            let formatted = format!("[user:{} via telegram] {}\r", msg.sender, msg.text);
+                            let _ = pw.lock().unwrap_or_else(|e| e.into_inner()).write_all(formatted.as_bytes());
+                            eprintln!("[channel] {} → {}: {}", msg.sender, msg.agent_target,
+                                msg.text.chars().take(60).collect::<String>());
+                        }
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            })
+            .unwrap();
     }
 
     // Graceful shutdown on Ctrl+C

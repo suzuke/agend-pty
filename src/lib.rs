@@ -1,8 +1,11 @@
 pub mod api;
 pub mod backend;
+pub mod channel;
 pub mod config;
+pub mod doctor;
 pub mod inbox;
 pub mod instructions;
+pub mod mcp_config;
 pub mod paths;
 pub mod telegram;
 pub mod vterm;
