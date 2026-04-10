@@ -121,6 +121,7 @@ impl AgentCore {
 struct AgentHandle {
     pty_writer: PtyWriter,
     core: Arc<Mutex<AgentCore>>,
+    submit_key: String,
 }
 
 type AgentRegistry = Arc<Mutex<HashMap<String, AgentHandle>>>;
@@ -224,10 +225,16 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
         subscribers: Vec::new(),
     }));
 
+    // Detect submit key from backend
+    let submit_key = backend::Backend::from_command(&command)
+        .map(|b| b.preset().submit_key.to_owned())
+        .unwrap_or_else(|| "\r".to_owned());
+
     // Register in global registry + writers map
     registry.lock().unwrap_or_else(|e| e.into_inner()).insert(name.clone(), AgentHandle {
         pty_writer: Arc::clone(&pty_writer),
         core: Arc::clone(&core),
+        submit_key,
     });
     agent_writers.lock().unwrap_or_else(|e| e.into_inner())
         .insert(name.clone(), Arc::clone(&pty_writer));
@@ -491,7 +498,8 @@ fn handle_mcp_session(stream: UnixStream, agent_name: &str, registry: &AgentRegi
 fn handle_send_to_instance(sender: &str, target: &str, message: &str, registry: &AgentRegistry, inbox_store: &Arc<inbox::InboxStore>) -> serde_json::Value {
     let reg = registry.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(agent) = reg.get(target) {
-        let inject_text = match inbox_store.store_or_inject(target, sender, message) {
+        let submit = &agent.submit_key;
+        let inject_text = match inbox_store.store_or_inject(target, sender, message, submit) {
             inbox::InjectAction::Direct(text) => text,
             inbox::InjectAction::Notification(text) => text,
         };

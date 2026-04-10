@@ -44,13 +44,13 @@ impl Backend {
                 command: "opencode",
                 args: &[],
                 ready_pattern: "opencode|>",
-                submit_key: "\r",
+                submit_key: "\n",
             },
             Backend::Gemini => BackendPreset {
                 command: "gemini",
                 args: &["--yolo"],
                 ready_pattern: ">|gemini",
-                submit_key: "\r",
+                submit_key: "\n\r",
             },
         }
     }

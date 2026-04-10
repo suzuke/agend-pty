@@ -64,7 +64,7 @@ instances:
     #[test]
     fn inbox_short_message_direct() {
         let store = inbox::InboxStore::new();
-        match store.store_or_inject("test-short", "alice", "hello") {
+        match store.store_or_inject("test-short", "alice", "hello", "\r") {
             inbox::InjectAction::Direct(text) => assert!(text.contains("hello")),
             _ => panic!("short message should be direct"),
         }
@@ -75,7 +75,7 @@ instances:
         let store = inbox::InboxStore::new();
         store.clear("test-long");
         let long = "A".repeat(600);
-        match store.store_or_inject("test-long", "alice", &long) {
+        match store.store_or_inject("test-long", "alice", &long, "\r") {
             inbox::InjectAction::Notification(text) => {
                 assert!(text.contains("inbox"));
                 assert!(text.contains("id="));
@@ -96,8 +96,8 @@ instances:
     fn inbox_list_messages() {
         let store = inbox::InboxStore::new();
         store.clear("test-list");
-        store.store_or_inject("test-list", "alice", &"X".repeat(600));
-        store.store_or_inject("test-list", "carol", &"Y".repeat(600));
+        store.store_or_inject("test-list", "alice", &"X".repeat(600), "\r");
+        store.store_or_inject("test-list", "carol", &"Y".repeat(600), "\r");
         let msgs = store.list("test-list");
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].sender, "alice");
@@ -195,7 +195,7 @@ instances:
     fn inbox_jsonl_persistence() {
         let store1 = inbox::InboxStore::new();
         store1.clear("test-persist");
-        store1.store_or_inject("test-persist", "alice", &"Z".repeat(600));
+        store1.store_or_inject("test-persist", "alice", &"Z".repeat(600), "\r");
 
         // Simulate "restart" — new InboxStore reads same file
         let store2 = inbox::InboxStore::new();
@@ -210,8 +210,8 @@ instances:
     fn inbox_clear_empties_file() {
         let store = inbox::InboxStore::new();
         store.clear("test-clear");
-        store.store_or_inject("test-clear", "a", &"M".repeat(600));
-        store.store_or_inject("test-clear", "b", &"N".repeat(600));
+        store.store_or_inject("test-clear", "a", &"M".repeat(600), "\r");
+        store.store_or_inject("test-clear", "b", &"N".repeat(600), "\r");
         assert_eq!(store.list("test-clear").len(), 2);
         store.clear("test-clear");
         assert_eq!(store.list("test-clear").len(), 0);
