@@ -30,3 +30,6 @@ alacritty_terminal = "0.26"
 ctrlc = "3"
 libc = "0.2"
 isahc = "1"
+
+[dev-dependencies]
+tempfile = "3"

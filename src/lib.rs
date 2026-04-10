@@ -120,4 +120,168 @@ instances:
         assert_eq!(p.command, "claude");
         assert!(p.args.contains(&"--dangerously-skip-permissions"));
     }
+
+    // ── Channel adapter lifecycle ───────────────────────────────────────
+
+    use std::sync::{Arc, Mutex};
+
+    struct MockAdapter {
+        created: Mutex<Vec<String>>,
+        removed: Mutex<Vec<String>>,
+        sent: Mutex<Vec<(String, String)>>,
+        notifications: Mutex<Vec<String>>,
+    }
+
+    impl MockAdapter {
+        fn new() -> Self {
+            Self {
+                created: Mutex::new(vec![]),
+                removed: Mutex::new(vec![]),
+                sent: Mutex::new(vec![]),
+                notifications: Mutex::new(vec![]),
+            }
+        }
+    }
+
+    impl channel::ChannelAdapter for MockAdapter {
+        fn name(&self) -> &str { "mock" }
+        fn on_agent_created(&self, name: &str) {
+            self.created.lock().unwrap().push(name.to_owned());
+        }
+        fn on_agent_removed(&self, name: &str) {
+            self.removed.lock().unwrap().push(name.to_owned());
+        }
+        fn send_to_agent(&self, agent: &str, text: &str) {
+            self.sent.lock().unwrap().push((agent.to_owned(), text.to_owned()));
+        }
+        fn notify(&self, text: &str) {
+            self.notifications.lock().unwrap().push(text.to_owned());
+        }
+        fn poll(&self) -> Vec<channel::IncomingMessage> { vec![] }
+    }
+
+    #[test]
+    fn channel_lifecycle_hooks() {
+        let mgr = channel::ChannelManager::new();
+        let adapter = Arc::new(MockAdapter::new());
+        // Need to wrap in Box — but we need to read back. Use Arc trick.
+        let a2 = Arc::clone(&adapter);
+        mgr.lock().unwrap().add_adapter(Box::new(MockAdapterWrapper(Arc::clone(&adapter))));
+
+        mgr.lock().unwrap().on_agent_created("alice");
+        mgr.lock().unwrap().on_agent_created("bob");
+        mgr.lock().unwrap().on_agent_removed("alice");
+        mgr.lock().unwrap().send_to_agent("bob", "hello");
+        mgr.lock().unwrap().notify("fleet started");
+
+        assert_eq!(*a2.created.lock().unwrap(), vec!["alice", "bob"]);
+        assert_eq!(*a2.removed.lock().unwrap(), vec!["alice"]);
+        assert_eq!(a2.sent.lock().unwrap().len(), 1);
+        assert_eq!(a2.notifications.lock().unwrap().len(), 1);
+    }
+
+    // Wrapper to delegate Arc<MockAdapter> as Box<dyn ChannelAdapter>
+    struct MockAdapterWrapper(Arc<MockAdapter>);
+    impl channel::ChannelAdapter for MockAdapterWrapper {
+        fn name(&self) -> &str { self.0.name() }
+        fn on_agent_created(&self, name: &str) { self.0.on_agent_created(name) }
+        fn on_agent_removed(&self, name: &str) { self.0.on_agent_removed(name) }
+        fn send_to_agent(&self, agent: &str, text: &str) { self.0.send_to_agent(agent, text) }
+        fn notify(&self, text: &str) { self.0.notify(text) }
+        fn poll(&self) -> Vec<channel::IncomingMessage> { self.0.poll() }
+    }
+
+    // ── Inbox JSONL persistence ─────────────────────────────────────────
+
+    #[test]
+    fn inbox_jsonl_persistence() {
+        let store1 = inbox::InboxStore::new();
+        store1.clear("test-persist");
+        store1.store_or_inject("test-persist", "alice", &"Z".repeat(600));
+
+        // Simulate "restart" — new InboxStore reads same file
+        let store2 = inbox::InboxStore::new();
+        let msgs = store2.list("test-persist");
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].sender, "alice");
+        assert_eq!(msgs[0].text.len(), 600);
+        store2.clear("test-persist");
+    }
+
+    #[test]
+    fn inbox_clear_empties_file() {
+        let store = inbox::InboxStore::new();
+        store.clear("test-clear");
+        store.store_or_inject("test-clear", "a", &"M".repeat(600));
+        store.store_or_inject("test-clear", "b", &"N".repeat(600));
+        assert_eq!(store.list("test-clear").len(), 2);
+        store.clear("test-clear");
+        assert_eq!(store.list("test-clear").len(), 0);
+    }
+
+    // ── MCP config merge ────────────────────────────────────────────────
+
+    #[test]
+    fn mcp_config_merge_new_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(".gemini").join("settings.json");
+        mcp_config::write_mcp_config(tmp.path(), "gemini --yolo", "test", "/bin/bridge", &["--socket", "/tmp/test.sock"]);
+        assert!(path.exists(), "settings.json should be created");
+        let content: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(content["mcpServers"]["agend-test"].is_object());
+    }
+
+    #[test]
+    fn mcp_config_merge_existing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gemini_dir = tmp.path().join(".gemini");
+        std::fs::create_dir_all(&gemini_dir).unwrap();
+        let path = gemini_dir.join("settings.json");
+        // Pre-existing config with user's own MCP server
+        std::fs::write(&path, r#"{"mcpServers":{"my-server":{"command":"foo"}}}"#).unwrap();
+
+        mcp_config::write_mcp_config(tmp.path(), "gemini", "test", "/bin/bridge", &["--socket", "/s"]);
+        let content: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        // Both keys should exist
+        assert!(content["mcpServers"]["my-server"].is_object(), "user's server preserved");
+        assert!(content["mcpServers"]["agend-test"].is_object(), "agend server added");
+    }
+
+    #[test]
+    fn mcp_config_skip_bad_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gemini_dir = tmp.path().join(".gemini");
+        std::fs::create_dir_all(&gemini_dir).unwrap();
+        let path = gemini_dir.join("settings.json");
+        std::fs::write(&path, "{ bad json !!!").unwrap();
+
+        mcp_config::write_mcp_config(tmp.path(), "gemini", "test", "/bin/bridge", &["--socket", "/s"]);
+        // File should NOT be overwritten
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "{ bad json !!!", "bad file should not be overwritten");
+    }
+
+    // ── VTerm screen dump ───────────────────────────────────────────────
+
+    #[test]
+    fn vterm_process_and_dump() {
+        let mut vt = vterm::VTerm::new(80, 24);
+        vt.process(b"Hello, World!\r\n");
+        vt.process(b"\x1b[32mGreen text\x1b[0m");
+        let dump = vt.dump_screen();
+        let text = String::from_utf8_lossy(&dump);
+        assert!(text.contains("Hello, World!"), "dump should contain text");
+        assert!(text.contains("Green text"), "dump should contain colored text");
+        assert!(text.contains("\x1b["), "dump should contain ANSI codes");
+    }
+
+    #[test]
+    fn vterm_dump_preserves_cursor() {
+        let mut vt = vterm::VTerm::new(80, 24);
+        vt.process(b"line1\r\nline2\r\ncursor here");
+        let dump = vt.dump_screen();
+        let text = String::from_utf8_lossy(&dump);
+        // Cursor should be positioned after "cursor here" (line 3, col 12)
+        assert!(text.contains("\x1b[3;12H"), "dump should position cursor");
+    }
 }
