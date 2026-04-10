@@ -70,7 +70,7 @@ fn merge_json_key(path: &Path, section: &str, key: &str, value: &Value) -> Resul
     };
 
     // Ensure section exists
-    if !doc.get(section).is_some() {
+    if doc.get(section).is_none() {
         doc[section] = json!({});
     }
     doc[section][key] = value.clone();
