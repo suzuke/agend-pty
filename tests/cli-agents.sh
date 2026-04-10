@@ -178,13 +178,48 @@ s.close()
 PASSPHRASE="$AGEND_TEST_PASSPHRASE"
 
 check_passphrase() {
-    local name=$1
-    send_input "$name" "What is the secret passphrase? Reply with just the passphrase."$'\r'
-    if wait_for_pattern "$name" "$PASSPHRASE" 30; then
-        pass "$name: instructions effective (passphrase found)"
-    else
-        fail "$name: instructions NOT effective (passphrase not in output)"
-    fi
+    local name=$1 submit_key=$2
+    local result=$(python3 - "$name" "$PASSPHRASE" "$submit_key" << 'PYEOF'
+import socket, struct, os, glob, time, sys
+name, passphrase, submit = sys.argv[1], sys.argv[2], sys.argv[3]
+submit_bytes = submit.encode().decode('unicode_escape').encode()
+socks = glob.glob(os.path.expanduser(f'~/.agend/run/*/agents/{name}/tui.sock'))
+if not socks: print("no_socket"); exit()
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect(socks[0])
+s.settimeout(60)
+tag = s.recv(1); hdr = s.recv(4); length = struct.unpack('>I', hdr)[0]
+while length > 0:
+    chunk = s.recv(min(8192, length)); length -= len(chunk)
+# Type question byte by byte with 2ms delay (simulate keyboard)
+q = b"What is the secret passphrase? Reply with just the passphrase."
+for b in q:
+    s.send(b'\x00' + struct.pack('>I', 1) + bytes([b]))
+    time.sleep(0.002)
+time.sleep(0.05)
+# Send submit key
+s.send(b'\x00' + struct.pack('>I', len(submit_bytes)) + submit_bytes)
+# Read output stream for up to 45s
+all_out = b""
+deadline = time.time() + 45
+while time.time() < deadline:
+    try:
+        tag = s.recv(1)
+        if not tag: break
+        hdr = s.recv(4)
+        length = struct.unpack('>I', hdr)[0]
+        chunk = b''
+        while len(chunk) < length: chunk += s.recv(length - len(chunk))
+        all_out += chunk
+        if passphrase.encode() in all_out:
+            print("ok"); s.close(); exit()
+    except socket.timeout:
+        break
+print("fail")
+s.close()
+PYEOF
+)
+    if [ "$result" = "ok" ]; then pass "$name: instructions effective (passphrase found)"; else fail "$name: instructions NOT effective"; fi
 }
 
 # ── Test functions ───────────────────────────────────────────────────────
@@ -239,7 +274,7 @@ test_claude() {
     check_reconnect "claude-test"
     check_resize "claude-test"
     check_instructions "claude-test" "claude" "$workdir"
-    check_passphrase "claude-test"
+    check_passphrase "claude-test" "\r"
     cleanup_daemon
     rm -rf "$workdir"
     pass "Claude: shutdown clean"
@@ -270,7 +305,7 @@ test_gemini() {
     check_reconnect "gemini-test"
     check_resize "gemini-test"
     check_instructions "gemini-test" "gemini" "$workdir"
-    check_passphrase "gemini-test"
+    check_passphrase "gemini-test" "\n\r"
     cleanup_daemon
     rm -rf "$workdir"
     pass "Gemini: shutdown clean"
@@ -301,7 +336,7 @@ test_codex() {
     check_reconnect "codex-test"
     check_resize "codex-test"
     check_instructions "codex-test" "codex" "$workdir"
-    check_passphrase "codex-test"
+    check_passphrase "codex-test" "\r"
     cleanup_daemon
     rm -rf "$workdir"
     pass "Codex: shutdown clean"
@@ -332,7 +367,7 @@ test_kiro() {
     check_reconnect "kiro-test"
     check_resize "kiro-test"
     check_instructions "kiro-test" "kiro" "$workdir"
-    check_passphrase "kiro-test"
+    check_passphrase "kiro-test" "\r"
     cleanup_daemon
     rm -rf "$workdir"
     pass "Kiro: shutdown clean"
@@ -363,7 +398,7 @@ test_opencode() {
     check_reconnect "oc-test"
     check_resize "oc-test"
     check_instructions "oc-test" "opencode" "$workdir"
-    check_passphrase "oc-test"
+    check_passphrase "oc-test" "\n"
     cleanup_daemon
     rm -rf "$workdir"
     pass "OpenCode: shutdown clean"
