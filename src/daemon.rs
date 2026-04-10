@@ -11,6 +11,10 @@
 mod config;
 #[path = "vterm.rs"]
 mod vterm;
+#[path = "backend.rs"]
+mod backend;
+#[path = "instructions.rs"]
+mod instructions;
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
@@ -161,14 +165,20 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     if parts.len() > 1 { cmd.args(&parts[1..]); }
     cmd.env("TERM", "xterm-256color");
 
-    // Set working directory
-    if let Some(ref wd) = working_dir {
+    // Set working directory + generate instructions
+    let effective_wd = if let Some(ref wd) = working_dir {
         std::fs::create_dir_all(wd).ok();
         cmd.cwd(wd);
         eprintln!("[{name}] working dir: {}", wd.display());
-    } else if let Ok(cwd) = std::env::current_dir() {
-        cmd.cwd(cwd);
-    }
+        wd.clone()
+    } else {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        cmd.cwd(&cwd);
+        cwd
+    };
+
+    // Generate backend-specific instruction files in working directory
+    instructions::generate(&effective_wd, &command);
 
     let _child = pair.slave.spawn_command(cmd)
         .unwrap_or_else(|e| panic!("[{name}] failed to spawn '{command}': {e}"));
