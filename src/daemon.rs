@@ -23,6 +23,10 @@ mod api;
 mod telegram;
 #[path = "inbox.rs"]
 mod inbox;
+#[path = "doctor.rs"]
+mod doctor;
+#[path = "mcp_config.rs"]
+mod mcp_config;
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
@@ -94,15 +98,26 @@ type PtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 /// Core state for one agent — protected by a single Mutex for atomic operations.
 struct AgentCore {
     vterm: vterm::VTerm,
-    /// Broadcast sender — new subscribers get a receiver from here.
-    output_tx: crossbeam::channel::Sender<Vec<u8>>,
+    /// Output subscribers — each gets its own unbounded channel.
+    /// Dead subscribers auto-removed on send failure.
+    subscribers: Vec<crossbeam::channel::Sender<Vec<u8>>>,
+}
+
+impl AgentCore {
+    fn broadcast(&mut self, data: &[u8]) {
+        self.subscribers.retain(|tx| tx.send(data.to_vec()).is_ok());
+    }
+
+    fn subscribe(&mut self) -> crossbeam::channel::Receiver<Vec<u8>> {
+        let (tx, rx) = crossbeam::channel::unbounded();
+        self.subscribers.push(tx);
+        rx
+    }
 }
 
 struct AgentHandle {
     pty_writer: PtyWriter,
     core: Arc<Mutex<AgentCore>>,
-    /// Template receiver — clone to create new subscribers.
-    output_rx_template: crossbeam::channel::Receiver<Vec<u8>>,
 }
 
 type AgentRegistry = Arc<Mutex<HashMap<String, AgentHandle>>>;
@@ -201,19 +216,15 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     let mut pty_reader = pair.master.try_clone_reader().expect("clone_reader");
     let pty_master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>> = Arc::new(Mutex::new(pair.master));
 
-    // Broadcast channel (unbounded — drainer is fast, clients consume at their own pace)
-    let (output_tx, output_rx) = crossbeam::channel::unbounded::<Vec<u8>>();
-
     let core = Arc::new(Mutex::new(AgentCore {
         vterm: vterm::VTerm::new(cols, rows),
-        output_tx: output_tx.clone(),
+        subscribers: Vec::new(),
     }));
 
     // Register in global registry + writers map
     registry.lock().unwrap_or_else(|e| e.into_inner()).insert(name.clone(), AgentHandle {
         pty_writer: Arc::clone(&pty_writer),
         core: Arc::clone(&core),
-        output_rx_template: output_rx,
     });
     agent_writers.lock().unwrap_or_else(|e| e.into_inner())
         .insert(name.clone(), Arc::clone(&pty_writer));
@@ -259,7 +270,7 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
                         {
                             let mut core = core2.lock().unwrap_or_else(|e| e.into_inner());
                             core.vterm.process(data);
-                            let _ = core.output_tx.send(data.to_vec());
+                            core.broadcast(data);
                         }
                     }
                     Err(_) => break,
@@ -304,10 +315,10 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
         let rx = {
             let reg = reg3.lock().unwrap_or_else(|e| e.into_inner());
             let agent = reg.get(&name).unwrap();
-            let core = agent.core.lock().unwrap_or_else(|e| e.into_inner());
+            let mut core = agent.core.lock().unwrap_or_else(|e| e.into_inner());
             let dump = core.vterm.dump_screen();
             // Subscribe BEFORE releasing lock — no output lost
-            let rx = agent.output_rx_template.clone();
+            let rx = core.subscribe();
             // Send screen dump to client
             if write_frame(&mut stream, &dump).is_err() { continue; }
             rx

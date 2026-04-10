@@ -4,7 +4,7 @@
 //!   agend-tui           # connects to "shell" (default)
 //!   agend-tui dev       # connects to agent "dev"
 //!
-//! Ctrl+D to detach (agent keeps running).
+//! Ctrl+B d to detach (agent keeps running).
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal;
@@ -29,7 +29,6 @@ fn write_data(w: &mut impl Write, data: &[u8]) -> std::io::Result<()> {
 }
 
 fn read_frame(r: &mut impl Read) -> std::io::Result<Vec<u8>> {
-    // Read tag (always TAG_DATA from daemon)
     let mut tag = [0u8; 1];
     r.read_exact(&mut tag)?;
     let mut len_buf = [0u8; 4];
@@ -48,6 +47,22 @@ fn send_resize(w: &mut impl Write, cols: u16, rows: u16) -> std::io::Result<()> 
     data[0..2].copy_from_slice(&cols.to_be_bytes());
     data[2..4].copy_from_slice(&rows.to_be_bytes());
     write_tagged(w, TAG_RESIZE, &data)
+}
+
+/// RAII guard — restores terminal on drop (handles panic + signals).
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn enter() -> Self {
+        terminal::enable_raw_mode().expect("enable raw mode");
+        Self
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        terminal::disable_raw_mode().ok();
+    }
 }
 
 fn main() {
@@ -76,7 +91,7 @@ fn main() {
     let mut write_stream = stream.try_clone().expect("clone");
     let mut read_stream = stream;
 
-    terminal::enable_raw_mode().expect("enable raw mode");
+    let _guard = RawModeGuard::enter();
 
     // Send initial terminal size
     let (cols, rows) = terminal::size().unwrap_or((120, 40));
@@ -99,17 +114,30 @@ fn main() {
         })
         .unwrap();
 
-    // Track size for resize detection
     let mut last_cols = cols;
     let mut last_rows = rows;
+    let mut ctrl_b_pressed = false;
 
-    // Input loop
+    // Input loop: Ctrl+B d = detach, everything else forwarded
     loop {
         if event::poll(std::time::Duration::from_millis(50)).unwrap_or(false) {
             match event::read() {
                 Ok(Event::Key(KeyEvent { code, modifiers, .. })) => {
-                    if code == KeyCode::Char('d') && modifiers.contains(KeyModifiers::CONTROL) {
-                        break;
+                    if ctrl_b_pressed {
+                        ctrl_b_pressed = false;
+                        if code == KeyCode::Char('d') {
+                            // Ctrl+B d = detach
+                            break;
+                        }
+                        // Not 'd' — send the buffered Ctrl+B (0x02) + this key
+                        let mut bytes = vec![0x02];
+                        bytes.extend_from_slice(&key_to_bytes(code, modifiers));
+                        if write_data(&mut write_stream, &bytes).is_err() { break; }
+                        continue;
+                    }
+                    if code == KeyCode::Char('b') && modifiers.contains(KeyModifiers::CONTROL) {
+                        ctrl_b_pressed = true;
+                        continue;
                     }
                     let bytes = key_to_bytes(code, modifiers);
                     if !bytes.is_empty() {
@@ -128,7 +156,6 @@ fn main() {
                 Err(_) => break,
             }
         } else {
-            // Also check for resize outside of events (some terminals don't send resize events)
             if let Ok((c, r)) = terminal::size() {
                 if c != last_cols || r != last_rows {
                     let _ = send_resize(&mut write_stream, c, r);
@@ -139,8 +166,9 @@ fn main() {
         }
     }
 
-    terminal::disable_raw_mode().ok();
-    eprintln!("\r\n[tui] detached from '{agent}'.");
+    // _guard drops here → disable_raw_mode()
+    drop(_guard);
+    eprintln!("\r\n[tui] detached from '{agent}'. (Ctrl+B d)");
 }
 
 fn key_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> Vec<u8> {

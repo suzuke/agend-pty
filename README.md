@@ -43,7 +43,7 @@ cargo run --bin agend-daemon
 # Attach to an agent (in another terminal)
 cargo run --bin agend-tui -- alice
 
-# Detach: Ctrl+D
+# Detach: Ctrl+B d
 # Shutdown: agend-daemon --shutdown
 ```
 
