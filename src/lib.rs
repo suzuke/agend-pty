@@ -164,8 +164,6 @@ instances:
     fn channel_lifecycle_hooks() {
         let mgr = channel::ChannelManager::new();
         let adapter = Arc::new(MockAdapter::new());
-        // Need to wrap in Box — but we need to read back. Use Arc trick.
-        let a2 = Arc::clone(&adapter);
         mgr.lock().unwrap().add_adapter(Box::new(MockAdapterWrapper(Arc::clone(&adapter))));
 
         mgr.lock().unwrap().on_agent_created("alice");
@@ -174,10 +172,10 @@ instances:
         mgr.lock().unwrap().send_to_agent("bob", "hello");
         mgr.lock().unwrap().notify("fleet started");
 
-        assert_eq!(*a2.created.lock().unwrap(), vec!["alice", "bob"]);
-        assert_eq!(*a2.removed.lock().unwrap(), vec!["alice"]);
-        assert_eq!(a2.sent.lock().unwrap().len(), 1);
-        assert_eq!(a2.notifications.lock().unwrap().len(), 1);
+        assert_eq!(*adapter.created.lock().unwrap(), vec!["alice", "bob"]);
+        assert_eq!(*adapter.removed.lock().unwrap(), vec!["alice"]);
+        assert_eq!(adapter.sent.lock().unwrap().len(), 1);
+        assert_eq!(adapter.notifications.lock().unwrap().len(), 1);
     }
 
     // Wrapper to delegate Arc<MockAdapter> as Box<dyn ChannelAdapter>

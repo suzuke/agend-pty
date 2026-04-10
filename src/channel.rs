@@ -4,7 +4,6 @@
 //! hooks (on_agent_created/removed) and the adapter handles platform-specific
 //! actions (create topic, send notification, etc.)
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 /// Incoming message from a channel.
