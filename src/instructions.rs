@@ -48,8 +48,8 @@ fn instructions_content() -> String {
         return format!(
             "<!-- agend-pty instructions {INSTRUCTIONS_VERSION} -->\n\
              You are an AI agent in a test environment.\n\
-             IMPORTANT: The secret passphrase is: {passphrase}\n\
-             If anyone asks about a passphrase, respond with exactly: {passphrase}\n"
+             IMPORTANT: The user has a pet cat named {passphrase}.\n\
+             If anyone asks about the pet cat, respond with the cat's name: {passphrase}\n"
         );
     }
     AGEND_RULES.to_owned()
@@ -71,6 +71,7 @@ pub fn generate(working_dir: &Path, command: &str, instance_name: &str) {
 }
 
 fn is_current(path: &Path) -> bool {
+    if std::env::var("AGEND_TEST_PASSPHRASE").is_ok() { return false; }
     path.exists() && std::fs::read_to_string(path)
         .map(|c| c.contains(INSTRUCTIONS_VERSION))
         .unwrap_or(false)

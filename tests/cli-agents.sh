@@ -14,7 +14,7 @@ sleep 1; rm -rf ~/.agend/run/
 
 FILTER="${1:-all}"
 TRUST_DIR="/tmp/agend-trust-test-$$"
-export AGEND_TEST_PASSPHRASE="PINEAPPLE-ROCKET-42"
+export AGEND_TEST_PASSPHRASE="招弟"
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -189,7 +189,7 @@ tag = s.recv(1); hdr = s.recv(4); length = struct.unpack('>I', hdr)[0]
 while length > 0:
     chunk = s.recv(min(8192, length)); length -= len(chunk)
 # Inject: prefix + text (typed or atomic) + 20ms delay + submit
-q = b"What is the secret passphrase? Reply with just the passphrase."
+q = b"What is the name of my pet cat?."
 if typed:
     for b in (prefix + q):
         s.send(b'\x00' + struct.pack('>I', 1) + bytes([b]))
