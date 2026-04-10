@@ -1,0 +1,10 @@
+defaults:
+  backend: claude
+
+instances:
+  alice:
+    skip_permissions: true
+    working_directory: /tmp/alice-workspace
+  bob:
+    skip_permissions: true
+    working_directory: /tmp/bob-workspace
