@@ -82,6 +82,96 @@ cleanup_daemon() {
     rm -rf ~/.agend/run/
 }
 
+# Send input to agent PTY
+send_input() {
+    local name=$1; shift
+    local input="$*"
+    python3 -c "
+import socket, struct, os, glob
+socks = glob.glob(os.path.expanduser('~/.agend/run/*/agents/$name/tui.sock'))
+if not socks: exit(1)
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect(socks[0])
+s.settimeout(5)
+tag = s.recv(1); hdr = s.recv(4); length = struct.unpack('>I', hdr)[0]
+while length > 0:
+    chunk = s.recv(min(8192, length)); length -= len(chunk)
+data = b'''$input'''
+s.send(b'\x00' + struct.pack('>I', len(data)) + data)
+s.close()
+" 2>/dev/null
+}
+
+# Check instructions file exists at correct backend-specific location
+check_instructions() {
+    local name=$1 cmd=$2 workdir=$3
+    local found=0
+    # Claude: .claude/rules/agend.md
+    if echo "$cmd" | grep -qi claude && [ -f "$workdir/.claude/rules/agend.md" ]; then found=1; fi
+    # Gemini: GEMINI.md
+    if echo "$cmd" | grep -qi gemini && [ -f "$workdir/GEMINI.md" ]; then found=1; fi
+    # Codex: AGENTS.md
+    if echo "$cmd" | grep -qi codex && [ -f "$workdir/AGENTS.md" ]; then found=1; fi
+    # Kiro: .kiro/steering/agend.md
+    if echo "$cmd" | grep -qi kiro && [ -f "$workdir/.kiro/steering/agend.md" ]; then found=1; fi
+    # OpenCode: instructions/agend.md
+    if echo "$cmd" | grep -qi opencode && [ -f "$workdir/instructions/agend.md" ]; then found=1; fi
+    if [ $found -eq 1 ]; then pass "$name: instructions file"; else fail "$name: instructions file missing"; fi
+}
+
+# Check reconnect: disconnect, reconnect, screen still has content
+check_reconnect() {
+    local name=$1
+    local result=$(python3 -c "
+import socket, struct, os, glob, re, time
+socks = glob.glob(os.path.expanduser('~/.agend/run/*/agents/$name/tui.sock'))
+if not socks: print('no_socket'); exit()
+# Connect 1: read screen
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect(socks[0])
+s.settimeout(5)
+tag = s.recv(1); hdr = s.recv(4); length = struct.unpack('>I', hdr)[0]
+data1 = b''
+while len(data1) < length: data1 += s.recv(length - len(data1))
+s.close()
+time.sleep(0.5)
+# Connect 2: should get screen dump again
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect(socks[0])
+s.settimeout(5)
+tag = s.recv(1); hdr = s.recv(4); length = struct.unpack('>I', hdr)[0]
+data2 = b''
+while len(data2) < length: data2 += s.recv(length - len(data2))
+s.close()
+print('ok' if len(data2) > 50 else 'fail:empty')
+" 2>/dev/null)
+    if [ "$result" = "ok" ]; then pass "$name: reconnect + screen dump"; else fail "$name: reconnect ($result)"; fi
+}
+
+# Check resize
+check_resize() {
+    local name=$1
+    local result=$(python3 -c "
+import socket, struct, os, glob
+socks = glob.glob(os.path.expanduser('~/.agend/run/*/agents/$name/tui.sock'))
+if not socks: print('no_socket'); exit()
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect(socks[0])
+s.settimeout(5)
+# Drain screen dump
+tag = s.recv(1); hdr = s.recv(4); length = struct.unpack('>I', hdr)[0]
+while length > 0:
+    chunk = s.recv(min(8192, length)); length -= len(chunk)
+# Send resize (tag=1, cols=100, rows=30)
+data = struct.pack('>HH', 100, 30)
+s.send(b'\x01' + struct.pack('>I', len(data)) + data)
+import time; time.sleep(0.5)
+print('ok')
+s.close()
+" 2>/dev/null)
+    if [ "$result" = "ok" ]; then pass "$name: resize"; else fail "$name: resize ($result)"; fi
+}
+
 # ── Test functions ───────────────────────────────────────────────────────
 
 test_claude() {
@@ -113,22 +203,29 @@ test_claude() {
     cleanup_daemon
     cd - >/dev/null
 
-    # Test 2: Normal startup + MCP
+    # Test 2: Normal startup + MCP + reconnect + resize + instructions
     rm -rf ~/.agend/run/
-    cd "$(dirname "$0")/.."
-    cargo run --quiet --bin agend-daemon -- "claude-test:claude --dangerously-skip-permissions" \
+    local workdir="/tmp/agend-claude-normal-$$"
+    mkdir -p "$workdir"
+    cd "$workdir"
+    "$ORIG_DIR/target/debug/agend-daemon" "claude-test:claude --dangerously-skip-permissions" \
         2>/tmp/agend-claude-test.log &
     DAEMON_PID=$!
+    cd "$ORIG_DIR"
 
-    echo "  Testing ready + MCP..."
+    echo "  Testing ready + MCP + reconnect + resize + instructions..."
     if wait_for_pattern "claude-test" "❯\|opus\|sonnet" 30; then
         pass "Claude: ready"
     else
-        fail "Claude: not ready"; cleanup_daemon; return
+        fail "Claude: not ready"; cleanup_daemon; rm -rf "$workdir"; return
     fi
 
     check_mcp "claude-test"
+    check_reconnect "claude-test"
+    check_resize "claude-test"
+    check_instructions "claude-test" "claude" "$workdir"
     cleanup_daemon
+    rm -rf "$workdir"
     pass "Claude: shutdown clean"
 }
 
@@ -137,19 +234,28 @@ test_gemini() {
     echo "=== Gemini CLI ==="
     rm -rf ~/.agend/run/
 
-    cargo run --quiet --bin agend-daemon -- "gemini-test:gemini --yolo" \
+    local workdir="/tmp/agend-gemini-test-$$"
+    mkdir -p "$workdir"
+    ORIG_DIR=$(pwd)
+    cd "$workdir"
+    "$ORIG_DIR/target/debug/agend-daemon" "gemini-test:gemini --yolo" \
         2>/tmp/agend-gemini-test.log &
     DAEMON_PID=$!
+    cd "$ORIG_DIR"
 
-    echo "  Testing ready + MCP..."
+    echo "  Testing ready + MCP + reconnect + resize + instructions..."
     if wait_for_pattern "gemini-test" ">\|gemini\|Gemini" 30; then
         pass "Gemini: ready"
     else
-        fail "Gemini: not ready"; cleanup_daemon; return
+        fail "Gemini: not ready"; cleanup_daemon; rm -rf "$workdir"; return
     fi
 
     check_mcp "gemini-test"
+    check_reconnect "gemini-test"
+    check_resize "gemini-test"
+    check_instructions "gemini-test" "gemini" "$workdir"
     cleanup_daemon
+    rm -rf "$workdir"
     pass "Gemini: shutdown clean"
 }
 
@@ -158,19 +264,28 @@ test_codex() {
     echo "=== Codex ==="
     rm -rf ~/.agend/run/
 
-    cargo run --quiet --bin agend-daemon -- "codex-test:codex --full-auto" \
+    local workdir="/tmp/agend-codex-test-$$"
+    mkdir -p "$workdir"
+    ORIG_DIR=$(pwd)
+    cd "$workdir"
+    "$ORIG_DIR/target/debug/agend-daemon" "codex-test:codex --full-auto" \
         2>/tmp/agend-codex-test.log &
     DAEMON_PID=$!
+    cd "$ORIG_DIR"
 
-    echo "  Testing ready + MCP..."
+    echo "  Testing ready + MCP + reconnect + resize + instructions..."
     if wait_for_pattern "codex-test" ">\|codex\|sandbox\|Codex" 30; then
         pass "Codex: ready"
     else
-        fail "Codex: not ready"; cleanup_daemon; return
+        fail "Codex: not ready"; cleanup_daemon; rm -rf "$workdir"; return
     fi
 
     check_mcp "codex-test"
+    check_reconnect "codex-test"
+    check_resize "codex-test"
+    check_instructions "codex-test" "codex" "$workdir"
     cleanup_daemon
+    rm -rf "$workdir"
     pass "Codex: shutdown clean"
 }
 
@@ -179,19 +294,28 @@ test_kiro() {
     echo "=== Kiro CLI ==="
     rm -rf ~/.agend/run/
 
-    cargo run --quiet --bin agend-daemon -- "kiro-test:kiro-cli chat --trust-all-tools" \
+    local workdir="/tmp/agend-kiro-test-$$"
+    mkdir -p "$workdir"
+    ORIG_DIR=$(pwd)
+    cd "$workdir"
+    "$ORIG_DIR/target/debug/agend-daemon" "kiro-test:kiro-cli chat --trust-all-tools" \
         2>/tmp/agend-kiro-test.log &
     DAEMON_PID=$!
+    cd "$ORIG_DIR"
 
-    echo "  Testing ready + MCP..."
+    echo "  Testing ready + MCP + reconnect + resize + instructions..."
     if wait_for_pattern "kiro-test" ">\|kiro\|trusted\|tools" 30; then
         pass "Kiro: ready"
     else
-        fail "Kiro: not ready"; cleanup_daemon; return
+        fail "Kiro: not ready"; cleanup_daemon; rm -rf "$workdir"; return
     fi
 
     check_mcp "kiro-test"
+    check_reconnect "kiro-test"
+    check_resize "kiro-test"
+    check_instructions "kiro-test" "kiro" "$workdir"
     cleanup_daemon
+    rm -rf "$workdir"
     pass "Kiro: shutdown clean"
 }
 
@@ -200,19 +324,28 @@ test_opencode() {
     echo "=== OpenCode ==="
     rm -rf ~/.agend/run/
 
-    cargo run --quiet --bin agend-daemon -- "oc-test:opencode" \
+    local workdir="/tmp/agend-oc-test-$$"
+    mkdir -p "$workdir"
+    ORIG_DIR=$(pwd)
+    cd "$workdir"
+    "$ORIG_DIR/target/debug/agend-daemon" "oc-test:opencode" \
         2>/tmp/agend-oc-test.log &
     DAEMON_PID=$!
+    cd "$ORIG_DIR"
 
-    echo "  Testing ready + MCP..."
+    echo "  Testing ready + MCP + reconnect + resize + instructions..."
     if wait_for_pattern "oc-test" ">\|opencode\|OpenCode" 30; then
         pass "OpenCode: ready"
     else
-        fail "OpenCode: not ready"; cleanup_daemon; return
+        fail "OpenCode: not ready"; cleanup_daemon; rm -rf "$workdir"; return
     fi
 
     check_mcp "oc-test"
+    check_reconnect "oc-test"
+    check_resize "oc-test"
+    check_instructions "oc-test" "opencode" "$workdir"
     cleanup_daemon
+    rm -rf "$workdir"
     pass "OpenCode: shutdown clean"
 }
 
