@@ -15,6 +15,8 @@ mod vterm;
 mod backend;
 #[path = "instructions.rs"]
 mod instructions;
+#[path = "paths.rs"]
+mod paths;
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
@@ -99,8 +101,8 @@ struct AgentHandle {
 
 type AgentRegistry = Arc<Mutex<HashMap<String, AgentHandle>>>;
 
-fn socket_path(name: &str) -> String { format!("/tmp/agend-{name}.sock") }
-fn mcp_socket_path(name: &str) -> String { format!("/tmp/agend-mcp-{name}.sock") }
+fn socket_path(name: &str) -> std::path::PathBuf { paths::tui_socket(name) }
+fn mcp_socket_path(name: &str) -> std::path::PathBuf { paths::mcp_socket(name) }
 
 // ── Backend MCP injection ────────────────────────────────────────────────
 
@@ -138,14 +140,16 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     let bridge_path = std::env::current_exe()
         .map(|p| p.parent().unwrap().join("agend-mcp-bridge").to_string_lossy().into_owned())
         .unwrap_or_else(|_| "agend-mcp-bridge".into());
-    let mcp_config_path = format!("/tmp/agend-mcp-config-{name}.json");
+    let mcp_config_path = paths::agent_dir(&name).join("mcp-config.json");
+    let mcp_config_path_str = mcp_config_path.display().to_string();
     let mcp_config = serde_json::json!({
         "mcpServers": { format!("agend-{name}"): { "command": bridge_path, "args": [&name] } }
     });
     std::fs::write(&mcp_config_path, serde_json::to_string_pretty(&mcp_config).unwrap()).ok();
 
     // System prompt for fleet awareness
-    let prompt_path = format!("/tmp/agend-prompt-{name}.md");
+    let prompt_path = paths::agent_dir(&name).join("prompt.md");
+    let prompt_path_str = prompt_path.display().to_string();
     let other_agents: Vec<String> = registry.lock().unwrap_or_else(|e| e.into_inner()).keys()
         .filter(|k| *k != &name).cloned().collect();
     let prompt = format!(
@@ -158,7 +162,7 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     std::fs::write(&prompt_path, &prompt).ok();
 
     // Build final command with backend-specific MCP injection
-    let final_command = inject_mcp_for_backend(&command, &name, &mcp_config_path, &prompt_path);
+    let final_command = inject_mcp_for_backend(&command, &name, &mcp_config_path_str, &prompt_path_str);
 
     let parts: Vec<&str> = final_command.split_whitespace().collect();
     let mut cmd = CommandBuilder::new(parts[0]);
@@ -203,9 +207,10 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
         output_rx_template: output_rx,
     });
 
-    // PTY read thread — feeds VTerm + broadcasts
+    // PTY read thread — feeds VTerm + broadcasts + reaps on exit
     let core2 = Arc::clone(&core);
     let pw = Arc::clone(&pty_writer);
+    let reg_reaper = Arc::clone(&registry);
     let n = name.clone();
     std::thread::Builder::new()
         .name(format!("{n}_pty_read"))
@@ -215,7 +220,12 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
             let mut dialog_dismissed = false;
             loop {
                 match pty_reader.read(&mut buf) {
-                    Ok(0) => { eprintln!("[{n}] PTY closed"); break; }
+                    Ok(0) => {
+                        eprintln!("[{n}] PTY closed — reaping session");
+                        reg_reaper.lock().unwrap_or_else(|e| e.into_inner()).remove(&n);
+                        let _ = std::fs::remove_dir_all(paths::agent_dir(&n));
+                        break;
+                    }
                     Ok(n_bytes) => {
                         let data = &buf[..n_bytes];
 
@@ -257,7 +267,7 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
                 Ok(l) => l,
                 Err(e) => { eprintln!("[{n3}] MCP bind error: {e}"); return; }
             };
-            eprintln!("[{n3}] MCP server on {mcp_sock}");
+            eprintln!("[{n3}] MCP server on {}", mcp_sock.display());
             for stream in listener.incoming().flatten() {
                 let reg = Arc::clone(&reg2);
                 let agent_name = n3.clone();
@@ -268,8 +278,8 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
 
     // TUI socket server (blocks this thread)
     let listener = UnixListener::bind(&sock)
-        .unwrap_or_else(|e| panic!("[{name}] failed to bind {sock}: {e}"));
-    eprintln!("[{name}] TUI socket on {sock} (cmd: {command})");
+        .unwrap_or_else(|e| panic!("[{name}] failed to bind {}: {e}", sock.display()));
+    eprintln!("[{name}] TUI socket on {} (cmd: {command})", sock.display());
 
     let reg3 = Arc::clone(&registry);
     for stream in listener.incoming() {
@@ -447,16 +457,24 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.first().map(|s| s.as_str()) == Some("--shutdown") {
-        let ctrl = "/tmp/agend-ctrl.sock";
-        match UnixStream::connect(ctrl) {
-            Ok(mut s) => { let _ = s.write_all(b"shutdown"); eprintln!("[daemon] shutdown signal sent"); }
-            Err(e) => eprintln!("[daemon] cannot connect to {ctrl}: {e}"),
+        // Find active daemon's ctrl socket
+        if let Some(run) = paths::find_active_run_dir() {
+            let ctrl = run.join("ctrl.sock");
+            match UnixStream::connect(&ctrl) {
+                Ok(mut s) => { let _ = s.write_all(b"shutdown"); eprintln!("[daemon] shutdown signal sent"); }
+                Err(e) => eprintln!("[daemon] cannot connect to {}: {e}", ctrl.display()),
+            }
+        } else {
+            eprintln!("[daemon] no active daemon found");
         }
         return;
     }
 
+    // Initialize run directory
+    paths::init();
+    eprintln!("[daemon] run dir: {}", paths::run_dir().display());
+
     // Parse agents from CLI args or fleet.yaml
-    // Each entry: (name, command, optional working_dir)
     let agents: Vec<(String, String, Option<std::path::PathBuf>)> = if !args.is_empty() {
         args.iter().map(|a| {
             if let Some((name, cmd)) = a.split_once(':') { (name.to_owned(), cmd.to_owned(), None) }
@@ -480,6 +498,8 @@ fn main() {
     }
 
     for (name, command, wd) in agents {
+        // Create agent directory for sockets
+        std::fs::create_dir_all(paths::agent_dir(&name)).ok();
         let reg = Arc::clone(&registry);
         std::thread::Builder::new()
             .name(format!("agent_{name}"))
@@ -488,21 +508,18 @@ fn main() {
     }
 
     // Graceful shutdown on Ctrl+C
-    let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let shutdown2 = Arc::clone(&shutdown);
+    let ctrl_sock = paths::ctrl_socket();
+    let ctrl_sock2 = ctrl_sock.clone();
     ctrlc::set_handler(move || {
         eprintln!("\n[daemon] shutting down...");
-        shutdown2.store(true, std::sync::atomic::Ordering::Relaxed);
-        // Also trigger control socket
-        if let Ok(mut s) = UnixStream::connect("/tmp/agend-ctrl.sock") {
+        if let Ok(mut s) = UnixStream::connect(&ctrl_sock2) {
             let _ = s.write_all(b"shutdown");
         }
     }).ok();
 
     // Control socket for shutdown
-    let ctrl_path = "/tmp/agend-ctrl.sock";
-    let _ = std::fs::remove_file(ctrl_path);
-    if let Ok(listener) = UnixListener::bind(ctrl_path) {
+    let _ = std::fs::remove_file(&ctrl_sock);
+    if let Ok(listener) = UnixListener::bind(&ctrl_sock) {
         eprintln!("[daemon] use `agend-daemon --shutdown` or Ctrl+C to stop");
         if let Ok((mut stream, _)) = listener.accept() {
             let mut buf = [0u8; 64];
@@ -511,19 +528,6 @@ fn main() {
     }
 
     eprintln!("[daemon] cleaning up...");
-    let _ = std::fs::remove_file(ctrl_path);
-    for entry in std::fs::read_dir("/tmp").into_iter().flatten().flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with("agend-") && name.ends_with(".sock") {
-            let _ = std::fs::remove_file(entry.path());
-        }
-    }
-    // Clean up temp files
-    for entry in std::fs::read_dir("/tmp").into_iter().flatten().flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with("agend-mcp-config-") || name.starts_with("agend-prompt-") {
-            let _ = std::fs::remove_file(entry.path());
-        }
-    }
+    paths::cleanup();
     std::process::exit(0);
 }

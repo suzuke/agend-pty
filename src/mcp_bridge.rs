@@ -7,9 +7,8 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 
-fn mcp_socket_path(name: &str) -> String {
-    format!("/tmp/agend-mcp-{name}.sock")
-}
+#[path = "paths.rs"]
+mod paths;
 
 fn main() {
     let agent = std::env::args().nth(1).unwrap_or_else(|| {
@@ -17,7 +16,7 @@ fn main() {
         std::process::exit(1);
     });
 
-    let sock_path = mcp_socket_path(&agent);
+    let sock_path = paths::mcp_socket(&agent);
 
     // Retry connection
     let stream = {

@@ -11,6 +11,9 @@ use crossterm::terminal;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 
+#[path = "paths.rs"]
+mod paths;
+
 const TAG_DATA: u8 = 0;
 const TAG_RESIZE: u8 = 1;
 
@@ -47,28 +50,26 @@ fn send_resize(w: &mut impl Write, cols: u16, rows: u16) -> std::io::Result<()> 
     write_tagged(w, TAG_RESIZE, &data)
 }
 
-fn socket_path(name: &str) -> String {
-    format!("/tmp/agend-{name}.sock")
-}
-
 fn main() {
     let agent = std::env::args().nth(1).unwrap_or_else(|| "shell".into());
-    let sock = socket_path(&agent);
+
+    let sock = match paths::find_agent_tui_socket(&agent) {
+        Some(s) => s,
+        None => {
+            eprintln!("Agent '{agent}' not found.");
+            let agents = paths::list_agents();
+            if agents.is_empty() {
+                eprintln!("No daemon running. Start one with: agend-daemon");
+            } else {
+                eprintln!("Available agents:");
+                for a in agents { eprintln!("  {a}"); }
+            }
+            std::process::exit(1);
+        }
+    };
 
     let stream = UnixStream::connect(&sock).unwrap_or_else(|e| {
-        eprintln!("Failed to connect to agent '{agent}' at {sock}: {e}");
-        eprintln!("Available agents:");
-        for entry in std::fs::read_dir("/tmp").into_iter().flatten() {
-            if let Ok(e) = entry {
-                let name = e.file_name().to_string_lossy().to_string();
-                if name.starts_with("agend-") && name.ends_with(".sock")
-                    && !name.contains("mcp-") && !name.contains("ctrl")
-                {
-                    let agent_name = &name[6..name.len()-5];
-                    eprintln!("  {agent_name}");
-                }
-            }
-        }
+        eprintln!("Failed to connect to {}: {e}", sock.display());
         std::process::exit(1);
     });
 
