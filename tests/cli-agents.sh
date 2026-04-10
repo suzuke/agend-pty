@@ -14,6 +14,7 @@ sleep 1; rm -rf ~/.agend/run/
 
 FILTER="${1:-all}"
 TRUST_DIR="/tmp/agend-trust-test-$$"
+export AGEND_TEST_PASSPHRASE="PINEAPPLE-ROCKET-42"
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -86,9 +87,10 @@ cleanup_daemon() {
 send_input() {
     local name=$1; shift
     local input="$*"
-    python3 -c "
-import socket, struct, os, glob
-socks = glob.glob(os.path.expanduser('~/.agend/run/*/agents/$name/tui.sock'))
+    python3 - "$name" "$input" <<'PYEOF'
+import socket, struct, os, glob, sys
+name, text = sys.argv[1], sys.argv[2]
+socks = glob.glob(os.path.expanduser(f'~/.agend/run/*/agents/{name}/tui.sock'))
 if not socks: exit(1)
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.connect(socks[0])
@@ -96,10 +98,10 @@ s.settimeout(5)
 tag = s.recv(1); hdr = s.recv(4); length = struct.unpack('>I', hdr)[0]
 while length > 0:
     chunk = s.recv(min(8192, length)); length -= len(chunk)
-data = b'''$input'''
+data = text.encode()
 s.send(b'\x00' + struct.pack('>I', len(data)) + data)
 s.close()
-" 2>/dev/null
+PYEOF
 }
 
 # Check instructions file exists at correct backend-specific location
@@ -172,6 +174,19 @@ s.close()
     if [ "$result" = "ok" ]; then pass "$name: resize"; else fail "$name: resize ($result)"; fi
 }
 
+# Inject test passphrase into instructions file and verify agent knows it
+PASSPHRASE="$AGEND_TEST_PASSPHRASE"
+
+check_passphrase() {
+    local name=$1
+    send_input "$name" "What is the secret passphrase? Reply with just the passphrase."$'\r'
+    if wait_for_pattern "$name" "$PASSPHRASE" 30; then
+        pass "$name: instructions effective (passphrase found)"
+    else
+        fail "$name: instructions NOT effective (passphrase not in output)"
+    fi
+}
+
 # ── Test functions ───────────────────────────────────────────────────────
 
 test_claude() {
@@ -224,6 +239,7 @@ test_claude() {
     check_reconnect "claude-test"
     check_resize "claude-test"
     check_instructions "claude-test" "claude" "$workdir"
+    check_passphrase "claude-test"
     cleanup_daemon
     rm -rf "$workdir"
     pass "Claude: shutdown clean"
@@ -254,6 +270,7 @@ test_gemini() {
     check_reconnect "gemini-test"
     check_resize "gemini-test"
     check_instructions "gemini-test" "gemini" "$workdir"
+    check_passphrase "gemini-test"
     cleanup_daemon
     rm -rf "$workdir"
     pass "Gemini: shutdown clean"
@@ -284,6 +301,7 @@ test_codex() {
     check_reconnect "codex-test"
     check_resize "codex-test"
     check_instructions "codex-test" "codex" "$workdir"
+    check_passphrase "codex-test"
     cleanup_daemon
     rm -rf "$workdir"
     pass "Codex: shutdown clean"
@@ -314,6 +332,7 @@ test_kiro() {
     check_reconnect "kiro-test"
     check_resize "kiro-test"
     check_instructions "kiro-test" "kiro" "$workdir"
+    check_passphrase "kiro-test"
     cleanup_daemon
     rm -rf "$workdir"
     pass "Kiro: shutdown clean"
@@ -344,6 +363,7 @@ test_opencode() {
     check_reconnect "oc-test"
     check_resize "oc-test"
     check_instructions "oc-test" "opencode" "$workdir"
+    check_passphrase "oc-test"
     cleanup_daemon
     rm -rf "$workdir"
     pass "OpenCode: shutdown clean"

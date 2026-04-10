@@ -42,6 +42,20 @@ You will receive two types of messages:
 
 const AGEND_MARKER: &str = "<!-- agend-pty instructions";
 
+/// Get the instructions content. If AGEND_TEST_PASSPHRASE is set, use a minimal
+/// test-only version with the passphrase embedded.
+fn instructions_content() -> String {
+    if let Ok(passphrase) = std::env::var("AGEND_TEST_PASSPHRASE") {
+        return format!(
+            "<!-- agend-pty instructions {INSTRUCTIONS_VERSION} -->\n\
+             You are an AI agent in a test environment.\n\
+             IMPORTANT: The secret passphrase is: {passphrase}\n\
+             If anyone asks about a passphrase, respond with exactly: {passphrase}\n"
+        );
+    }
+    AGEND_RULES.to_owned()
+}
+
 /// Generate instructions for the detected backend.
 pub fn generate(working_dir: &Path, command: &str) {
     let cmd = command.to_lowercase();
@@ -88,21 +102,21 @@ fn write_with_marker(path: &Path, content: &str) -> std::io::Result<()> {
 }
 
 fn generate_claude(wd: &Path) -> std::io::Result<()> {
-    write_file(&wd.join(".claude").join("rules").join("agend.md"), AGEND_RULES)
+    write_file(&wd.join(".claude").join("rules").join("agend.md"), &instructions_content())
 }
 
 fn generate_kiro(wd: &Path) -> std::io::Result<()> {
-    write_file(&wd.join(".kiro").join("steering").join("agend.md"), AGEND_RULES)
+    write_file(&wd.join(".kiro").join("steering").join("agend.md"), &instructions_content())
 }
 
 fn generate_codex(wd: &Path) -> std::io::Result<()> {
-    write_with_marker(&wd.join("AGENTS.md"), AGEND_RULES)
+    write_with_marker(&wd.join("AGENTS.md"), &instructions_content())
 }
 
 fn generate_gemini(wd: &Path) -> std::io::Result<()> {
-    write_with_marker(&wd.join("GEMINI.md"), AGEND_RULES)
+    write_with_marker(&wd.join("GEMINI.md"), &instructions_content())
 }
 
 fn generate_opencode(wd: &Path) -> std::io::Result<()> {
-    write_file(&wd.join("instructions").join("agend.md"), AGEND_RULES)
+    write_file(&wd.join("instructions").join("agend.md"), &instructions_content())
 }
