@@ -553,6 +553,23 @@ fn inject_to_agent(agent: &AgentHandle, text: &[u8]) -> std::io::Result<()> {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
+    // Parse --config flag
+    let mut config_path: Option<std::path::PathBuf> = None;
+    let mut filtered_args: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--config" || args[i] == "-c" {
+            if let Some(p) = args.get(i + 1) {
+                config_path = Some(std::path::PathBuf::from(p));
+                i += 2;
+                continue;
+            }
+        }
+        filtered_args.push(args[i].clone());
+        i += 1;
+    }
+    let args = filtered_args;
+
     if args.first().map(|s| s.as_str()) == Some("--shutdown") {
         // Find active daemon's ctrl socket
         if let Some(run) = paths::find_active_run_dir() {
@@ -572,12 +589,20 @@ fn main() {
     eprintln!("[daemon] run dir: {}", paths::run_dir().display());
 
     // Parse agents from CLI args or fleet.yaml
+    let load_config = || -> Result<config::FleetConfig, String> {
+        if let Some(ref p) = config_path {
+            config::FleetConfig::load(p)
+        } else {
+            config::FleetConfig::find_and_load()
+        }
+    };
+
     let agents: Vec<(String, String, Option<std::path::PathBuf>)> = if !args.is_empty() {
         args.iter().map(|a| {
             if let Some((name, cmd)) = a.split_once(':') { (name.to_owned(), cmd.to_owned(), None) }
             else { (a.to_owned(), a.to_owned(), None) }
         }).collect()
-    } else if let Ok(cfg) = config::FleetConfig::find_and_load() {
+    } else if let Ok(cfg) = load_config() {
         cfg.instances.iter().map(|(name, ic)| {
             let cmd = ic.build_command(&cfg.defaults);
             let wd = ic.working_dir_or(&cfg.defaults).map(|p| p.to_path_buf());
@@ -598,7 +623,7 @@ fn main() {
     }
 
     // Setup channel adapters BEFORE spawning agents (so on_agent_created works)
-    if let Ok(cfg) = config::FleetConfig::find_and_load() {
+    if let Ok(cfg) = load_config() {
         if let Some((token, group_id)) = cfg.telegram_config() {
             let adapter = telegram::TelegramAdapter::new(telegram::TelegramConfig { bot_token: token, group_id });
             channel_mgr.lock().unwrap_or_else(|e| e.into_inner())

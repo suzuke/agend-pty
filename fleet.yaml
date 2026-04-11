@@ -1,10 +1,14 @@
 defaults:
   backend: claude
 
+channel:
+  bot_token_env: TELEGRAM_BOT_TOKEN
+  group_id: -1003723469762
+
 instances:
   alice:
     skip_permissions: true
-    working_directory: /tmp/alice-workspace
+    working_directory: /tmp/alice-ws
   bob:
     skip_permissions: true
-    working_directory: /tmp/bob-workspace
+    working_directory: /tmp/bob-ws
