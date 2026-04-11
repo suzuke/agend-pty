@@ -599,8 +599,8 @@ fn main() {
 
     // Setup channel adapters BEFORE spawning agents (so on_agent_created works)
     if let Ok(cfg) = config::FleetConfig::find_and_load() {
-        if let Some(tg) = cfg.telegram_config() {
-            let adapter = telegram::TelegramAdapter::new(tg);
+        if let Some((token, group_id)) = cfg.telegram_config() {
+            let adapter = telegram::TelegramAdapter::new(telegram::TelegramConfig { bot_token: token, group_id });
             channel_mgr.lock().unwrap_or_else(|e| e.into_inner())
                 .add_adapter(Box::new(adapter));
         }

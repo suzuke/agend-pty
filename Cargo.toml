@@ -8,6 +8,10 @@ name = "agend_pty_poc"
 path = "src/lib.rs"
 
 [[bin]]
+name = "agend-pty"
+path = "src/main.rs"
+
+[[bin]]
 name = "agend-daemon"
 path = "src/daemon.rs"
 

@@ -98,13 +98,13 @@ impl FleetConfig {
         Err("fleet.yaml not found (checked ./fleet.yaml, ~/.agend/fleet.yaml)".into())
     }
 
-    /// Get Telegram config if channel is configured.
-    pub fn telegram_config(&self) -> Option<crate::telegram::TelegramConfig> {
+    /// Get Telegram config (bot_token, group_id) if channel is configured.
+    pub fn telegram_config(&self) -> Option<(String, i64)> {
         let ch = self.channel.as_ref()?;
         let token_env = ch.bot_token_env.as_deref().unwrap_or("TELEGRAM_BOT_TOKEN");
         let token = std::env::var(token_env).ok()?;
         let group_id = ch.group_id?;
-        Some(crate::telegram::TelegramConfig { bot_token: token, group_id })
+        Some((token, group_id))
     }
 }
 
