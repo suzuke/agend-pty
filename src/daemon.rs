@@ -300,6 +300,7 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     let mcp_sock = mcp_socket_path(&name);
     let _ = std::fs::remove_file(&mcp_sock);
     let reg2 = Arc::clone(&registry);
+    let cm2 = Arc::clone(&channel_mgr);
     let n3 = name.clone();
     std::thread::Builder::new()
         .name(format!("{n3}_mcp"))
@@ -312,8 +313,9 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
             for stream in listener.incoming().flatten() {
                 let reg = Arc::clone(&reg2);
                 let ib = Arc::clone(&inbox_store);
+                let cm = Arc::clone(&cm2);
                 let agent_name = n3.clone();
-                std::thread::spawn(move || handle_mcp_session(stream, &agent_name, &reg, &ib));
+                std::thread::spawn(move || handle_mcp_session(stream, &agent_name, &reg, &ib, &cm));
             }
         })
         .unwrap();
@@ -393,7 +395,7 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
 
 // ── MCP Server ──────────────────────────────────────────────────────────
 
-fn handle_mcp_session(stream: UnixStream, agent_name: &str, registry: &AgentRegistry, inbox_store: &Arc<inbox::InboxStore>) {
+fn handle_mcp_session(stream: UnixStream, agent_name: &str, registry: &AgentRegistry, inbox_store: &Arc<inbox::InboxStore>, channel_mgr: &Arc<Mutex<channel::ChannelManager>>) {
     let mut reader = BufReader::new(stream.try_clone().expect("clone"));
     let mut writer = stream;
 
@@ -439,7 +441,11 @@ fn handle_mcp_session(stream: UnixStream, agent_name: &str, registry: &AgentRegi
                     { "name": "inbox", "description": "Read a message from your inbox by ID, or list all inbox messages.",
                       "inputSchema": { "type": "object", "properties": {
                           "id": { "type": "integer", "description": "Message ID to read (omit to list all)" }
-                      } } }
+                      } } },
+                    { "name": "reply", "description": "Reply to a Telegram user. Use this when you receive a [user:NAME via telegram] message.",
+                      "inputSchema": { "type": "object", "properties": {
+                          "text": { "type": "string", "description": "Reply text to send back to Telegram" }
+                      }, "required": ["text"] } }
                 ]
             }),
             "tools/call" => {
@@ -481,6 +487,17 @@ fn handle_mcp_session(stream: UnixStream, agent_name: &str, registry: &AgentRegi
                                 "preview": m.text.chars().take(100).collect::<String>()
                             })).collect();
                             serde_json::json!({"content": [{"type": "text", "text": serde_json::json!({"messages": list}).to_string()}]})
+                        }
+                    }
+                    "reply" => {
+                        let text = args["text"].as_str().unwrap_or("");
+                        if text.is_empty() {
+                            serde_json::json!({"content": [{"type": "text", "text": "text is required"}], "isError": true})
+                        } else {
+                            let formatted = format!("[{}] {}", agent_name, text);
+                            channel_mgr.lock().unwrap_or_else(|e| e.into_inner()).send_to_agent(agent_name, &formatted);
+                            eprintln!("[daemon] {agent_name} replied to telegram: {}", text.chars().take(80).collect::<String>());
+                            serde_json::json!({"content": [{"type": "text", "text": "{\"replied\":true}"}]})
                         }
                     }
                     _ => serde_json::json!({"content": [{"type": "text", "text": format!("unknown tool: {tool}")}], "isError": true})
