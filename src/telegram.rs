@@ -28,13 +28,16 @@ pub struct TelegramAdapter {
 
 impl TelegramAdapter {
     pub fn new(config: TelegramConfig) -> Self {
-        Self {
+        let adapter = Self {
             bot: BotApi::new(&config.bot_token),
             group_id: config.group_id,
             topics: Mutex::new(HashMap::new()),
             routing: Mutex::new(HashMap::new()),
             offset: Mutex::new(0),
-        }
+        };
+        // Load persisted topic mappings
+        adapter.load_topics();
+        adapter
     }
 
     fn register_topic(&self, agent: &str, thread_id: i64) {
@@ -42,6 +45,31 @@ impl TelegramAdapter {
             .insert(agent.to_owned(), thread_id);
         self.routing.lock().unwrap_or_else(|e| e.into_inner())
             .insert(thread_id, agent.to_owned());
+        self.save_topics();
+    }
+
+    fn topics_path() -> std::path::PathBuf {
+        crate::paths::home().join("topics.json")
+    }
+
+    fn save_topics(&self) {
+        let topics = self.topics.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = std::fs::write(Self::topics_path(), serde_json::to_string_pretty(&*topics).unwrap_or_default());
+    }
+
+    fn load_topics(&self) {
+        let path = Self::topics_path();
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(map) = serde_json::from_str::<HashMap<String, i64>>(&content) {
+                let mut topics = self.topics.lock().unwrap_or_else(|e| e.into_inner());
+                let mut routing = self.routing.lock().unwrap_or_else(|e| e.into_inner());
+                for (name, tid) in &map {
+                    topics.insert(name.clone(), *tid);
+                    routing.insert(*tid, name.clone());
+                }
+                eprintln!("[telegram] loaded {} persisted topics", map.len());
+            }
+        }
     }
 }
 
@@ -49,12 +77,18 @@ impl ChannelAdapter for TelegramAdapter {
     fn name(&self) -> &str { "telegram" }
 
     fn on_agent_created(&self, name: &str) {
-        // Create a forum topic for this agent
+        // Check if topic already exists (persisted from previous run)
+        if self.topics.lock().unwrap_or_else(|e| e.into_inner()).contains_key(name) {
+            let tid = self.topics.lock().unwrap_or_else(|e| e.into_inner())[name];
+            eprintln!("[telegram] reusing existing topic '{name}' (thread_id: {tid})");
+            self.bot.send_message(self.group_id, &format!("🟢 Agent '{name}' reconnected"), Some(tid)).ok();
+            return;
+        }
+        // Create new topic
         match self.bot.create_forum_topic(self.group_id, name) {
             Ok(thread_id) => {
                 self.register_topic(name, thread_id);
                 eprintln!("[telegram] created topic '{name}' (thread_id: {thread_id})");
-                // Send welcome message
                 self.bot.send_message(self.group_id, &format!("🟢 Agent '{name}' started"), Some(thread_id)).ok();
             }
             Err(e) => eprintln!("[telegram] failed to create topic for '{name}': {e}"),

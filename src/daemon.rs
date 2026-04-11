@@ -192,7 +192,11 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     std::fs::write(&prompt_path, &prompt).ok();
 
     // Build final command with backend-specific MCP injection
-    let final_command = inject_mcp_for_backend(&command, &name, &mcp_config_path_str, &prompt_path_str);
+    // Add --continue for Claude to resume previous session
+    let mut final_command = inject_mcp_for_backend(&command, &name, &mcp_config_path_str, &prompt_path_str);
+    if command.starts_with("claude") && !final_command.contains("--continue") {
+        final_command.push_str(" --continue");
+    }
 
     let parts: Vec<&str> = final_command.split_whitespace().collect();
     let mut cmd = CommandBuilder::new(parts[0]);
