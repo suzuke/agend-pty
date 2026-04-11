@@ -72,7 +72,12 @@ pub fn create_task(created_by: &str, title: &str, description: &str, assignee: &
     t
 }
 
-pub fn list_tasks() -> Vec<Task> { read_jsonl(&tasks_path()) }
+pub fn list_tasks() -> Vec<Task> {
+    let all: Vec<Task> = read_jsonl(&tasks_path());
+    let mut map = std::collections::HashMap::new();
+    for t in all { map.insert(t.id.clone(), t); }
+    map.into_values().collect()
+}
 
 pub fn update_task(id: &str, status: Option<&str>, assignee: Option<&str>, result: Option<&str>) -> Option<Task> {
     let tasks: Vec<Task> = read_jsonl(&tasks_path());
