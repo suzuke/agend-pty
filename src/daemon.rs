@@ -135,11 +135,14 @@ struct AgentHandle {
 type AgentRegistry = Arc<Mutex<HashMap<String, AgentHandle>>>;
 
 /// Spawn config for respawning crashed agents.
+/// Holds persistent health/state monitors that survive respawn.
 #[derive(Clone)]
 struct SpawnConfig {
     name: String,
     command: String,
     working_dir: Option<std::path::PathBuf>,
+    state_machine: Arc<Mutex<state::StateMachine>>,
+    health: Arc<Mutex<health::HealthMonitor>>,
 }
 
 type SpawnConfigs = Arc<Mutex<HashMap<String, SpawnConfig>>>;
@@ -187,14 +190,12 @@ fn do_respawn(
         None => { eprintln!("[health] {name}: no spawn config for respawn"); return; }
     };
 
-    // Update health monitor
-    if let Some(handle) = registry.lock().unwrap_or_else(|e| e.into_inner()).get(name) {
-        if let Ok(mut h) = handle.health.lock() {
-            h.on_restart(std::time::Instant::now());
-        }
-        if let Ok(mut s) = handle.state_machine.lock() {
-            s.on_restart(std::time::Instant::now());
-        }
+    // Update monitors (preserved from SpawnConfig — crash history intact)
+    let now = std::time::Instant::now();
+    if let Ok(mut h) = cfg.health.lock() { h.on_restart(now); }
+    if let Ok(mut s) = cfg.state_machine.lock() {
+        s.on_restart(now);
+        s.on_restart_complete(now);
     }
 
     let reg = Arc::clone(registry);
@@ -236,11 +237,6 @@ fn inject_mcp_for_backend(command: &str, name: &str, mcp_config_path: &str, prom
 // ── Agent spawning ──────────────────────────────────────────────────────
 
 fn spawn_agent(name: String, command: String, working_dir: Option<std::path::PathBuf>, registry: AgentRegistry, agent_writers: api::AgentWriters, inbox_store: Arc<inbox::InboxStore>, channel_mgr: Arc<Mutex<channel::ChannelManager>>, spawn_configs: SpawnConfigs) {
-    // Store spawn config for respawn
-    spawn_configs.lock().unwrap_or_else(|e| e.into_inner()).insert(name.clone(), SpawnConfig {
-        name: name.clone(), command: command.clone(), working_dir: working_dir.clone(),
-    });
-
     let sock = socket_path(&name);
     let _ = std::fs::remove_file(&sock);
 
@@ -329,11 +325,24 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     let inject_prefix = preset.as_ref().map(|p| p.inject_prefix.to_owned()).unwrap_or_default();
     let typed_inject = preset.as_ref().map(|p| p.typed_inject).unwrap_or(false);
 
-    // State machine + health monitor
+    // State machine + health monitor — reuse from SpawnConfig if respawning
     let ready_pattern = preset.as_ref().map(|p| p.ready_pattern).unwrap_or(">");
-    let state_patterns = state::StatePatterns::from_backend(ready_pattern);
-    let state_machine = Arc::new(Mutex::new(state::StateMachine::new(state_patterns)));
-    let health_monitor = Arc::new(Mutex::new(health::HealthMonitor::new()));
+    let (state_machine, health_monitor) = {
+        let configs = spawn_configs.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(existing) = configs.get(&name) {
+            (Arc::clone(&existing.state_machine), Arc::clone(&existing.health))
+        } else {
+            let state_patterns = state::StatePatterns::from_backend(ready_pattern);
+            (Arc::new(Mutex::new(state::StateMachine::new(state_patterns))),
+             Arc::new(Mutex::new(health::HealthMonitor::new())))
+        }
+    };
+
+    // Store/update spawn config (preserves monitors for future respawns)
+    spawn_configs.lock().unwrap_or_else(|e| e.into_inner()).insert(name.clone(), SpawnConfig {
+        name: name.clone(), command: command.clone(), working_dir: working_dir.clone(),
+        state_machine: Arc::clone(&state_machine), health: Arc::clone(&health_monitor),
+    });
 
     // Register in global registry + writers map
     registry.lock().unwrap_or_else(|e| e.into_inner()).insert(name.clone(), AgentHandle {
@@ -369,22 +378,27 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
                 match pty_reader.read(&mut buf) {
                     Ok(0) => {
                         eprintln!("[{n}] PTY closed — reaping session");
-                        // Update state machine + handle health action
+                        // 1. Update state machine, record health action (but don't execute yet)
                         let now = std::time::Instant::now();
-                        if let Ok(mut s) = sm.lock() {
+                        let action = if let Ok(mut s) = sm.lock() {
                             if let Some(new_state) = s.on_exit(now) {
                                 eprintln!("[{n}] state: {:?}", new_state);
                                 if let Ok(mut h) = hm.lock() {
-                                    let action = h.on_state_change(new_state, s.consecutive_errors(), s.last_error_kind(), now);
-                                    eprintln!("[{n}] health action: {:?}", action);
-                                    handle_health_action(&action, &n, &reg_reaper, &aw_reaper, &sc_reaper, &ib_reaper, &cm_reaper);
-                                }
-                            }
-                        }
+                                    let a = h.on_state_change(new_state, s.consecutive_errors(), s.last_error_kind(), now);
+                                    eprintln!("[{n}] health action: {:?}", a);
+                                    a
+                                } else { health::HealthAction::None }
+                            } else { health::HealthAction::None }
+                        } else { health::HealthAction::None };
+
+                        // 2. Cleanup first — remove from registry, writers, notify channels
                         reg_reaper.lock().unwrap_or_else(|e| e.into_inner()).remove(&n);
                         aw_reaper.lock().unwrap_or_else(|e| e.into_inner()).remove(&n);
                         cm_reaper.lock().unwrap_or_else(|e| e.into_inner()).on_agent_removed(&n);
                         let _ = std::fs::remove_dir_all(paths::agent_dir(&n));
+
+                        // 3. Now safe to respawn (cleanup complete, no race)
+                        handle_health_action(&action, &n, &reg_reaper, &aw_reaper, &sc_reaper, &ib_reaper, &cm_reaper);
                         break;
                     }
                     Ok(n_bytes) => {
