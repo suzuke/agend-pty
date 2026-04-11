@@ -1,16 +1,4 @@
-//! Path management — all agend runtime files under ~/.agend/run/<pid>/
 //!
-//! Layout:
-//!   ~/.agend/
-//!     fleet.yaml
-//!     run/
-//!       <daemon-pid>/          ← per-daemon isolation
-//!         daemon.lock          ← flock + fleet config path
-//!         ctrl.sock
-//!         agents/
-//!           <name>/
-//!             tui.sock
-//!             mcp.sock
 
 use std::path::PathBuf;
 

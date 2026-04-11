@@ -1,7 +1,4 @@
-//! MCP config writer — generates per-backend MCP server configuration.
 //!
-//! Each backend reads MCP config from a different location.
-//! This module writes/merges the agend MCP server entry into each.
 
 use serde_json::{json, Value};
 use std::path::Path;

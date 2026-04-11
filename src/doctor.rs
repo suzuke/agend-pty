@@ -1,4 +1,3 @@
-//! Doctor — health check for agend-pty setup.
 
 use crate::{config, paths};
 use std::path::Path;

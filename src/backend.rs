@@ -1,4 +1,3 @@
-//! Backend presets — command, args, ready pattern, submit key, inject behavior.
 
 use serde::Deserialize;
 

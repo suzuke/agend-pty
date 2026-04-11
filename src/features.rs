@@ -5,26 +5,42 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-// ── B1: Dry-run ─────────────────────────────────────────────────────────
+// ── B1: Dry-run (config validation only) ────────────────────────────────
 
 pub fn dry_run(cfg: &config::FleetConfig) {
+    let mut errors = 0u32;
     println!("=== Dry-run: {} instance(s) ===\n", cfg.instances.len());
     for (name, ic) in &cfg.instances {
         let cmd = ic.build_command(&cfg.defaults);
         let wd = ic.effective_working_dir(&cfg.defaults, name);
+        let bin = cmd.split_whitespace().next().unwrap_or(&cmd);
+        let bin_ok = which(bin);
+        let wd_ok = wd.exists();
+        if !bin_ok { errors += 1; }
         let deps = if ic.depends_on.is_empty() { "(none)".into() } else { ic.depends_on.join(", ") };
-        println!("  {name}: {} | wd: {} | deps: {deps}", ic.backend_or(&cfg.defaults), wd.display());
+        println!("  {name}: {} {} | wd: {} {} | deps: {deps}",
+            ic.backend_or(&cfg.defaults), if bin_ok { "✅" } else { "❌" },
+            wd.display(), if wd_ok { "✅" } else { "⚠️" });
         for dep in &ic.depends_on {
-            if !cfg.instances.contains_key(dep) { println!("    ⚠️  dependency '{dep}' not found!"); }
+            if !cfg.instances.contains_key(dep) { errors += 1; println!("    ❌ dep '{dep}' not found"); }
         }
         std::fs::create_dir_all(&wd).ok();
         instructions::generate(&wd, &cmd, name);
     }
     match resolve_order(cfg) {
-        Ok(order) => println!("\nStartup order: {}", order.join(" → ")),
-        Err(e) => println!("\n❌ {e}"),
+        Ok(order) => println!("\nOrder: {}", order.join(" → ")),
+        Err(e) => { errors += 1; println!("\n❌ {e}"); }
     }
-    println!("\n✅ Dry-run complete.");
+    if let Some(ch) = &cfg.channel {
+        let env = ch.bot_token_env.as_deref().unwrap_or("TELEGRAM_BOT_TOKEN");
+        println!("Channel: telegram ({})", if std::env::var(env).is_ok() { "✅" } else { "⚠️ no token" });
+    }
+    if errors > 0 { println!("\n❌ {errors} error(s)"); std::process::exit(1); }
+    else { println!("\n✅ Dry-run passed."); }
+}
+
+fn which(name: &str) -> bool {
+    std::env::var("PATH").unwrap_or_default().split(':').any(|dir| Path::new(dir).join(name).exists())
 }
 
 // ── B2: Snapshot/Restore ────────────────────────────────────────────────
@@ -34,6 +50,8 @@ pub struct FleetSnapshot {
     pub timestamp: u64,
     pub fleet_yaml: String,
     pub agents: Vec<AgentSnapshot>,
+    #[serde(default)]
+    pub topic_mappings: HashMap<String, i64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -53,12 +71,15 @@ pub fn snapshot(config_path: Option<&Path>, output: &Path) -> Result<(), String>
         name: name.clone(), command: ic.build_command(&cfg.defaults),
         working_dir: ic.effective_working_dir(&cfg.defaults, name).display().to_string(),
     }).collect();
+    // Load topic mappings if they exist
+    let topic_mappings: HashMap<String, i64> = std::fs::read_to_string(paths::home().join("topics.json"))
+        .ok().and_then(|c| serde_json::from_str(&c).ok()).unwrap_or_default();
     let snap = FleetSnapshot {
         timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
-        fleet_yaml, agents,
+        fleet_yaml, agents, topic_mappings,
     };
     std::fs::write(output, serde_json::to_string_pretty(&snap).unwrap()).map_err(|e| format!("write: {e}"))?;
-    println!("Snapshot saved to {}", output.display());
+    println!("Snapshot saved to {} ({} agents, {} topics)", output.display(), snap.agents.len(), snap.topic_mappings.len());
     Ok(())
 }
 
@@ -71,14 +92,23 @@ pub fn restore(input: &Path) -> Result<(), String> {
         std::fs::write(&fleet_path, &snap.fleet_yaml).map_err(|e| format!("write: {e}"))?;
         println!("Restored fleet.yaml ({} agents)", snap.agents.len());
     } else { println!("fleet.yaml exists, skipping"); }
-    for a in &snap.agents { println!("  {} ({})", a.name, a.command); }
-    println!("Run `agend-pty daemon` to start.");
+    if !snap.topic_mappings.is_empty() {
+        std::fs::create_dir_all(paths::home()).ok();
+        std::fs::write(paths::home().join("topics.json"),
+            serde_json::to_string_pretty(&snap.topic_mappings).unwrap())
+            .map_err(|e| format!("write topics: {e}"))?;
+        println!("Restored {} topic mappings", snap.topic_mappings.len());
+    }
+    for a in &snap.agents {
+        if !Path::new(&a.working_dir).exists() { std::fs::create_dir_all(&a.working_dir).ok(); }
+        println!("  {} ({})", a.name, a.command);
+    }
+    println!("Run `agend-pty daemon` to start (fresh health state).");
     Ok(())
 }
 
 // ── B3: Dependency Graph ────────────────────────────────────────────────
 
-/// Topological sort of instances by depends_on. Detects cycles.
 pub fn resolve_order(cfg: &config::FleetConfig) -> Result<Vec<String>, String> {
     let names: HashSet<&str> = cfg.instances.keys().map(|s| s.as_str()).collect();
     for (name, ic) in &cfg.instances {
@@ -88,7 +118,6 @@ pub fn resolve_order(cfg: &config::FleetConfig) -> Result<Vec<String>, String> {
             }
         }
     }
-    // Kahn's algorithm
     let mut in_deg: HashMap<&str, usize> = names.iter().map(|&n| (n, 0)).collect();
     let mut fwd: HashMap<&str, Vec<&str>> = HashMap::new();
     for (name, ic) in &cfg.instances {
@@ -113,7 +142,6 @@ pub fn resolve_order(cfg: &config::FleetConfig) -> Result<Vec<String>, String> {
     Ok(order)
 }
 
-/// Group instances by dependency layer for parallel startup.
 pub fn dependency_layers(cfg: &config::FleetConfig) -> Result<Vec<Vec<String>>, String> {
     let order = resolve_order(cfg)?;
     let mut layers: Vec<Vec<String>> = Vec::new();
@@ -176,12 +204,22 @@ mod tests {
 
     #[test]
     fn snapshot_roundtrip() {
+        let mut topics = HashMap::new();
+        topics.insert("alice".into(), 12345i64);
         let snap = FleetSnapshot {
             timestamp: 12345, fleet_yaml: "instances:\n  test: {}\n".into(),
             agents: vec![AgentSnapshot { name: "test".into(), command: "claude".into(), working_dir: "/tmp".into() }],
+            topic_mappings: topics,
         };
         let json = serde_json::to_string(&snap).unwrap();
         let restored: FleetSnapshot = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.agents[0].name, "test");
+        assert_eq!(restored.topic_mappings["alice"], 12345);
+    }
+
+    #[test]
+    fn which_finds_common_binaries() {
+        assert!(which("ls"));
+        assert!(!which("nonexistent_binary_xyz"));
     }
 }

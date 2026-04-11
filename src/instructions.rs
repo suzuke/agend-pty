@@ -1,12 +1,3 @@
-//! Instructions — generate per-backend instruction files.
-//!
-//! Injection methods (verified from agend TS version):
-//! - Claude: --append-system-prompt-file (CLI flag, handled in daemon.rs)
-//!          + .claude/rules/agend.md (auto-read, works as backup)
-//! - Kiro:   .kiro/steering/agend-{name}.md
-//! - Codex:  AGENTS.md (marker append)
-//! - Gemini: GEMINI.md (marker append)
-//! - OpenCode: fleet-instructions.md + add path to opencode.json instructions array
 
 use std::path::Path;
 

@@ -1,5 +1,3 @@
-//! Telegram adapter — implements ChannelAdapter for Telegram Bot API.
-//! Creates forum topics per agent, routes messages by topic.
 
 use crate::channel::{ChannelAdapter, IncomingMessage};
 use isahc::config::Configurable;
