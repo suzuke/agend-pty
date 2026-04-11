@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports)]
 //! Doctor — health check for agend-pty setup.
 
 use crate::{config, paths};

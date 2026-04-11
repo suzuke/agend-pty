@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports)]
 //! Channel — abstract interface for messaging platforms (Telegram, Discord, Slack, etc.)
 //!
 //! Each adapter implements the ChannelAdapter trait. The daemon calls lifecycle

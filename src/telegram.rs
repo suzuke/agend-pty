@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports)]
 //! Telegram adapter — implements ChannelAdapter for Telegram Bot API.
 //! Creates forum topics per agent, routes messages by topic.
 

@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports)]
 //! Fleet configuration — reads fleet.yaml to define agents.
 
 use serde::Deserialize;

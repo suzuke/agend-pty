@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports)]
 //! Path management — all agend runtime files under ~/.agend/run/<pid>/
 //!
 //! Layout:

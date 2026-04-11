@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports)]
 //! Instructions — generate per-backend instruction files.
 //!
 //! Injection methods (verified from agend TS version):

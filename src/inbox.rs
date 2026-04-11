@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports)]
 //! Inbox — per-agent message queue backed by JSONL files.
 //!
 //! Messages stored at ~/.agend/run/<pid>/inbox/{agent_name}.jsonl

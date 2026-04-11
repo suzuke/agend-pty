@@ -32,10 +32,10 @@ mod channel;
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex};
-use channel::ChannelAdapter;
+
 
 // ── Framing ─────────────────────────────────────────────────────────────
 // Protocol: [u8 tag][u32 BE len][bytes]
@@ -118,6 +118,7 @@ impl AgentCore {
     }
 }
 
+#[allow(dead_code)]
 struct AgentHandle {
     pty_writer: PtyWriter,
     core: Arc<Mutex<AgentCore>>,
@@ -129,12 +130,11 @@ struct AgentHandle {
 type AgentRegistry = Arc<Mutex<HashMap<String, AgentHandle>>>;
 
 fn socket_path(name: &str) -> std::path::PathBuf { paths::tui_socket(name) }
-fn mcp_socket_path(name: &str) -> std::path::PathBuf { paths::mcp_socket(name) }
 
 // ── Backend MCP injection ────────────────────────────────────────────────
 
 /// Inject MCP config into the command based on the backend type.
-fn inject_mcp_for_backend(command: &str, name: &str, mcp_config_path: &str, prompt_path: &str) -> String {
+fn inject_mcp_for_backend(command: &str, _name: &str, mcp_config_path: &str, prompt_path: &str) -> String {
     let bin = command.split_whitespace().next().unwrap_or(command);
     match bin {
         "claude" => format!("{command} --mcp-config {mcp_config_path} --append-system-prompt-file {prompt_path}"),
@@ -152,7 +152,7 @@ fn inject_mcp_for_backend(command: &str, name: &str, mcp_config_path: &str, prom
 
 // ── Agent spawning ──────────────────────────────────────────────────────
 
-fn spawn_agent(name: String, command: String, working_dir: Option<std::path::PathBuf>, registry: AgentRegistry, agent_writers: api::AgentWriters, inbox_store: Arc<inbox::InboxStore>, channel_mgr: Arc<Mutex<channel::ChannelManager>>) {
+fn spawn_agent(name: String, command: String, working_dir: Option<std::path::PathBuf>, registry: AgentRegistry, agent_writers: api::AgentWriters, _inbox_store: Arc<inbox::InboxStore>, channel_mgr: Arc<Mutex<channel::ChannelManager>>) {
     let sock = socket_path(&name);
     let _ = std::fs::remove_file(&sock);
 

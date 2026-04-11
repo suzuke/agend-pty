@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports)]
 //! MCP config writer — generates per-backend MCP server configuration.
 //!
 //! Each backend reads MCP config from a different location.
