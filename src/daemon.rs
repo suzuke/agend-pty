@@ -441,7 +441,10 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
         };
 
         // Output thread: forward broadcast to this client
-        let mut write_stream = stream.try_clone().expect("clone");
+        let mut write_stream = match stream.try_clone() {
+            Ok(s) => s,
+            Err(e) => { eprintln!("[{name}] TUI clone failed: {e}"); continue; }
+        };
         let n4 = name.clone();
         std::thread::Builder::new()
             .name(format!("{n4}_tui_out"))

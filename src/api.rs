@@ -53,7 +53,11 @@ pub fn start(ctx: Arc<DaemonCtx>) {
             for stream in listener.incoming().flatten() {
                 let c = Arc::clone(&ctx);
                 std::thread::spawn(move || {
-                    let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+                    let cloned = match stream.try_clone() {
+                        Ok(s) => s,
+                        Err(e) => { eprintln!("[api] stream clone failed: {e}"); return; }
+                    };
+                    let mut reader = BufReader::new(cloned);
                     let mut writer = stream;
                     let mut line = String::new();
                     while reader.read_line(&mut line).unwrap_or(0) > 0 {
