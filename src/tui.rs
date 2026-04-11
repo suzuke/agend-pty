@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports)]
 //! agend-tui: connects to a named agent, raw terminal passthrough.
 //!
 //! Usage: agend-tui [agent-name]
@@ -102,14 +103,9 @@ fn main() {
         .name("output".into())
         .spawn(move || {
             let mut stdout = std::io::stdout();
-            loop {
-                match read_frame(&mut read_stream) {
-                    Ok(data) => {
-                        stdout.write_all(&data).ok();
-                        stdout.flush().ok();
-                    }
-                    Err(_) => break,
-                }
+            while let Ok(data) = read_frame(&mut read_stream) {
+                stdout.write_all(&data).ok();
+                stdout.flush().ok();
             }
         })
         .unwrap();
@@ -140,9 +136,7 @@ fn main() {
                         continue;
                     }
                     let bytes = key_to_bytes(code, modifiers);
-                    if !bytes.is_empty() {
-                        if write_data(&mut write_stream, &bytes).is_err() { break; }
-                    }
+                    if !bytes.is_empty() && write_data(&mut write_stream, &bytes).is_err() { break; }
                 }
                 Ok(Event::Paste(text)) => {
                     if write_data(&mut write_stream, text.as_bytes()).is_err() { break; }
@@ -155,13 +149,11 @@ fn main() {
                 Ok(_) => {}
                 Err(_) => break,
             }
-        } else {
-            if let Ok((c, r)) = terminal::size() {
-                if c != last_cols || r != last_rows {
-                    let _ = send_resize(&mut write_stream, c, r);
-                    last_cols = c;
-                    last_rows = r;
-                }
+        } else if let Ok((c, r)) = terminal::size() {
+            if c != last_cols || r != last_rows {
+                let _ = send_resize(&mut write_stream, c, r);
+                last_cols = c;
+                last_rows = r;
             }
         }
     }

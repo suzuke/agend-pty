@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports)]
 //! agend-pty — single binary with subcommands.
 //!
 //! Usage:
@@ -64,7 +65,7 @@ fn main() {
         "snapshot" => {
             let output = sub_args.iter().position(|s| s == "--output" || s == "-o")
                 .and_then(|i| sub_args.get(i + 1))
-                .map(|s| std::path::PathBuf::from(s))
+                .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| "fleet-snapshot.json".into());
             if let Err(e) = features::snapshot(None, &output) {
                 eprintln!("Error: {e}"); std::process::exit(1);
@@ -73,7 +74,7 @@ fn main() {
         "restore" => {
             let input = sub_args.iter().position(|s| s == "--input" || s == "-i")
                 .and_then(|i| sub_args.get(i + 1))
-                .map(|s| std::path::PathBuf::from(s))
+                .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| "fleet-snapshot.json".into());
             if let Err(e) = features::restore(&input) {
                 eprintln!("Error: {e}"); std::process::exit(1);

@@ -29,8 +29,7 @@ pub struct VTerm {
 impl VTerm {
     pub fn new(cols: u16, rows: u16) -> Self {
         let size = VTermSize { cols, rows };
-        let mut config = Config::default();
-        config.scrolling_history = 0;
+        let config = Config { scrolling_history: 0, ..Config::default() };
         let term = term::Term::new(config, &size, NoopListener);
         Self { term, processor: Processor::new(), cols, rows }
     }

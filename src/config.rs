@@ -73,11 +73,8 @@ impl InstanceConfig {
         }
         let backend = self.backend_or(defaults);
         let mut parts = vec![backend.to_owned()];
-        if self.skip_permissions {
-            match backend {
-                "claude" => parts.push("--dangerously-skip-permissions".into()),
-                _ => {}
-            }
+        if self.skip_permissions && backend == "claude" {
+            parts.push("--dangerously-skip-permissions".into());
         }
         if let Some(m) = self.model.as_deref().or(defaults.model.as_deref()) {
             parts.push("--model".into());

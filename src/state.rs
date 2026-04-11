@@ -237,9 +237,7 @@ impl StateMachine {
 
     /// Directional hysteresis: escalation (→Errored) = debounce, recovery (→Ready) = immediate.
     fn try_transition_directed(&mut self, target: AgentState, now: Instant) -> Option<AgentState> {
-        if Self::transition(self.state, &event_for(target)).is_none() {
-            return None;
-        }
+        Self::transition(self.state, &event_for(target))?;
         let is_escalation = matches!(target, AgentState::Errored);
         if is_escalation {
             match &self.pending {

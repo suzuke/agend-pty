@@ -37,10 +37,12 @@ pub struct HealthMonitor {
     busy_since: Option<Instant>,
 }
 
+impl Default for HealthMonitor {
+    fn default() -> Self { Self { status: HealthStatus::Healthy, crash_times: Vec::new(), last_restart: None, busy_since: None } }
+}
+
 impl HealthMonitor {
-    pub fn new() -> Self {
-        Self { status: HealthStatus::Healthy, crash_times: Vec::new(), last_restart: None, busy_since: None }
-    }
+    pub fn new() -> Self { Self::default() }
 
     pub fn status(&self) -> HealthStatus { self.status }
 

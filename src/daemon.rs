@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports)]
 //! agend-daemon: multi-agent PTY manager.
 
 #[path = "config.rs"]
@@ -94,6 +95,17 @@ struct AgentHandle {
 }
 
 type AgentRegistry = Arc<Mutex<HashMap<String, AgentHandle>>>;
+type AgentTickInfo = (String, Arc<Mutex<state::StateMachine>>, Arc<Mutex<health::HealthMonitor>>);
+
+/// Shared daemon state passed to spawn_agent.
+#[derive(Clone)]
+struct DaemonShared {
+    registry: AgentRegistry,
+    agent_writers: api::AgentWriters,
+    inbox_store: Arc<inbox::InboxStore>,
+    channel_mgr: Arc<Mutex<channel::ChannelManager>>,
+    spawn_configs: SpawnConfigs,
+}
 
 /// Spawn config for respawning crashed agents.
 /// Holds persistent health/state monitors that survive respawn.
@@ -184,6 +196,7 @@ fn inject_mcp_for_backend(command: &str, _name: &str, mcp_config_path: &str, pro
 }
 
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_agent(name: String, command: String, working_dir: Option<std::path::PathBuf>, registry: AgentRegistry, agent_writers: api::AgentWriters, inbox_store: Arc<inbox::InboxStore>, channel_mgr: Arc<Mutex<channel::ChannelManager>>, spawn_configs: SpawnConfigs) {
     let sock = socket_path(&name);
     let _ = std::fs::remove_file(&sock);
@@ -413,11 +426,8 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
         std::thread::Builder::new()
             .name(format!("{n4}_tui_out"))
             .spawn(move || {
-                loop {
-                    match rx.recv() {
-                        Ok(data) => { if write_frame(&mut write_stream, &data).is_err() { break; } }
-                        Err(_) => break,
-                    }
+                while let Ok(data) = rx.recv() {
+                    if write_frame(&mut write_stream, &data).is_err() { break; }
                 }
                 eprintln!("[{n4}] TUI output thread ended");
             })
@@ -674,7 +684,7 @@ fn main() {
                     let now = std::time::Instant::now();
 
                     // Snapshot agent names + their Arc handles to avoid holding registry lock
-                    let agents: Vec<(String, Arc<Mutex<state::StateMachine>>, Arc<Mutex<health::HealthMonitor>>)> = {
+                    let agents: Vec<AgentTickInfo> = {
                         let reg = reg.lock().unwrap_or_else(|e| e.into_inner());
                         reg.iter().map(|(name, handle)| {
                             (name.clone(), Arc::clone(&handle.state_machine), Arc::clone(&handle.health))

@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports)]
 //! MCP server — stdin NDJSON → API socket → stdout NDJSON.
 //! Spawned by CLI agents as their MCP server process.
 //! Instance identity via AGEND_INSTANCE_NAME env var.

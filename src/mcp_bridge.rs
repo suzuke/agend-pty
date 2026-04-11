@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports)]
 //! agend-mcp-bridge: NDJSON passthrough between stdio and daemon MCP socket.
 //!
 //! Claude sends NDJSON on stdin → forward to daemon socket.
@@ -46,7 +47,7 @@ fn main() {
         .name("sock_to_stdout".into())
         .spawn(move || {
             let reader = BufReader::new(sock_reader);
-            for line in reader.lines().flatten() {
+            for line in reader.lines().map_while(Result::ok) {
                 if line.trim().is_empty() { continue; }
                 if writeln!(stdout, "{}", line.trim()).is_err() { return; }
                 let _ = stdout.flush();
@@ -57,7 +58,7 @@ fn main() {
     // Main thread: stdin (NDJSON) → daemon socket (NDJSON)
     let stdin = std::io::stdin();
     let reader = BufReader::new(stdin.lock());
-    for line in reader.lines().flatten() {
+    for line in reader.lines().map_while(Result::ok) {
         let trimmed = line.trim();
         if trimmed.is_empty() { continue; }
         if writeln!(sock_writer, "{trimmed}").is_err() { break; }
