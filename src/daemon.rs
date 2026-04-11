@@ -425,29 +425,7 @@ fn handle_mcp_session(stream: UnixStream, agent_name: &str, registry: &AgentRegi
                 "capabilities": { "tools": { "listChanged": false } },
                 "serverInfo": { "name": "agend", "version": "0.1.0" }
             }),
-            "tools/list" => serde_json::json!({
-                "tools": [
-                    { "name": "send_to_instance", "description": "Send a message to another agent instance.",
-                      "inputSchema": { "type": "object", "properties": {
-                          "instance_name": { "type": "string", "description": "Target agent name" },
-                          "message": { "type": "string", "description": "Message to send" }
-                      }, "required": ["instance_name", "message"] } },
-                    { "name": "broadcast", "description": "Send a message to ALL other agent instances.",
-                      "inputSchema": { "type": "object", "properties": {
-                          "message": { "type": "string", "description": "Message to broadcast" }
-                      }, "required": ["message"] } },
-                    { "name": "list_instances", "description": "List all running agent instances.",
-                      "inputSchema": { "type": "object", "properties": {} } },
-                    { "name": "inbox", "description": "Read a message from your inbox by ID, or list all inbox messages.",
-                      "inputSchema": { "type": "object", "properties": {
-                          "id": { "type": "integer", "description": "Message ID to read (omit to list all)" }
-                      } } },
-                    { "name": "reply", "description": "Reply to a Telegram user. Use this when you receive a [user:NAME via telegram] message.",
-                      "inputSchema": { "type": "object", "properties": {
-                          "text": { "type": "string", "description": "Reply text to send back to Telegram" }
-                      }, "required": ["text"] } }
-                ]
-            }),
+            "tools/list" => mcp_tools_list(),
             "tools/call" => {
                 let tool = req["params"]["name"].as_str().unwrap_or("");
                 let args = &req["params"]["arguments"];
@@ -498,6 +476,59 @@ fn handle_mcp_session(stream: UnixStream, agent_name: &str, registry: &AgentRegi
                             channel_mgr.lock().unwrap_or_else(|e| e.into_inner()).send_to_agent(agent_name, &formatted);
                             eprintln!("[daemon] {agent_name} replied to telegram: {}", text.chars().take(80).collect::<String>());
                             serde_json::json!({"content": [{"type": "text", "text": "{\"replied\":true}"}]})
+                        }
+                    }
+                    "request_information" => {
+                        let target = args["target_instance"].as_str().unwrap_or("");
+                        let question = args["question"].as_str().unwrap_or("");
+                        let ctx = args["context"].as_str().unwrap_or("");
+                        let msg = if ctx.is_empty() { format!("[query from {agent_name}] {question}") }
+                        else { format!("[query from {agent_name}] {question}\n\nContext: {ctx}") };
+                        handle_send_to_instance(agent_name, target, &msg, registry, inbox_store)
+                    }
+                    "delegate_task" => {
+                        let target = args["target_instance"].as_str().unwrap_or("");
+                        let task = args["task"].as_str().unwrap_or("");
+                        let criteria = args["success_criteria"].as_str().unwrap_or("");
+                        let ctx = args["context"].as_str().unwrap_or("");
+                        let mut msg = format!("[task from {agent_name}] {task}");
+                        if !criteria.is_empty() { msg.push_str(&format!("\n\nSuccess criteria: {criteria}")); }
+                        if !ctx.is_empty() { msg.push_str(&format!("\n\nContext: {ctx}")); }
+                        handle_send_to_instance(agent_name, target, &msg, registry, inbox_store)
+                    }
+                    "report_result" => {
+                        let target = args["target_instance"].as_str().unwrap_or("");
+                        let summary = args["summary"].as_str().unwrap_or("");
+                        let artifacts = args["artifacts"].as_str().unwrap_or("");
+                        let mut msg = format!("[result from {agent_name}] {summary}");
+                        if !artifacts.is_empty() { msg.push_str(&format!("\n\nArtifacts: {artifacts}")); }
+                        handle_send_to_instance(agent_name, target, &msg, registry, inbox_store)
+                    }
+                    "describe_instance" => {
+                        let name = args["name"].as_str().unwrap_or("");
+                        let reg = registry.lock().unwrap_or_else(|e| e.into_inner());
+                        if reg.contains_key(name) {
+                            serde_json::json!({"content": [{"type": "text", "text":
+                                serde_json::json!({"name": name, "status": "running", "submit_key": reg[name].submit_key}).to_string()
+                            }]})
+                        } else {
+                            serde_json::json!({"content": [{"type": "text", "text": format!("instance '{name}' not found")}], "isError": true})
+                        }
+                    }
+                    "create_instance" => {
+                        // TODO: dynamic instance creation (needs spawn_agent refactor)
+                        serde_json::json!({"content": [{"type": "text", "text": "create_instance not yet implemented"}], "isError": true})
+                    }
+                    "delete_instance" => {
+                        let name = args["name"].as_str().unwrap_or("");
+                        let reg = registry.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Some(agent) = reg.get(name) {
+                            // Send Ctrl+C + Ctrl+D to kill
+                            let _ = agent.pty_writer.lock().unwrap_or_else(|e| e.into_inner()).write_all(b"\x03\x04");
+                            eprintln!("[daemon] delete_instance: killed {name}");
+                            serde_json::json!({"content": [{"type": "text", "text": format!("{{\"deleted\":\"{name}\"}}")}]})
+                        } else {
+                            serde_json::json!({"content": [{"type": "text", "text": format!("instance '{name}' not found")}], "isError": true})
                         }
                     }
                     _ => serde_json::json!({"content": [{"type": "text", "text": format!("unknown tool: {tool}")}], "isError": true})
@@ -563,6 +594,60 @@ fn inject_to_agent(agent: &AgentHandle, text: &[u8]) -> std::io::Result<()> {
     w.write_all(submit)?;
     w.flush()?;
     Ok(())
+}
+
+fn mcp_tools_list() -> serde_json::Value {
+    serde_json::json!({"tools": [
+        // ── Communication ──
+        {"name":"reply","description":"Reply to a Telegram user. Use when you receive [user:NAME via telegram].",
+         "inputSchema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}},
+        {"name":"send_to_instance","description":"Send a message to another agent instance.",
+         "inputSchema":{"type":"object","properties":{
+             "instance_name":{"type":"string","description":"Target agent name"},
+             "message":{"type":"string","description":"Message to send"},
+             "request_kind":{"type":"string","enum":["query","task","report","update"],"description":"Message intent"},
+             "requires_reply":{"type":"boolean","description":"Whether you expect a response"},
+             "correlation_id":{"type":"string","description":"Link to a previous message"}
+         },"required":["instance_name","message"]}},
+        {"name":"request_information","description":"Ask another agent a question (expects reply).",
+         "inputSchema":{"type":"object","properties":{
+             "target_instance":{"type":"string"},
+             "question":{"type":"string"},
+             "context":{"type":"string","description":"Optional context"}
+         },"required":["target_instance","question"]}},
+        {"name":"delegate_task","description":"Delegate a task to another agent (expects result report).",
+         "inputSchema":{"type":"object","properties":{
+             "target_instance":{"type":"string"},
+             "task":{"type":"string","description":"Task description"},
+             "success_criteria":{"type":"string"},
+             "context":{"type":"string"}
+         },"required":["target_instance","task"]}},
+        {"name":"report_result","description":"Report results back to the agent that delegated a task.",
+         "inputSchema":{"type":"object","properties":{
+             "target_instance":{"type":"string"},
+             "summary":{"type":"string"},
+             "correlation_id":{"type":"string"},
+             "artifacts":{"type":"string","description":"File paths, commit hashes, URLs"}
+         },"required":["target_instance","summary"]}},
+        {"name":"broadcast","description":"Send a message to ALL other agents.",
+         "inputSchema":{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}},
+        // ── Fleet management ──
+        {"name":"list_instances","description":"List all running agent instances.",
+         "inputSchema":{"type":"object","properties":{}}},
+        {"name":"describe_instance","description":"Get details about a specific instance.",
+         "inputSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}},
+        {"name":"create_instance","description":"Create and start a new agent instance.",
+         "inputSchema":{"type":"object","properties":{
+             "name":{"type":"string","description":"Instance name"},
+             "command":{"type":"string","description":"Command to run (e.g. 'claude --dangerously-skip-permissions')"},
+             "working_directory":{"type":"string","description":"Working directory path"}
+         },"required":["name","command"]}},
+        {"name":"delete_instance","description":"Stop and remove an agent instance.",
+         "inputSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}},
+        // ── Inbox ──
+        {"name":"inbox","description":"Read inbox messages (long messages stored here).",
+         "inputSchema":{"type":"object","properties":{"id":{"type":"integer","description":"Message ID (omit to list all)"}}}}
+    ]})
 }
 
 // ── Main ────────────────────────────────────────────────────────────────
