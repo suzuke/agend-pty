@@ -134,6 +134,83 @@ struct AgentHandle {
 
 type AgentRegistry = Arc<Mutex<HashMap<String, AgentHandle>>>;
 
+/// Spawn config for respawning crashed agents.
+#[derive(Clone)]
+struct SpawnConfig {
+    name: String,
+    command: String,
+    working_dir: Option<std::path::PathBuf>,
+}
+
+type SpawnConfigs = Arc<Mutex<HashMap<String, SpawnConfig>>>;
+
+/// Handle a HealthAction — called from both PTY read loop and tick thread.
+fn handle_health_action(
+    action: &health::HealthAction,
+    name: &str,
+    registry: &AgentRegistry,
+    agent_writers: &api::AgentWriters,
+    spawn_configs: &SpawnConfigs,
+    inbox_store: &Arc<inbox::InboxStore>,
+    channel_mgr: &Arc<Mutex<channel::ChannelManager>>,
+) {
+    match action {
+        health::HealthAction::Restart => {
+            eprintln!("[health] {name}: scheduling respawn");
+            do_respawn(name, registry, agent_writers, spawn_configs, inbox_store, channel_mgr);
+        }
+        health::HealthAction::KillAndRestart => {
+            eprintln!("[health] {name}: hang detected — killing and respawning");
+            // Send Ctrl+C + EOF to kill the process
+            if let Some(pw) = agent_writers.lock().unwrap_or_else(|e| e.into_inner()).get(name) {
+                let _ = pw.lock().unwrap_or_else(|e| e.into_inner()).write_all(b"\x03\x04");
+            }
+            // Respawn will happen on next tick after process exits
+        }
+        health::HealthAction::MarkFailed => {
+            eprintln!("[health] {name}: marked FAILED — no more restarts");
+        }
+        health::HealthAction::None => {}
+    }
+}
+
+fn do_respawn(
+    name: &str,
+    registry: &AgentRegistry,
+    agent_writers: &api::AgentWriters,
+    spawn_configs: &SpawnConfigs,
+    inbox_store: &Arc<inbox::InboxStore>,
+    channel_mgr: &Arc<Mutex<channel::ChannelManager>>,
+) {
+    let cfg = match spawn_configs.lock().unwrap_or_else(|e| e.into_inner()).get(name).cloned() {
+        Some(c) => c,
+        None => { eprintln!("[health] {name}: no spawn config for respawn"); return; }
+    };
+
+    // Update health monitor
+    if let Some(handle) = registry.lock().unwrap_or_else(|e| e.into_inner()).get(name) {
+        if let Ok(mut h) = handle.health.lock() {
+            h.on_restart(std::time::Instant::now());
+        }
+        if let Ok(mut s) = handle.state_machine.lock() {
+            s.on_restart(std::time::Instant::now());
+        }
+    }
+
+    let reg = Arc::clone(registry);
+    let aw = Arc::clone(agent_writers);
+    let ib = Arc::clone(inbox_store);
+    let cm = Arc::clone(channel_mgr);
+    let sc = Arc::clone(spawn_configs);
+    std::thread::Builder::new()
+        .name(format!("respawn_{}", name))
+        .spawn(move || {
+            eprintln!("[health] {}: respawning", cfg.name);
+            spawn_agent(cfg.name, cfg.command, cfg.working_dir, reg, aw, ib, cm, sc);
+        })
+        .unwrap();
+}
+
 fn socket_path(name: &str) -> std::path::PathBuf { paths::tui_socket(name) }
 fn mcp_socket_path(name: &str) -> std::path::PathBuf { paths::mcp_socket(name) }
 
@@ -158,7 +235,12 @@ fn inject_mcp_for_backend(command: &str, name: &str, mcp_config_path: &str, prom
 
 // ── Agent spawning ──────────────────────────────────────────────────────
 
-fn spawn_agent(name: String, command: String, working_dir: Option<std::path::PathBuf>, registry: AgentRegistry, agent_writers: api::AgentWriters, inbox_store: Arc<inbox::InboxStore>, channel_mgr: Arc<Mutex<channel::ChannelManager>>) {
+fn spawn_agent(name: String, command: String, working_dir: Option<std::path::PathBuf>, registry: AgentRegistry, agent_writers: api::AgentWriters, inbox_store: Arc<inbox::InboxStore>, channel_mgr: Arc<Mutex<channel::ChannelManager>>, spawn_configs: SpawnConfigs) {
+    // Store spawn config for respawn
+    spawn_configs.lock().unwrap_or_else(|e| e.into_inner()).insert(name.clone(), SpawnConfig {
+        name: name.clone(), command: command.clone(), working_dir: working_dir.clone(),
+    });
+
     let sock = socket_path(&name);
     let _ = std::fs::remove_file(&sock);
 
@@ -274,6 +356,8 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     let cm_reaper = Arc::clone(&channel_mgr);
     let sm = Arc::clone(&state_machine);
     let hm = Arc::clone(&health_monitor);
+    let ib_reaper = Arc::clone(&inbox_store);
+    let sc_reaper = Arc::clone(&spawn_configs);
     let n = name.clone();
     std::thread::Builder::new()
         .name(format!("{n}_pty_read"))
@@ -285,7 +369,7 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
                 match pty_reader.read(&mut buf) {
                     Ok(0) => {
                         eprintln!("[{n}] PTY closed — reaping session");
-                        // Update state machine
+                        // Update state machine + handle health action
                         let now = std::time::Instant::now();
                         if let Ok(mut s) = sm.lock() {
                             if let Some(new_state) = s.on_exit(now) {
@@ -293,6 +377,7 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
                                 if let Ok(mut h) = hm.lock() {
                                     let action = h.on_state_change(new_state, s.consecutive_errors(), s.last_error_kind(), now);
                                     eprintln!("[{n}] health action: {:?}", action);
+                                    handle_health_action(&action, &n, &reg_reaper, &aw_reaper, &sc_reaper, &ib_reaper, &cm_reaper);
                                 }
                             }
                         }
@@ -325,7 +410,11 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
                                 if let Some(new_state) = s.process_output(&clean, std::time::Instant::now()) {
                                     eprintln!("[{n}] state: {:?}", new_state);
                                     if let Ok(mut h) = hm.lock() {
-                                        h.on_state_change(new_state, s.consecutive_errors(), s.last_error_kind(), std::time::Instant::now());
+                                        let action = h.on_state_change(new_state, s.consecutive_errors(), s.last_error_kind(), std::time::Instant::now());
+                                        if action != health::HealthAction::None {
+                                            eprintln!("[{n}] health action: {:?}", action);
+                                            handle_health_action(&action, &n, &reg_reaper, &aw_reaper, &sc_reaper, &ib_reaper, &cm_reaper);
+                                        }
                                     }
                                 }
                             }
@@ -484,6 +573,7 @@ fn main() {
 
     let registry: AgentRegistry = Arc::new(Mutex::new(HashMap::new()));
     let agent_writers: api::AgentWriters = Arc::new(Mutex::new(HashMap::new()));
+    let spawn_configs: SpawnConfigs = Arc::new(Mutex::new(HashMap::new()));
 
     // Warn if multiple instances share working_directory
     {
@@ -521,10 +611,11 @@ fn main() {
         let aw = Arc::clone(&agent_writers);
         let ib = Arc::clone(&inbox_store);
         let cm = Arc::clone(&channel_mgr);
+        let sc = Arc::clone(&spawn_configs);
         std::thread::Builder::new()
             .name(format!("agent_{name}"))
             .spawn(move || {
-                spawn_agent(name, command, wd, reg, aw, ib, cm);
+                spawn_agent(name, command, wd, reg, aw, ib, cm, sc);
             })
             .unwrap();
     }
@@ -558,6 +649,57 @@ fn main() {
                         }
                     }
                     std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            })
+            .unwrap();
+    }
+
+    // Health tick thread — drives time-based state transitions + health actions
+    {
+        let reg = Arc::clone(&registry);
+        let aw = Arc::clone(&agent_writers);
+        let sc = Arc::clone(&spawn_configs);
+        let ib = Arc::clone(&inbox_store);
+        let cm = Arc::clone(&channel_mgr);
+        std::thread::Builder::new()
+            .name("health_tick".into())
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    let now = std::time::Instant::now();
+
+                    // Snapshot agent names + their Arc handles to avoid holding registry lock
+                    let agents: Vec<(String, Arc<Mutex<state::StateMachine>>, Arc<Mutex<health::HealthMonitor>>)> = {
+                        let reg = reg.lock().unwrap_or_else(|e| e.into_inner());
+                        reg.iter().map(|(name, handle)| {
+                            (name.clone(), Arc::clone(&handle.state_machine), Arc::clone(&handle.health))
+                        }).collect()
+                    };
+
+                    for (name, sm, hm) in &agents {
+                        // Tick state machine (idle detection, error hysteresis confirmation)
+                        if let Ok(mut s) = sm.lock() {
+                            if let Some(new_state) = s.tick(now) {
+                                eprintln!("[tick] {name} state: {:?}", new_state);
+                                if let Ok(mut h) = hm.lock() {
+                                    let action = h.on_state_change(new_state, s.consecutive_errors(), s.last_error_kind(), now);
+                                    if action != health::HealthAction::None {
+                                        eprintln!("[tick] {name} health action: {:?}", action);
+                                        handle_health_action(&action, name, &reg, &aw, &sc, &ib, &cm);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Tick health monitor (hang detection, backoff-gated restart)
+                        if let (Ok(s), Ok(mut h)) = (sm.lock(), hm.lock()) {
+                            let action = h.tick(s.state(), now);
+                            if action != health::HealthAction::None {
+                                eprintln!("[tick] {name} health tick action: {:?}", action);
+                                handle_health_action(&action, name, &reg, &aw, &sc, &ib, &cm);
+                            }
+                        }
+                    }
                 }
             })
             .unwrap();
