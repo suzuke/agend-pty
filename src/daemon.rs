@@ -165,14 +165,15 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
 
     // Inject MCP config based on backend
     let bridge_path = std::env::current_exe()
-        .map(|p| p.parent().unwrap().join("agend-mcp-bridge").to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "agend-mcp-bridge".into());
+        .map(|p| p.parent().unwrap().join("agend-mcp").to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "agend-mcp".into());
     let mcp_config_path = paths::agent_dir(&name).join("mcp-config.json");
     let mcp_config_path_str = mcp_config_path.display().to_string();
     let mcp_config = serde_json::json!({
         "mcpServers": { format!("agend-{name}"): {
             "command": bridge_path,
-            "args": ["--socket", paths::mcp_socket(&name).to_str().expect("non-UTF8 path")]
+            "args": [],
+            "env": { "AGEND_INSTANCE_NAME": &name }
         } }
     });
     std::fs::write(&mcp_config_path, serde_json::to_string_pretty(&mcp_config).unwrap()).ok();
@@ -303,30 +304,6 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
         })
         .unwrap();
 
-    // MCP server thread
-    let mcp_sock = mcp_socket_path(&name);
-    let _ = std::fs::remove_file(&mcp_sock);
-    let reg2 = Arc::clone(&registry);
-    let cm2 = Arc::clone(&channel_mgr);
-    let n3 = name.clone();
-    std::thread::Builder::new()
-        .name(format!("{n3}_mcp"))
-        .spawn(move || {
-            let listener = match UnixListener::bind(&mcp_sock) {
-                Ok(l) => l,
-                Err(e) => { eprintln!("[{n3}] MCP bind error: {e}"); return; }
-            };
-            eprintln!("[{n3}] MCP server on {}", mcp_sock.display());
-            for stream in listener.incoming().flatten() {
-                let reg = Arc::clone(&reg2);
-                let ib = Arc::clone(&inbox_store);
-                let cm = Arc::clone(&cm2);
-                let agent_name = n3.clone();
-                std::thread::spawn(move || handle_mcp_session(stream, &agent_name, &reg, &ib, &cm));
-            }
-        })
-        .unwrap();
-
     // TUI socket server (blocks this thread)
     let listener = UnixListener::bind(&sock)
         .unwrap_or_else(|e| panic!("[{name}] failed to bind {}: {e}", sock.display()));
@@ -402,262 +379,6 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
 
 // ── MCP Server ──────────────────────────────────────────────────────────
 
-fn handle_mcp_session(stream: UnixStream, agent_name: &str, registry: &AgentRegistry, inbox_store: &Arc<inbox::InboxStore>, channel_mgr: &Arc<Mutex<channel::ChannelManager>>) {
-    let mut reader = BufReader::new(stream.try_clone().expect("clone"));
-    let mut writer = stream;
-
-    loop {
-        let mut headers = String::new();
-        loop {
-            let mut line = String::new();
-            if reader.read_line(&mut line).unwrap_or(0) == 0 { return; }
-            if line.trim().is_empty() { break; }
-            headers.push_str(&line);
-        }
-        let content_length = headers.lines()
-            .find_map(|l| l.strip_prefix("Content-Length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
-            .unwrap_or(0);
-        if content_length == 0 { continue; }
-
-        let mut body = vec![0u8; content_length];
-        if reader.read_exact(&mut body).is_err() { return; }
-
-        let req: serde_json::Value = match serde_json::from_slice(&body) { Ok(v) => v, Err(_) => continue };
-        let id = req.get("id").cloned();
-        let method = req["method"].as_str().unwrap_or("");
-
-        let result = match method {
-            "initialize" => serde_json::json!({
-                "protocolVersion": "2024-11-05",
-                "capabilities": { "tools": { "listChanged": false } },
-                "serverInfo": { "name": "agend", "version": "0.1.0" }
-            }),
-            "tools/list" => mcp_tools_list(),
-            "tools/call" => {
-                let tool = req["params"]["name"].as_str().unwrap_or("");
-                let args = &req["params"]["arguments"];
-                match tool {
-                    "send_to_instance" => handle_send_to_instance(
-                        agent_name, args["instance_name"].as_str().unwrap_or(""),
-                        args["message"].as_str().unwrap_or(""), registry, inbox_store),
-                    "broadcast" => {
-                        let message = args["message"].as_str().unwrap_or("");
-                        let names: Vec<String> = registry.lock().unwrap_or_else(|e| e.into_inner())
-                            .keys().filter(|k| *k != agent_name).cloned().collect();
-                        let mut sent = Vec::new();
-                        for target in &names {
-                            handle_send_to_instance(agent_name, target, message, registry, inbox_store);
-                            sent.push(target.clone());
-                        }
-                        serde_json::json!({"content": [{"type": "text", "text":
-                            format!("{{\"broadcast\":true,\"sent_to\":{}}}", serde_json::json!(sent))
-                        }]})
-                    }
-                    "list_instances" => {
-                        let names: Vec<String> = registry.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect();
-                        serde_json::json!({"content": [{"type": "text", "text": serde_json::json!({"instances": names}).to_string()}]})
-                    }
-                    "inbox" => {
-                        if let Some(id) = args["id"].as_u64() {
-                            match inbox_store.get(agent_name, id) {
-                                Some(msg) => serde_json::json!({"content": [{"type": "text", "text":
-                                    format!("[from {}] {}", msg.sender, msg.text)
-                                }]}),
-                                None => serde_json::json!({"content": [{"type": "text", "text": "message not found"}], "isError": true})
-                            }
-                        } else {
-                            let msgs = inbox_store.list(agent_name);
-                            let list: Vec<serde_json::Value> = msgs.iter().map(|m| serde_json::json!({
-                                "id": m.id, "sender": m.sender,
-                                "preview": m.text.chars().take(100).collect::<String>()
-                            })).collect();
-                            serde_json::json!({"content": [{"type": "text", "text": serde_json::json!({"messages": list}).to_string()}]})
-                        }
-                    }
-                    "reply" => {
-                        let text = args["text"].as_str().unwrap_or("");
-                        if text.is_empty() {
-                            serde_json::json!({"content": [{"type": "text", "text": "text is required"}], "isError": true})
-                        } else {
-                            let formatted = format!("[{}] {}", agent_name, text);
-                            channel_mgr.lock().unwrap_or_else(|e| e.into_inner()).send_to_agent(agent_name, &formatted);
-                            eprintln!("[daemon] {agent_name} replied to telegram: {}", text.chars().take(80).collect::<String>());
-                            serde_json::json!({"content": [{"type": "text", "text": "{\"replied\":true}"}]})
-                        }
-                    }
-                    "request_information" => {
-                        let target = args["target_instance"].as_str().unwrap_or("");
-                        let question = args["question"].as_str().unwrap_or("");
-                        let ctx = args["context"].as_str().unwrap_or("");
-                        let msg = if ctx.is_empty() { format!("[query from {agent_name}] {question}") }
-                        else { format!("[query from {agent_name}] {question}\n\nContext: {ctx}") };
-                        handle_send_to_instance(agent_name, target, &msg, registry, inbox_store)
-                    }
-                    "delegate_task" => {
-                        let target = args["target_instance"].as_str().unwrap_or("");
-                        let task = args["task"].as_str().unwrap_or("");
-                        let criteria = args["success_criteria"].as_str().unwrap_or("");
-                        let ctx = args["context"].as_str().unwrap_or("");
-                        let mut msg = format!("[task from {agent_name}] {task}");
-                        if !criteria.is_empty() { msg.push_str(&format!("\n\nSuccess criteria: {criteria}")); }
-                        if !ctx.is_empty() { msg.push_str(&format!("\n\nContext: {ctx}")); }
-                        handle_send_to_instance(agent_name, target, &msg, registry, inbox_store)
-                    }
-                    "report_result" => {
-                        let target = args["target_instance"].as_str().unwrap_or("");
-                        let summary = args["summary"].as_str().unwrap_or("");
-                        let artifacts = args["artifacts"].as_str().unwrap_or("");
-                        let mut msg = format!("[result from {agent_name}] {summary}");
-                        if !artifacts.is_empty() { msg.push_str(&format!("\n\nArtifacts: {artifacts}")); }
-                        handle_send_to_instance(agent_name, target, &msg, registry, inbox_store)
-                    }
-                    "describe_instance" => {
-                        let name = args["name"].as_str().unwrap_or("");
-                        let reg = registry.lock().unwrap_or_else(|e| e.into_inner());
-                        if reg.contains_key(name) {
-                            serde_json::json!({"content": [{"type": "text", "text":
-                                serde_json::json!({"name": name, "status": "running", "submit_key": reg[name].submit_key}).to_string()
-                            }]})
-                        } else {
-                            serde_json::json!({"content": [{"type": "text", "text": format!("instance '{name}' not found")}], "isError": true})
-                        }
-                    }
-                    "create_instance" => {
-                        // TODO: dynamic instance creation (needs spawn_agent refactor)
-                        serde_json::json!({"content": [{"type": "text", "text": "create_instance not yet implemented"}], "isError": true})
-                    }
-                    "delete_instance" => {
-                        let name = args["name"].as_str().unwrap_or("");
-                        let reg = registry.lock().unwrap_or_else(|e| e.into_inner());
-                        if let Some(agent) = reg.get(name) {
-                            // Send Ctrl+C + Ctrl+D to kill
-                            let _ = agent.pty_writer.lock().unwrap_or_else(|e| e.into_inner()).write_all(b"\x03\x04");
-                            eprintln!("[daemon] delete_instance: killed {name}");
-                            serde_json::json!({"content": [{"type": "text", "text": format!("{{\"deleted\":\"{name}\"}}")}]})
-                        } else {
-                            serde_json::json!({"content": [{"type": "text", "text": format!("instance '{name}' not found")}], "isError": true})
-                        }
-                    }
-                    _ => serde_json::json!({"content": [{"type": "text", "text": format!("unknown tool: {tool}")}], "isError": true})
-                }
-            }
-            "notifications/initialized" | "notifications/cancelled" => continue,
-            _ => continue,
-        };
-
-        if let Some(id) = id {
-            let resp = serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result});
-            let body = resp.to_string();
-            let msg = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
-            if writer.write_all(msg.as_bytes()).is_err() { return; }
-            let _ = writer.flush();
-        }
-    }
-}
-
-fn handle_send_to_instance(sender: &str, target: &str, message: &str, registry: &AgentRegistry, inbox_store: &Arc<inbox::InboxStore>) -> serde_json::Value {
-    let reg = registry.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(agent) = reg.get(target) {
-        let text = match inbox_store.store_or_inject(target, sender, message, &agent.submit_key) {
-            inbox::InjectAction::Direct(t) | inbox::InjectAction::Notification(t) => t,
-        };
-        match inject_to_agent(agent, text.trim_end().as_bytes()) {
-            Ok(_) => {
-                eprintln!("[daemon] {sender} → {target}: {}", message.chars().take(80).collect::<String>());
-                serde_json::json!({"content": [{"type": "text", "text": format!("{{\"sent\":true,\"target\":\"{target}\"}}")}]})
-            }
-            Err(e) => serde_json::json!({"content": [{"type": "text", "text": format!("write error: {e}")}], "isError": true})
-        }
-    } else {
-        let available: Vec<String> = reg.keys().cloned().collect();
-        serde_json::json!({"content": [{"type": "text", "text": format!("'{target}' not found. available: {available:?}")}], "isError": true})
-    }
-}
-
-/// Inject text into an agent's PTY with proper per-backend behavior.
-fn inject_to_agent(agent: &AgentHandle, text: &[u8]) -> std::io::Result<()> {
-    let prefix = agent.inject_prefix.as_bytes();
-    let submit = agent.submit_key.as_bytes();
-    let mut w = agent.pty_writer.lock().unwrap_or_else(|e| e.into_inner());
-
-    if agent.typed_inject {
-        // Per-byte typed write for bubbletea/ink TUIs
-        for byte in prefix.iter().chain(text.iter()) {
-            w.write_all(&[*byte])?;
-            w.flush()?;
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-    } else {
-        if !prefix.is_empty() {
-            w.write_all(prefix)?;
-            w.flush()?;
-        }
-        w.write_all(text)?;
-        w.flush()?;
-    }
-
-    // Delay before submit key
-    std::thread::sleep(std::time::Duration::from_millis(20));
-    w.write_all(submit)?;
-    w.flush()?;
-    Ok(())
-}
-
-fn mcp_tools_list() -> serde_json::Value {
-    serde_json::json!({"tools": [
-        // ── Communication ──
-        {"name":"reply","description":"Reply to a Telegram user. Use when you receive [user:NAME via telegram].",
-         "inputSchema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}},
-        {"name":"send_to_instance","description":"Send a message to another agent instance.",
-         "inputSchema":{"type":"object","properties":{
-             "instance_name":{"type":"string","description":"Target agent name"},
-             "message":{"type":"string","description":"Message to send"},
-             "request_kind":{"type":"string","enum":["query","task","report","update"],"description":"Message intent"},
-             "requires_reply":{"type":"boolean","description":"Whether you expect a response"},
-             "correlation_id":{"type":"string","description":"Link to a previous message"}
-         },"required":["instance_name","message"]}},
-        {"name":"request_information","description":"Ask another agent a question (expects reply).",
-         "inputSchema":{"type":"object","properties":{
-             "target_instance":{"type":"string"},
-             "question":{"type":"string"},
-             "context":{"type":"string","description":"Optional context"}
-         },"required":["target_instance","question"]}},
-        {"name":"delegate_task","description":"Delegate a task to another agent (expects result report).",
-         "inputSchema":{"type":"object","properties":{
-             "target_instance":{"type":"string"},
-             "task":{"type":"string","description":"Task description"},
-             "success_criteria":{"type":"string"},
-             "context":{"type":"string"}
-         },"required":["target_instance","task"]}},
-        {"name":"report_result","description":"Report results back to the agent that delegated a task.",
-         "inputSchema":{"type":"object","properties":{
-             "target_instance":{"type":"string"},
-             "summary":{"type":"string"},
-             "correlation_id":{"type":"string"},
-             "artifacts":{"type":"string","description":"File paths, commit hashes, URLs"}
-         },"required":["target_instance","summary"]}},
-        {"name":"broadcast","description":"Send a message to ALL other agents.",
-         "inputSchema":{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}},
-        // ── Fleet management ──
-        {"name":"list_instances","description":"List all running agent instances.",
-         "inputSchema":{"type":"object","properties":{}}},
-        {"name":"describe_instance","description":"Get details about a specific instance.",
-         "inputSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}},
-        {"name":"create_instance","description":"Create and start a new agent instance.",
-         "inputSchema":{"type":"object","properties":{
-             "name":{"type":"string","description":"Instance name"},
-             "command":{"type":"string","description":"Command to run (e.g. 'claude --dangerously-skip-permissions')"},
-             "working_directory":{"type":"string","description":"Working directory path"}
-         },"required":["name","command"]}},
-        {"name":"delete_instance","description":"Stop and remove an agent instance.",
-         "inputSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}},
-        // ── Inbox ──
-        {"name":"inbox","description":"Read inbox messages (long messages stored here).",
-         "inputSchema":{"type":"object","properties":{"id":{"type":"integer","description":"Message ID (omit to list all)"}}}}
-    ]})
-}
-
-// ── Main ────────────────────────────────────────────────────────────────
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -772,7 +493,11 @@ fn main() {
     std::thread::sleep(std::time::Duration::from_secs(1));
 
     // Start API socket
-    api::start(Arc::clone(&agent_writers));
+    api::start(Arc::new(api::DaemonCtx {
+        writers: Arc::clone(&agent_writers),
+        inbox: Arc::clone(&inbox_store),
+        channel_mgr: Arc::clone(&channel_mgr),
+    }));
 
     // Channel poll thread — routes incoming messages to agents
     {

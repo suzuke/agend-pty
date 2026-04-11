@@ -23,6 +23,10 @@ path = "src/tui.rs"
 name = "agend-mcp-bridge"
 path = "src/mcp_bridge.rs"
 
+[[bin]]
+name = "agend-mcp"
+path = "src/mcp.rs"
+
 [dependencies]
 portable-pty = "0.9"
 crossterm = "0.28"
