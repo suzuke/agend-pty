@@ -78,7 +78,7 @@ pub fn snapshot(config_path: Option<&Path>, output: &Path) -> Result<(), String>
         timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
         fleet_yaml, agents, topic_mappings,
     };
-    std::fs::write(output, serde_json::to_string_pretty(&snap).unwrap()).map_err(|e| format!("write: {e}"))?;
+    std::fs::write(output, serde_json::to_string_pretty(&snap).unwrap_or_default()).map_err(|e| format!("write: {e}"))?;
     println!("Snapshot saved to {} ({} agents, {} topics)", output.display(), snap.agents.len(), snap.topic_mappings.len());
     Ok(())
 }
@@ -95,7 +95,7 @@ pub fn restore(input: &Path) -> Result<(), String> {
     if !snap.topic_mappings.is_empty() {
         std::fs::create_dir_all(paths::home()).ok();
         std::fs::write(paths::home().join("topics.json"),
-            serde_json::to_string_pretty(&snap.topic_mappings).unwrap())
+            serde_json::to_string_pretty(&snap.topic_mappings).unwrap_or_default())
             .map_err(|e| format!("write topics: {e}"))?;
         println!("Restored {} topic mappings", snap.topic_mappings.len());
     }
@@ -121,7 +121,7 @@ pub fn resolve_order(cfg: &config::FleetConfig) -> Result<Vec<String>, String> {
     let mut in_deg: HashMap<&str, usize> = names.iter().map(|&n| (n, 0)).collect();
     let mut fwd: HashMap<&str, Vec<&str>> = HashMap::new();
     for (name, ic) in &cfg.instances {
-        *in_deg.get_mut(name.as_str()).unwrap() = ic.depends_on.len();
+        if let Some(d) = in_deg.get_mut(name.as_str()) { *d = ic.depends_on.len(); }
         for dep in &ic.depends_on { fwd.entry(dep.as_str()).or_default().push(name.as_str()); }
     }
     let mut queue: Vec<&str> = in_deg.iter().filter(|(_, &d)| d == 0).map(|(&n, _)| n).collect();
@@ -130,9 +130,10 @@ pub fn resolve_order(cfg: &config::FleetConfig) -> Result<Vec<String>, String> {
     while let Some(node) = queue.pop() {
         order.push(node.to_owned());
         for &dep in fwd.get(node).unwrap_or(&vec![]) {
-            let d = in_deg.get_mut(dep).unwrap();
-            *d -= 1;
-            if *d == 0 { queue.push(dep); queue.sort(); }
+            if let Some(d) = in_deg.get_mut(dep) {
+                *d -= 1;
+                if *d == 0 { queue.push(dep); queue.sort(); }
+            }
         }
     }
     if order.len() != names.len() {

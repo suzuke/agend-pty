@@ -71,7 +71,7 @@ fn merge_json_key(path: &Path, section: &str, key: &str, value: &Value) -> Resul
     }
     doc[section][key] = value.clone();
 
-    std::fs::write(path, serde_json::to_string_pretty(&doc).unwrap())
+    std::fs::write(path, serde_json::to_string_pretty(&doc).unwrap_or_default())
         .map_err(|e| format!("write {}: {e}", path.display()))?;
     eprintln!("[mcp_config] wrote {key} to {}", path.display());
     Ok(())

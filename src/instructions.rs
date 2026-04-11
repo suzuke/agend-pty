@@ -130,7 +130,7 @@ fn generate_opencode(wd: &Path) -> std::io::Result<()> {
         let mut new_arr = arr;
         new_arr.push(serde_json::json!(instr_rel));
         doc["instructions"] = serde_json::json!(new_arr);
-        std::fs::write(&config_path, serde_json::to_string_pretty(&doc).unwrap())?;
+        std::fs::write(&config_path, serde_json::to_string_pretty(&doc).unwrap_or_default())?;
         eprintln!("[instructions] added {} to opencode.json", instr_rel);
     }
     Ok(())

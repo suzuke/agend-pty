@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_imports, clippy::unwrap_used)]
+#![allow(dead_code, unused_imports)]
 //! agend-daemon: multi-agent PTY manager.
 
 #[path = "config.rs"]

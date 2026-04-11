@@ -81,7 +81,7 @@ pub fn start(ctx: Arc<DaemonCtx>) {
                 });
             }
         })
-        .unwrap();
+        .ok(); // thread spawn is infallible
 }
 
 fn ok(result: Value) -> ApiResponse { ApiResponse { ok: true, result: Some(result), error: None } }
