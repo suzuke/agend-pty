@@ -241,7 +241,15 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     let inject_prefix = preset.as_ref().map(|p| p.inject_prefix.to_owned()).unwrap_or_default();
     let typed_inject = preset.as_ref().map(|p| p.typed_inject).unwrap_or(false);
 
-    // Register in global registry + writers map
+    agent_writers.lock().unwrap_or_else(|e| e.into_inner())
+        .insert(name.clone(), api::AgentWriter {
+            writer: Arc::clone(&pty_writer),
+            submit_key: submit_key.clone(),
+            inject_prefix: inject_prefix.clone(),
+            typed_inject,
+        });
+
+    // Register in global registry
     registry.lock().unwrap_or_else(|e| e.into_inner()).insert(name.clone(), AgentHandle {
         pty_writer: Arc::clone(&pty_writer),
         core: Arc::clone(&core),
@@ -249,8 +257,6 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
         inject_prefix,
         typed_inject,
     });
-    agent_writers.lock().unwrap_or_else(|e| e.into_inner())
-        .insert(name.clone(), Arc::clone(&pty_writer));
 
     // PTY read thread — feeds VTerm + broadcasts + reaps on exit
     let core2 = Arc::clone(&core);
@@ -379,6 +385,24 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
 
 // ── MCP Server ──────────────────────────────────────────────────────────
 
+
+fn inject_to_writer(agent: &api::AgentWriter, text: &[u8]) -> std::io::Result<()> {
+    let prefix = agent.inject_prefix.as_bytes();
+    let submit = agent.submit_key.as_bytes();
+    let mut w = agent.writer.lock().unwrap_or_else(|e| e.into_inner());
+    if agent.typed_inject {
+        for byte in prefix.iter().chain(text.iter()) {
+            w.write_all(&[*byte])?; w.flush()?;
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    } else {
+        if !prefix.is_empty() { w.write_all(prefix)?; w.flush()?; }
+        w.write_all(text)?; w.flush()?;
+    }
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    w.write_all(submit)?; w.flush()?;
+    Ok(())
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -510,9 +534,9 @@ fn main() {
                     let msgs = cm.lock().unwrap_or_else(|e| e.into_inner()).poll_all();
                     for msg in msgs {
                         let w = aw.lock().unwrap_or_else(|e| e.into_inner());
-                        if let Some(pw) = w.get(&msg.agent_target) {
-                            let formatted = format!("[user:{} via telegram] {}\r", msg.sender, msg.text);
-                            let _ = pw.lock().unwrap_or_else(|e| e.into_inner()).write_all(formatted.as_bytes());
+                        if let Some(agent) = w.get(&msg.agent_target) {
+                            let formatted = format!("[user:{} via telegram] {}", msg.sender, msg.text);
+                            let _ = inject_to_writer(agent, formatted.as_bytes());
                             eprintln!("[channel] {} → {}: {}", msg.sender, msg.agent_target,
                                 msg.text.chars().take(60).collect::<String>());
                         }

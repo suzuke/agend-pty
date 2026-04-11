@@ -28,7 +28,16 @@ pub struct ApiResponse {
 }
 
 pub type PtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
-pub type AgentWriters = Arc<Mutex<HashMap<String, PtyWriter>>>;
+
+#[derive(Clone)]
+pub struct AgentWriter {
+    pub writer: PtyWriter,
+    pub submit_key: String,
+    pub inject_prefix: String,
+    pub typed_inject: bool,
+}
+
+pub type AgentWriters = Arc<Mutex<HashMap<String, AgentWriter>>>;
 
 /// Shared daemon context for API handlers.
 pub struct DaemonCtx {
@@ -100,8 +109,8 @@ fn handle_request(req: &ApiRequest, ctx: &DaemonCtx) -> ApiResponse {
             let target = req.params["instance"].as_str().unwrap_or("");
             if target.is_empty() { return err("instance required"); }
             let w = ctx.writers.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(pw) = w.get(target) {
-                let _ = pw.lock().unwrap_or_else(|e| e.into_inner()).write_all(b"\x03\x04");
+            if let Some(aw) = w.get(target) {
+                let _ = aw.writer.lock().unwrap_or_else(|e| e.into_inner()).write_all(b"\x03\x04");
                 ok(json!({"killed": target}))
             } else { err(format!("instance '{target}' not found")) }
         }
@@ -203,8 +212,8 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
         "delete_instance" => {
             let name = args["name"].as_str().unwrap_or("");
             let w = ctx.writers.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(pw) = w.get(name) {
-                let _ = pw.lock().unwrap_or_else(|e| e.into_inner()).write_all(b"\x03\x04");
+            if let Some(agent) = w.get(name) {
+                let _ = agent.writer.lock().unwrap_or_else(|e| e.into_inner()).write_all(b"\x03\x04");
                 json!({"content": [{"type": "text", "text": format!("{{\"deleted\":\"{name}\"}}")}]})
             } else {
                 json!({"content": [{"type": "text", "text": format!("instance '{name}' not found")}], "isError": true})
@@ -216,12 +225,13 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
 
 fn inject_message(ctx: &DaemonCtx, sender: &str, target: &str, message: &str) -> ApiResponse {
     let w = ctx.writers.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(pw) = w.get(target) {
-        // Use inbox for smart injection
-        let text = match ctx.inbox.store_or_inject(target, sender, message, "\r") {
+    if let Some(agent) = w.get(target) {
+        let text = match ctx.inbox.store_or_inject(target, sender, message, &agent.submit_key) {
             crate::inbox::InjectAction::Direct(t) | crate::inbox::InjectAction::Notification(t) => t,
         };
-        match pw.lock().unwrap_or_else(|e| e.into_inner()).write_all(text.as_bytes()) {
+        // Strip the submit_key from text (inject_to_writer adds it)
+        let text = text.trim_end_matches(&agent.submit_key);
+        match inject_to_writer(agent, text.as_bytes()) {
             Ok(_) => {
                 eprintln!("[api] {sender} → {target}: {}", message.chars().take(80).collect::<String>());
                 ok(json!({"sent": true}))
@@ -231,6 +241,28 @@ fn inject_message(ctx: &DaemonCtx, sender: &str, target: &str, message: &str) ->
     } else {
         err(format!("instance '{target}' not found"))
     }
+}
+
+fn inject_to_writer(agent: &AgentWriter, text: &[u8]) -> std::io::Result<()> {
+    let prefix = agent.inject_prefix.as_bytes();
+    let submit = agent.submit_key.as_bytes();
+    let mut w = agent.writer.lock().unwrap_or_else(|e| e.into_inner());
+
+    if agent.typed_inject {
+        for byte in prefix.iter().chain(text.iter()) {
+            w.write_all(&[*byte])?;
+            w.flush()?;
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    } else {
+        if !prefix.is_empty() { w.write_all(prefix)?; w.flush()?; }
+        w.write_all(text)?;
+        w.flush()?;
+    }
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    w.write_all(submit)?;
+    w.flush()?;
+    Ok(())
 }
 
 pub fn mcp_tools_list() -> Value {
