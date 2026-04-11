@@ -78,7 +78,9 @@ pub fn acquire_lock(fleet_config_path: Option<&str>) -> Result<std::fs::File, St
     }
 
     // FD_CLOEXEC — prevent child processes (PTY spawns) from inheriting the lock
-    unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
+        eprintln!("[paths] warning: failed to set FD_CLOEXEC on lock fd");
+    }
 
     // Write lock content
     use std::io::Write;
@@ -172,6 +174,23 @@ pub fn list_daemons() -> Vec<DaemonInfo> {
             if is_lock_held(&path) { read_lock_info(&path) } else { None }
         })
         .collect()
+}
+
+/// Find a binary in PATH.
+pub fn which(name: &str) -> Option<PathBuf> {
+    std::env::var("PATH").ok()?
+        .split(':')
+        .map(|dir| PathBuf::from(dir).join(name))
+        .find(|p| p.exists())
+}
+
+/// Find a sibling binary next to the current executable. Falls back to PATH.
+pub fn exe_sibling(name: &str) -> PathBuf {
+    std::env::current_exe().ok()
+        .and_then(|p| p.parent().map(|par| par.join(name)))
+        .filter(|p| p.exists())
+        .or_else(|| which(name))
+        .unwrap_or_else(|| PathBuf::from(name))
 }
 
 /// Clean up this daemon's run directory.

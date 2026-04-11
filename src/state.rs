@@ -40,26 +40,33 @@ pub enum ErrorKind {
     AuthError,    // permanent — should NOT respawn
     ContextFull,
     ApiError,
-    Unknown,
 }
 
 impl ErrorKind {
-    /// Permanent errors should block auto-respawn.
     pub fn is_permanent(&self) -> bool {
         matches!(self, ErrorKind::AuthError)
     }
 
-    fn detect(text: &str) -> Option<ErrorKind> {
+    fn detect(text: &str, state: AgentState) -> Option<ErrorKind> {
         let lower = text.to_lowercase();
         if lower.contains("rate limit") || lower.contains("429") { return Some(ErrorKind::RateLimit); }
-        if lower.contains("auth") || lower.contains("unauthorized") || lower.contains("invalid api key") || lower.contains("401") {
+        if lower.contains("unauthorized") || lower.contains("invalid api key") || lower.contains("401") {
             return Some(ErrorKind::AuthError);
         }
         if lower.contains("context") && (lower.contains("full") || lower.contains("limit") || lower.contains("too long")) {
             return Some(ErrorKind::ContextFull);
         }
-        if lower.contains("error") || lower.contains("fatal") || lower.contains("panic") || lower.contains("segfault") {
-            return Some(ErrorKind::ApiError);
+        // Starting state: broad patterns (catching startup errors)
+        if matches!(state, AgentState::Starting) {
+            if lower.contains("error") || lower.contains("fatal") || lower.contains("panic") {
+                return Some(ErrorKind::ApiError);
+            }
+        } else {
+            // Ready/Busy/Idle: precise patterns only
+            if lower.contains("error:") || lower.contains("fatal:") || lower.contains("panic:")
+                || lower.contains("FATAL") || lower.contains("thread") && lower.contains("panicked") {
+                return Some(ErrorKind::ApiError);
+            }
         }
         None
     }
@@ -78,7 +85,9 @@ impl StatePatterns {
             ready_patterns: ready_pattern.split('|').map(|s| s.to_lowercase()).collect(),
             input_patterns: vec![
                 "yes, i trust".into(), "yes, proceed".into(),
-                "allow".into(), "permission".into(), "y/n".into(),
+                "allow once".into(), "allow always".into(),
+                "permission required".into(), "grant permission".into(),
+                "(y/n)".into(), "[y/n]".into(),
             ],
         }
     }
@@ -96,8 +105,12 @@ pub struct StateMachine {
     last_output: Instant,
     consecutive_errors: u32,
     last_error_kind: Option<ErrorKind>,
-    /// Detection buffer — cleared on every state transition.
     detect_buf: String,
+}
+
+fn matches_any(patterns: &[String], text: &str) -> bool {
+    let lower = text.to_lowercase();
+    patterns.iter().any(|p| lower.contains(p))
 }
 
 impl StateMachine {
@@ -161,32 +174,25 @@ impl StateMachine {
     pub fn process_output(&mut self, clean_text: &str, now: Instant) -> Option<AgentState> {
         self.last_output = now;
         self.detect_buf.push_str(clean_text);
-        // Cap buffer at ~4KB, splitting at a valid char boundary
         if self.detect_buf.len() > 4096 {
             let keep_from = self.detect_buf.ceil_char_boundary(self.detect_buf.len() - 4096);
             self.detect_buf = self.detect_buf[keep_from..].to_string();
         }
 
-        // Check input prompts (WaitingForInput)
-        if self.matches_input(&self.detect_buf.clone()) {
+        let buf = self.detect_buf.clone();
+        if matches_any(&self.patterns.input_patterns, &buf) {
             if let Some(s) = self.try_transition_directed(AgentState::WaitingForInput, now) {
                 return Some(s);
             }
         }
-
-        // Error detection — with hysteresis (escalation = debounce)
-        if let Some(kind) = ErrorKind::detect(&self.detect_buf) {
+        if let Some(kind) = ErrorKind::detect(&buf, self.state) {
             self.last_error_kind = Some(kind);
             return self.try_transition_directed(AgentState::Errored, now);
         }
-
-        // Ready detection — immediate (recovery = fast)
-        if self.matches_ready(&self.detect_buf.clone()) {
+        if matches_any(&self.patterns.ready_patterns, &buf) {
             self.consecutive_errors = 0;
             return self.try_transition_directed(AgentState::Ready, now);
         }
-
-        // Any output in Ready/Idle → Busy (immediate)
         if self.state == AgentState::Ready || self.state == AgentState::Idle {
             return self.apply(AgentState::Busy, now);
         }
@@ -223,16 +229,6 @@ impl StateMachine {
 
     pub fn on_restart_complete(&mut self, now: Instant) -> Option<AgentState> {
         self.apply(AgentState::Starting, now)
-    }
-
-    fn matches_ready(&self, text: &str) -> bool {
-        let lower = text.to_lowercase();
-        self.patterns.ready_patterns.iter().any(|p| lower.contains(p))
-    }
-
-    fn matches_input(&self, text: &str) -> bool {
-        let lower = text.to_lowercase();
-        self.patterns.input_patterns.iter().any(|p| lower.contains(p))
     }
 
     /// Directional hysteresis: escalation (→Errored) = debounce, recovery (→Ready) = immediate.
@@ -450,13 +446,16 @@ mod tests {
 
     #[test]
     fn error_kind_detection() {
-        assert_eq!(ErrorKind::detect("rate limit exceeded"), Some(ErrorKind::RateLimit));
-        assert_eq!(ErrorKind::detect("HTTP 429 too many"), Some(ErrorKind::RateLimit));
-        assert_eq!(ErrorKind::detect("unauthorized access"), Some(ErrorKind::AuthError));
-        assert_eq!(ErrorKind::detect("invalid api key"), Some(ErrorKind::AuthError));
-        assert_eq!(ErrorKind::detect("context too long"), Some(ErrorKind::ContextFull));
-        assert_eq!(ErrorKind::detect("fatal crash"), Some(ErrorKind::ApiError));
-        assert_eq!(ErrorKind::detect("all good"), None);
+        assert_eq!(ErrorKind::detect("rate limit exceeded", AgentState::Starting), Some(ErrorKind::RateLimit));
+        assert_eq!(ErrorKind::detect("HTTP 429 too many", AgentState::Starting), Some(ErrorKind::RateLimit));
+        assert_eq!(ErrorKind::detect("unauthorized access", AgentState::Starting), Some(ErrorKind::AuthError));
+        assert_eq!(ErrorKind::detect("invalid api key", AgentState::Starting), Some(ErrorKind::AuthError));
+        assert_eq!(ErrorKind::detect("context too long", AgentState::Starting), Some(ErrorKind::ContextFull));
+        assert_eq!(ErrorKind::detect("fatal crash", AgentState::Starting), Some(ErrorKind::ApiError));
+        // Precise patterns in non-Starting states
+        assert_eq!(ErrorKind::detect("error: something", AgentState::Ready), Some(ErrorKind::ApiError));
+        assert_eq!(ErrorKind::detect("some error happened", AgentState::Ready), None); // "error" without colon
+        assert_eq!(ErrorKind::detect("all good", AgentState::Starting), None);
     }
 
     #[test]

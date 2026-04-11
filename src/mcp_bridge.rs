@@ -22,11 +22,12 @@ fn main() {
         loop {
             if let Some(p) = paths::find_agent_mcp_socket(agent) { break p; }
             attempts += 1;
-            if attempts > 30 {
-                eprintln!("[bridge] MCP socket for '{agent}' not found");
+            if attempts > 50 {
+                eprintln!("[bridge] MCP socket for '{agent}' not found after 5s");
                 std::process::exit(1);
             }
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            if attempts % 10 == 0 { eprintln!("[bridge] waiting for '{agent}' MCP socket..."); }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
     } else {
         eprintln!("Usage: agend-mcp-bridge --socket <path> | <agent-name>");

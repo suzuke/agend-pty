@@ -167,8 +167,8 @@ fn print_help() {
 }
 
 fn exe_dir() -> std::path::PathBuf {
-    std::env::current_exe()
-        .map(|p| p.parent().unwrap().to_path_buf())
+    std::env::current_exe().ok()
+        .and_then(|p| p.parent().map(|par| par.to_path_buf()))
         .unwrap_or_default()
 }
 

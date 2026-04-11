@@ -52,10 +52,6 @@ impl InstanceConfig {
         self.backend.as_deref().unwrap_or(&defaults.backend)
     }
 
-    pub fn working_dir_or<'a>(&'a self, defaults: &'a Defaults) -> Option<&'a Path> {
-        self.working_directory.as_deref().or(defaults.working_directory.as_deref())
-    }
-
     /// Get working directory, auto-generating ~/.agend/workspaces/{name}/ if not set.
     pub fn effective_working_dir(&self, defaults: &Defaults, name: &str) -> PathBuf {
         self.working_directory.clone()

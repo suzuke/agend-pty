@@ -38,6 +38,12 @@ use std::sync::{Arc, Mutex};
 
 const TAG_DATA: u8 = 0;
 const TAG_RESIZE: u8 = 1;
+const MAX_FRAME_SIZE: usize = 1_000_000;
+const PTY_BUF_SIZE: usize = 8192;
+const DETECT_BUF_CAP: usize = 4096;
+const DEFAULT_COLS: u16 = 120;
+const DEFAULT_ROWS: u16 = 40;
+const DEPENDENCY_READY_TIMEOUT_SECS: u64 = 60;
 
 fn write_frame(w: &mut impl Write, data: &[u8]) -> std::io::Result<()> {
     w.write_all(&[TAG_DATA])?;
@@ -52,7 +58,7 @@ fn read_tagged_frame(r: &mut impl Read) -> std::io::Result<(u8, Vec<u8>)> {
     let mut len_buf = [0u8; 4];
     r.read_exact(&mut len_buf)?;
     let len = u32::from_be_bytes(len_buf) as usize;
-    if len > 1_000_000 {
+    if len > MAX_FRAME_SIZE {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "frame too large"));
     }
     let mut buf = vec![0u8; len];
@@ -96,16 +102,6 @@ struct AgentHandle {
 
 type AgentRegistry = Arc<Mutex<HashMap<String, AgentHandle>>>;
 type AgentTickInfo = (String, Arc<Mutex<state::StateMachine>>, Arc<Mutex<health::HealthMonitor>>);
-
-/// Shared daemon state passed to spawn_agent.
-#[derive(Clone)]
-struct DaemonShared {
-    registry: AgentRegistry,
-    agent_writers: api::AgentWriters,
-    inbox_store: Arc<inbox::InboxStore>,
-    channel_mgr: Arc<Mutex<channel::ChannelManager>>,
-    spawn_configs: SpawnConfigs,
-}
 
 /// Spawn config for respawning crashed agents.
 /// Holds persistent health/state monitors that survive respawn.
@@ -186,6 +182,42 @@ fn do_respawn(
 
 fn socket_path(name: &str) -> std::path::PathBuf { paths::tui_socket(name) }
 
+/// Unified PTY write — appends submit_key and writes atomically.
+fn inject_to_pty(writer: &PtyWriter, text: &str, submit_key: &str) {
+    let msg = format!("{text}{submit_key}");
+    let _ = writer.lock().unwrap_or_else(|e| e.into_inner()).write_all(msg.as_bytes());
+}
+
+fn setup_mcp_config(name: &str) -> (std::path::PathBuf, String) {
+    let bridge_path = paths::exe_sibling("agend-mcp");
+    let mcp_config_path = paths::agent_dir(name).join("mcp-config.json");
+    let mcp_config = serde_json::json!({
+        "mcpServers": { format!("agend-{name}"): {
+            "command": bridge_path.display().to_string(),
+            "args": [],
+            "env": { "AGEND_INSTANCE_NAME": name }
+        } }
+    });
+    if let Ok(json) = serde_json::to_string_pretty(&mcp_config) {
+        std::fs::write(&mcp_config_path, json).ok();
+    }
+    let path_str = mcp_config_path.display().to_string();
+    (mcp_config_path, path_str)
+}
+
+fn setup_prompt(name: &str, registry: &AgentRegistry) -> (std::path::PathBuf, String) {
+    let prompt_path = paths::agent_dir(name).join("prompt.md");
+    let others: Vec<String> = registry.lock().unwrap_or_else(|e| e.into_inner()).keys()
+        .filter(|k| k.as_str() != name).cloned().collect();
+    std::fs::write(&prompt_path, format!(
+        "You are '{}', part of an AI agent fleet. Other agents: {}.\n\
+         Use `send_to_instance`/`list_instances` MCP tools. Respond directly to [message from X].",
+        name, if others.is_empty() { "(none yet)".into() } else { others.join(", ") }
+    )).ok();
+    let path_str = prompt_path.display().to_string();
+    (prompt_path, path_str)
+}
+
 
 fn inject_mcp_for_backend(command: &str, _name: &str, mcp_config_path: &str, prompt_path: &str) -> String {
     match command.split_whitespace().next().unwrap_or(command) {
@@ -201,44 +233,21 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     let sock = socket_path(&name);
     let _ = std::fs::remove_file(&sock);
 
-    let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
+    let (cols, rows) = crossterm::terminal::size().unwrap_or((DEFAULT_COLS, DEFAULT_ROWS));
 
     let pty_system = native_pty_system();
-    let pair = pty_system
-        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
-        .unwrap_or_else(|e| panic!("[{name}] failed to open pty: {e}"));
+    let pair = match pty_system.openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }) {
+        Ok(p) => p,
+        Err(e) => { eprintln!("[{name}] failed to open pty: {e}"); return; }
+    };
 
-    let bridge_path = std::env::current_exe()
-        .map(|p| p.parent().unwrap().join("agend-mcp").to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "agend-mcp".into());
-    let mcp_config_path = paths::agent_dir(&name).join("mcp-config.json");
-    let mcp_config_path_str = mcp_config_path.display().to_string();
-    let mcp_config = serde_json::json!({
-        "mcpServers": { format!("agend-{name}"): {
-            "command": bridge_path,
-            "args": [],
-            "env": { "AGEND_INSTANCE_NAME": &name }
-        } }
-    });
-    std::fs::write(&mcp_config_path, serde_json::to_string_pretty(&mcp_config).unwrap()).ok();
-
-    let prompt_path = paths::agent_dir(&name).join("prompt.md");
-    let prompt_path_str = prompt_path.display().to_string();
-    let others: Vec<String> = registry.lock().unwrap_or_else(|e| e.into_inner()).keys()
-        .filter(|k| *k != &name).cloned().collect();
-    std::fs::write(&prompt_path, format!(
-        "You are '{}', part of an AI agent fleet. Other agents: {}.\n\
-         Use `send_to_instance`/`list_instances` MCP tools. Respond directly to [message from X].",
-        name, if others.is_empty() { "(none yet)".into() } else { others.join(", ") }
-    )).ok();
+    let (_, mcp_config_path_str) = setup_mcp_config(&name);
+    let (_, prompt_path_str) = setup_prompt(&name, &registry);
 
     let final_command = inject_mcp_for_backend(&command, &name, &mcp_config_path_str, &prompt_path_str);
-
     let final_command = if command.starts_with("gemini") && !final_command.contains("--resume") {
         format!("{final_command} --resume latest")
-    } else {
-        final_command
-    };
+    } else { final_command };
 
     let parts: Vec<&str> = final_command.split_whitespace().collect();
     let mut cmd = CommandBuilder::new(parts[0]);
@@ -248,22 +257,28 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     let effective_wd = if let Some(ref wd) = working_dir {
         std::fs::create_dir_all(wd).ok();
         cmd.cwd(wd);
-        eprintln!("[{name}] working dir: {}", wd.display());
         wd.clone()
     } else {
         let cwd = std::env::current_dir().unwrap_or_default();
         cmd.cwd(&cwd);
         cwd
     };
-
     instructions::generate(&effective_wd, &command, &name);
 
-    let _child = pair.slave.spawn_command(cmd)
-        .unwrap_or_else(|e| panic!("[{name}] failed to spawn '{command}': {e}"));
+    let _child = match pair.slave.spawn_command(cmd) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("[{name}] failed to spawn '{command}': {e}"); return; }
+    };
     drop(pair.slave);
 
-    let pty_writer: PtyWriter = Arc::new(Mutex::new(pair.master.take_writer().expect("take_writer")));
-    let mut pty_reader = pair.master.try_clone_reader().expect("clone_reader");
+    let pty_writer: PtyWriter = Arc::new(Mutex::new(match pair.master.take_writer() {
+        Ok(w) => w,
+        Err(e) => { eprintln!("[{name}] take_writer failed: {e}"); return; }
+    }));
+    let mut pty_reader = match pair.master.try_clone_reader() {
+        Ok(r) => r,
+        Err(e) => { eprintln!("[{name}] clone_reader failed: {e}"); return; }
+    };
     let pty_master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>> = Arc::new(Mutex::new(pair.master));
 
     let core = Arc::new(Mutex::new(AgentCore {
@@ -319,8 +334,8 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     std::thread::Builder::new()
         .name(format!("{n}_pty_read"))
         .spawn(move || {
-            let mut buf = [0u8; 8192];
-            let mut detect_buf = Vec::with_capacity(4096);
+            let mut buf = [0u8; PTY_BUF_SIZE];
+            let mut detect_buf = Vec::with_capacity(DETECT_BUF_CAP);
             let mut dialog_dismissed = false;
             loop {
                 match pty_reader.read(&mut buf) {
@@ -355,7 +370,7 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
                         // Auto-dismiss trust dialog
                         if !dialog_dismissed {
                             detect_buf.extend_from_slice(data);
-                            if detect_buf.len() > 8192 { let d = detect_buf.len() - 8192; detect_buf.drain(..d); }
+                            if detect_buf.len() > PTY_BUF_SIZE { let d = detect_buf.len() - PTY_BUF_SIZE; detect_buf.drain(..d); }
                             let clean = state::strip_ansi(&String::from_utf8_lossy(&detect_buf));
                             if clean.contains("Yes, I trust") || clean.contains("Yes, proceed") {
                                 eprintln!("[{n}] auto-dismissing trust dialog");
@@ -396,8 +411,10 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
         .unwrap();
 
     // TUI socket server (blocks this thread)
-    let listener = UnixListener::bind(&sock)
-        .unwrap_or_else(|e| panic!("[{name}] failed to bind {}: {e}", sock.display()));
+    let listener = match UnixListener::bind(&sock) {
+        Ok(l) => l,
+        Err(e) => { eprintln!("[{name}] failed to bind {}: {e}", sock.display()); return; }
+    };
     eprintln!("[{name}] TUI socket on {} (cmd: {command})", sock.display());
 
     channel_mgr.lock().unwrap_or_else(|e| e.into_inner()).on_agent_created(&name);
@@ -410,7 +427,10 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
         // Atomic subscribe + screen dump (under core lock — no output gap)
         let rx = {
             let reg = reg3.lock().unwrap_or_else(|e| e.into_inner());
-            let agent = reg.get(&name).unwrap();
+            let agent = match reg.get(&name) {
+                Some(a) => a,
+                None => continue,
+            };
             let mut core = agent.core.lock().unwrap_or_else(|e| e.into_inner());
             let dump = core.vterm.dump_screen();
             // Subscribe BEFORE releasing lock — no output lost
@@ -596,7 +616,7 @@ fn main() {
         if layer_idx > 0 {
             eprintln!("[daemon] waiting for layer {} agents to be ready...", layer_idx - 1);
             // Wait up to 60s for previous layer agents to reach Ready
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(DEPENDENCY_READY_TIMEOUT_SECS);
             'wait: loop {
                 if std::time::Instant::now() > deadline {
                     eprintln!("[daemon] ⚠️  timeout waiting for dependencies, proceeding");
@@ -649,16 +669,20 @@ fn main() {
     {
         let cm = Arc::clone(&channel_mgr);
         let aw = Arc::clone(&agent_writers);
+        let reg_poll = Arc::clone(&registry);
         std::thread::Builder::new()
             .name("channel_poll".into())
             .spawn(move || {
                 loop {
                     let msgs = cm.lock().unwrap_or_else(|e| e.into_inner()).poll_all();
                     for msg in msgs {
+                        // Get submit_key from registry for this agent
+                        let submit_key = reg_poll.lock().unwrap_or_else(|e| e.into_inner())
+                            .get(&msg.agent_target).map(|h| h.submit_key.clone()).unwrap_or_else(|| "\r".into());
                         let w = aw.lock().unwrap_or_else(|e| e.into_inner());
                         if let Some(pw) = w.get(&msg.agent_target) {
-                            let formatted = format!("[user:{} via telegram] {}\r", msg.sender, msg.text);
-                            let _ = pw.lock().unwrap_or_else(|e| e.into_inner()).write_all(formatted.as_bytes());
+                            let formatted = format!("[user:{} via telegram] {}", msg.sender, msg.text);
+                            inject_to_pty(pw, &formatted, &submit_key);
                             eprintln!("[channel] {} → {}: {}", msg.sender, msg.agent_target,
                                 msg.text.chars().take(60).collect::<String>());
                         }

@@ -14,13 +14,15 @@ pub struct TelegramConfig {
     pub group_id: i64,
 }
 
+struct TopicMap {
+    by_name: HashMap<String, i64>,
+    by_id: HashMap<i64, String>,
+}
+
 pub struct TelegramAdapter {
     bot: BotApi,
     group_id: i64,
-    /// agent_name → topic thread_id
-    topics: Mutex<HashMap<String, i64>>,
-    /// thread_id → agent_name (reverse lookup)
-    routing: Mutex<HashMap<i64, String>>,
+    topics: Mutex<TopicMap>,
     offset: Mutex<i64>,
 }
 
@@ -29,41 +31,32 @@ impl TelegramAdapter {
         let adapter = Self {
             bot: BotApi::new(&config.bot_token),
             group_id: config.group_id,
-            topics: Mutex::new(HashMap::new()),
-            routing: Mutex::new(HashMap::new()),
+            topics: Mutex::new(TopicMap { by_name: HashMap::new(), by_id: HashMap::new() }),
             offset: Mutex::new(0),
         };
-        // Load persisted topic mappings
         adapter.load_topics();
         adapter
     }
 
     fn register_topic(&self, agent: &str, thread_id: i64) {
-        self.topics.lock().unwrap_or_else(|e| e.into_inner())
-            .insert(agent.to_owned(), thread_id);
-        self.routing.lock().unwrap_or_else(|e| e.into_inner())
-            .insert(thread_id, agent.to_owned());
-        self.save_topics();
+        let mut t = self.topics.lock().unwrap_or_else(|e| e.into_inner());
+        t.by_name.insert(agent.to_owned(), thread_id);
+        t.by_id.insert(thread_id, agent.to_owned());
+        let _ = std::fs::write(Self::topics_path(), serde_json::to_string_pretty(&t.by_name).unwrap_or_default());
     }
 
     fn topics_path() -> std::path::PathBuf {
         crate::paths::home().join("topics.json")
     }
 
-    fn save_topics(&self) {
-        let topics = self.topics.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = std::fs::write(Self::topics_path(), serde_json::to_string_pretty(&*topics).unwrap_or_default());
-    }
-
     fn load_topics(&self) {
         let path = Self::topics_path();
         if let Ok(content) = std::fs::read_to_string(&path) {
             if let Ok(map) = serde_json::from_str::<HashMap<String, i64>>(&content) {
-                let mut topics = self.topics.lock().unwrap_or_else(|e| e.into_inner());
-                let mut routing = self.routing.lock().unwrap_or_else(|e| e.into_inner());
+                let mut t = self.topics.lock().unwrap_or_else(|e| e.into_inner());
                 for (name, tid) in &map {
-                    topics.insert(name.clone(), *tid);
-                    routing.insert(*tid, name.clone());
+                    t.by_name.insert(name.clone(), *tid);
+                    t.by_id.insert(*tid, name.clone());
                 }
                 eprintln!("[telegram] loaded {} persisted topics", map.len());
             }
@@ -75,14 +68,14 @@ impl ChannelAdapter for TelegramAdapter {
     fn name(&self) -> &str { "telegram" }
 
     fn on_agent_created(&self, name: &str) {
-        // Check if topic already exists (persisted from previous run)
-        if self.topics.lock().unwrap_or_else(|e| e.into_inner()).contains_key(name) {
-            let tid = self.topics.lock().unwrap_or_else(|e| e.into_inner())[name];
+        let t = self.topics.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(&tid) = t.by_name.get(name) {
+            drop(t);
             eprintln!("[telegram] reusing existing topic '{name}' (thread_id: {tid})");
             self.bot.send_message(self.group_id, &format!("🟢 Agent '{name}' reconnected"), Some(tid)).ok();
             return;
         }
-        // Create new topic
+        drop(t);
         match self.bot.create_forum_topic(self.group_id, name) {
             Ok(thread_id) => {
                 self.register_topic(name, thread_id);
@@ -94,21 +87,20 @@ impl ChannelAdapter for TelegramAdapter {
     }
 
     fn on_agent_removed(&self, name: &str) {
-        let thread_id = self.topics.lock().unwrap_or_else(|e| e.into_inner()).remove(name);
-        if let Some(tid) = thread_id {
-            self.routing.lock().unwrap_or_else(|e| e.into_inner()).remove(&tid);
+        let mut t = self.topics.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(tid) = t.by_name.remove(name) {
+            t.by_id.remove(&tid);
+            drop(t);
             self.bot.send_message(self.group_id, &format!("🔴 Agent '{name}' stopped"), Some(tid)).ok();
         }
     }
 
     fn send_to_agent(&self, agent: &str, text: &str) -> Option<String> {
-        let thread_id = self.topics.lock().unwrap_or_else(|e| e.into_inner()).get(agent).copied();
-        if let Some(tid) = thread_id {
-            match self.bot.send_message(self.group_id, text, Some(tid)) {
-                Ok(val) => val["message_id"].as_i64().map(|id| id.to_string()),
-                Err(e) => { eprintln!("[telegram] send to '{agent}' failed: {e}"); None }
-            }
-        } else { None }
+        let tid = self.topics.lock().unwrap_or_else(|e| e.into_inner()).by_name.get(agent).copied()?;
+        match self.bot.send_message(self.group_id, text, Some(tid)) {
+            Ok(val) => val["message_id"].as_i64().map(|id| id.to_string()),
+            Err(e) => { eprintln!("[telegram] send to '{agent}' failed: {e}"); None }
+        }
     }
 
     fn notify(&self, text: &str) {
@@ -136,9 +128,8 @@ impl ChannelAdapter for TelegramAdapter {
 
             if text.is_empty() || chat_id != self.group_id { continue; }
 
-            // Route by thread_id → agent name
             let target = thread_id
-                .and_then(|tid| self.routing.lock().unwrap_or_else(|e| e.into_inner()).get(&tid).cloned());
+                .and_then(|tid| self.topics.lock().unwrap_or_else(|e| e.into_inner()).by_id.get(&tid).cloned());
 
             if let Some(agent) = target {
                 messages.push(IncomingMessage {
@@ -167,24 +158,46 @@ impl BotApi {
 
     fn call(&self, method: &str, body: &Value) -> Result<Value, String> {
         let url = format!("{}/{method}", self.base_url);
-        let timeout = if method == "getUpdates" {
-            Duration::from_secs(POLL_TIMEOUT + 10)
-        } else {
-            Duration::from_secs(30)
-        };
-        let mut resp = isahc::Request::post(&url)
-            .timeout(timeout)
-            .header("Content-Type", "application/json")
-            .body(serde_json::to_string(body).unwrap())
-            .map_err(|e| format!("build: {e}"))
-            .and_then(|r| isahc::send(r).map_err(|e| format!("send: {e}")))?;
-        let text = resp.text().map_err(|e| format!("read: {e}"))?;
-        let parsed: Value = serde_json::from_str(&text).map_err(|e| format!("parse: {e}"))?;
-        if parsed["ok"].as_bool() == Some(true) {
-            Ok(parsed["result"].clone())
-        } else {
-            Err(format!("API error: {}", parsed["description"].as_str().unwrap_or("unknown")))
+        let is_poll = method == "getUpdates";
+        let timeout = if is_poll { Duration::from_secs(POLL_TIMEOUT + 10) } else { Duration::from_secs(30) };
+        let max_retries = if is_poll { 1 } else { 3 };
+        let mut last_err = String::new();
+        for attempt in 0..max_retries {
+            if attempt > 0 {
+                std::thread::sleep(Duration::from_secs(1 << (attempt - 1)));
+            }
+            let result = isahc::Request::post(&url)
+                .timeout(timeout)
+                .header("Content-Type", "application/json")
+                .body(serde_json::to_string(body).unwrap_or_default())
+                .map_err(|e| format!("build: {e}"))
+                .and_then(|r| isahc::send(r).map_err(|e| format!("send: {e}")));
+            let mut resp = match result {
+                Ok(r) => r,
+                Err(e) => { last_err = e; continue; }
+            };
+            let text = match resp.text() {
+                Ok(t) => t,
+                Err(e) => { last_err = format!("read: {e}"); continue; }
+            };
+            let parsed: Value = match serde_json::from_str(&text) {
+                Ok(v) => v,
+                Err(e) => { last_err = format!("parse: {e}"); continue; }
+            };
+            if parsed["ok"].as_bool() == Some(true) {
+                return Ok(parsed["result"].clone());
+            }
+            let desc = parsed["description"].as_str().unwrap_or("unknown");
+            if parsed["error_code"].as_i64() == Some(429) {
+                let retry_after = parsed["parameters"]["retry_after"].as_u64().unwrap_or(2);
+                eprintln!("[telegram] rate limited, waiting {retry_after}s");
+                std::thread::sleep(Duration::from_secs(retry_after));
+                last_err = format!("rate limited: {desc}");
+                continue;
+            }
+            return Err(format!("API error: {desc}"));
         }
+        Err(last_err)
     }
 
     fn send_message(&self, chat_id: i64, text: &str, thread_id: Option<i64>) -> Result<Value, String> {

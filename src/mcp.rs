@@ -26,11 +26,12 @@ fn main() {
                 if sock.exists() { break sock; }
             }
             attempts += 1;
-            if attempts > 30 {
-                eprintln!("[mcp] no daemon API socket found");
+            if attempts > 50 {
+                eprintln!("[mcp] no daemon API socket found after 5s");
                 std::process::exit(1);
             }
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            if attempts % 10 == 0 { eprintln!("[mcp] waiting for daemon API socket..."); }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
     };
 

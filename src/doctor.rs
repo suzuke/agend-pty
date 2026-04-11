@@ -1,6 +1,5 @@
 
 use crate::{config, paths};
-use std::path::Path;
 
 pub fn run() {
     let mut ok = 0;
@@ -48,8 +47,8 @@ pub fn run() {
     }
 
     // 5. Bridge binary
-    let daemon_dir = std::env::current_exe()
-        .map(|p| p.parent().unwrap().to_path_buf())
+    let daemon_dir = std::env::current_exe().ok()
+        .and_then(|p| p.parent().map(|par| par.to_path_buf()))
         .unwrap_or_default();
     let bridge = daemon_dir.join("agend-mcp-bridge");
     if bridge.exists() {
@@ -96,7 +95,5 @@ pub fn run() {
 }
 
 fn which(name: &str) -> bool {
-    std::env::var("PATH").unwrap_or_default()
-        .split(':')
-        .any(|dir| Path::new(dir).join(name).exists())
+    crate::paths::which(name).is_some()
 }

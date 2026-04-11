@@ -40,7 +40,7 @@ pub fn dry_run(cfg: &config::FleetConfig) {
 }
 
 fn which(name: &str) -> bool {
-    std::env::var("PATH").unwrap_or_default().split(':').any(|dir| Path::new(dir).join(name).exists())
+    crate::paths::which(name).is_some()
 }
 
 // ── B2: Snapshot/Restore ────────────────────────────────────────────────
