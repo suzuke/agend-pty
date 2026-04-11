@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "agend-agend-pty-dev-t1492418741143867392": {
+      "command": "/Users/suzuke/.agend/instances/agend-pty-dev-t1492418741143867392/mcp-wrapper-agend.sh",
+      "args": []
+    }
+  }
+}

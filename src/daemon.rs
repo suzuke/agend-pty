@@ -291,7 +291,7 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
                             if let Some(new_state) = s.on_exit(now) {
                                 eprintln!("[{n}] state: {:?}", new_state);
                                 if let Ok(mut h) = hm.lock() {
-                                    let action = h.on_state_change(new_state, s.consecutive_errors(), now);
+                                    let action = h.on_state_change(new_state, s.consecutive_errors(), s.last_error_kind(), now);
                                     eprintln!("[{n}] health action: {:?}", action);
                                 }
                             }
@@ -325,7 +325,7 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
                                 if let Some(new_state) = s.process_output(&clean, std::time::Instant::now()) {
                                     eprintln!("[{n}] state: {:?}", new_state);
                                     if let Ok(mut h) = hm.lock() {
-                                        h.on_state_change(new_state, s.consecutive_errors(), std::time::Instant::now());
+                                        h.on_state_change(new_state, s.consecutive_errors(), s.last_error_kind(), std::time::Instant::now());
                                     }
                                 }
                             }
