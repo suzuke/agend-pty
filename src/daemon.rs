@@ -187,7 +187,7 @@ fn do_respawn(
             eprintln!("[health] {}: respawning", cfg.name);
             spawn_agent(cfg.name, cfg.command, cfg.working_dir, cfg.git_worktree, cfg.git_branch, reg, aw, as_, ib, cm, sc);
         })
-        .unwrap();
+        .ok();
 }
 
 fn socket_path(name: &str) -> std::path::PathBuf { paths::tui_socket(name) }
@@ -339,7 +339,7 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     agent_writers.lock().unwrap_or_else(|e| e.into_inner())
         .insert(name.clone(), Arc::clone(&pty_writer));
     agent_states.lock().unwrap_or_else(|e| e.into_inner())
-        .insert(name.clone(), api::AgentStateHandle { state_machine: Arc::clone(&state_machine) });
+        .insert(name.clone(), api::AgentStateHandle { state_machine: Arc::clone(&state_machine), working_dir: working_dir.clone() });
 
     // PTY read thread — feeds VTerm + broadcasts + reaps on exit
     let core2 = Arc::clone(&core);
@@ -430,7 +430,7 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
                 }
             }
         })
-        .unwrap();
+        .ok();
 
     // TUI socket server (blocks this thread)
     let listener = match UnixListener::bind(&sock) {
@@ -476,7 +476,7 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
                 }
                 eprintln!("[{n4}] TUI output thread ended");
             })
-            .unwrap();
+            .ok();
 
         // Input thread: forward client input to PTY, handle resize
         let read_stream = stream;
@@ -505,7 +505,7 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
                 }
                 eprintln!("[{n5}] TUI client disconnected");
             })
-            .unwrap();
+            .ok();
     }
 }
 
@@ -681,7 +681,7 @@ fn main() {
                 .spawn(move || {
                     spawn_agent(n, command, wd, gw, gb, reg, aw, as_, ib, cm, sc);
                 })
-                .unwrap();
+                .ok();
         }
         // Brief pause for agents to register
         std::thread::sleep(std::time::Duration::from_secs(1));
@@ -720,7 +720,7 @@ fn main() {
                     std::thread::sleep(std::time::Duration::from_millis(100));
                 }
             })
-            .unwrap();
+            .ok();
     }
 
     // Health tick thread — drives time-based state transitions + health actions
@@ -772,7 +772,7 @@ fn main() {
                     }
                 }
             })
-            .unwrap();
+            .ok();
     }
 
     // Graceful shutdown on Ctrl+C

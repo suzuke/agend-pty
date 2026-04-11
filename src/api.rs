@@ -34,6 +34,7 @@ pub type AgentWriters = Arc<Mutex<HashMap<String, PtyWriter>>>;
 /// Agent state handle exposed to API layer.
 pub struct AgentStateHandle {
     pub state_machine: Arc<Mutex<state::StateMachine>>,
+    pub working_dir: Option<std::path::PathBuf>,
 }
 pub type AgentStateMap = Arc<Mutex<HashMap<String, AgentStateHandle>>>;
 
@@ -318,8 +319,12 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
         "merge_preview" => {
             let target = args["instance_name"].as_str().unwrap_or(instance);
             let branch = format!("agend/{target}");
-            let cwd = std::env::current_dir().unwrap_or_default();
-            match git::merge_preview(&cwd, &branch) {
+            let repo = ctx.states.lock().unwrap_or_else(|e| e.into_inner())
+                .get(target).and_then(|h| h.working_dir.clone());
+            let repo = match repo {
+                Some(p) => p, None => return json!({"content": [{"type": "text", "text": format!("instance '{target}' not found")}], "isError": true}),
+            };
+            match git::merge_preview(&repo, &branch) {
                 Ok(p) => json!({"content": [{"type": "text", "text": json!({
                     "diff_stat": p.diff_stat, "files_changed": p.files_changed, "has_conflicts": p.has_conflicts
                 }).to_string()}]}),
@@ -331,8 +336,12 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
             let default_msg = format!("merge agent/{target}");
             let message = args["message"].as_str().unwrap_or(&default_msg);
             let branch = format!("agend/{target}");
-            let cwd = std::env::current_dir().unwrap_or_default();
-            match git::squash_merge(&cwd, &branch, message) {
+            let repo = ctx.states.lock().unwrap_or_else(|e| e.into_inner())
+                .get(target).and_then(|h| h.working_dir.clone());
+            let repo = match repo {
+                Some(p) => p, None => return json!({"content": [{"type": "text", "text": format!("instance '{target}' not found")}], "isError": true}),
+            };
+            match git::squash_merge(&repo, &branch, message) {
                 Ok(()) => json!({"content": [{"type": "text", "text": "{\"merged\":true}"}]}),
                 Err(e) => json!({"content": [{"type": "text", "text": e}], "isError": true}),
             }
