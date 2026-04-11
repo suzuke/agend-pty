@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 //! Inbox — per-agent message queue backed by JSONL files.
 //!
 //! Messages stored at ~/.agend/run/<pid>/inbox/{agent_name}.jsonl
@@ -77,8 +76,31 @@ impl InboxStore {
     }
 
     pub fn clear(&self, agent: &str) {
+        // Atomic drain: rename → read is gone, new appends create fresh file
         let path = inbox_path(agent);
-        let _ = std::fs::write(&path, "");
+        let tmp = path.with_extension("draining");
+        match std::fs::rename(&path, &tmp) {
+            Ok(_) => { let _ = std::fs::remove_file(&tmp); }
+            Err(_) => {} // file doesn't exist = already empty
+        }
+    }
+
+    /// Atomic drain: returns all messages and clears inbox in one operation.
+    /// New appends during drain go to a fresh file (no data loss).
+    pub fn drain(&self, agent: &str) -> Vec<InboxMessage> {
+        let path = inbox_path(agent);
+        let tmp = path.with_extension("draining");
+        // Rename is atomic on POSIX — new appends create a fresh file
+        if std::fs::rename(&path, &tmp).is_err() {
+            return vec![]; // no file = empty inbox
+        }
+        let msgs = match std::fs::File::open(&tmp) {
+            Ok(f) => std::io::BufReader::new(f).lines().flatten()
+                .filter_map(|line| serde_json::from_str(&line).ok()).collect(),
+            Err(_) => vec![],
+        };
+        let _ = std::fs::remove_file(&tmp);
+        msgs
     }
 
     fn read_all(&self, agent: &str) -> Vec<InboxMessage> {

@@ -3,16 +3,20 @@ pub mod backend;
 pub mod channel;
 pub mod config;
 pub mod doctor;
+pub mod features;
+pub mod health;
 pub mod inbox;
 pub mod instructions;
 pub mod mcp_config;
 pub mod paths;
+pub mod state;
 pub mod telegram;
 pub mod vterm;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use channel::ChannelAdapter;
 
     #[test]
     fn config_parse_minimal() {
@@ -151,8 +155,9 @@ instances:
         fn on_agent_removed(&self, name: &str) {
             self.removed.lock().unwrap().push(name.to_owned());
         }
-        fn send_to_agent(&self, agent: &str, text: &str) {
+        fn send_to_agent(&self, agent: &str, text: &str) -> Option<String> {
             self.sent.lock().unwrap().push((agent.to_owned(), text.to_owned()));
+            None
         }
         fn notify(&self, text: &str) {
             self.notifications.lock().unwrap().push(text.to_owned());
@@ -184,7 +189,7 @@ instances:
         fn name(&self) -> &str { self.0.name() }
         fn on_agent_created(&self, name: &str) { self.0.on_agent_created(name) }
         fn on_agent_removed(&self, name: &str) { self.0.on_agent_removed(name) }
-        fn send_to_agent(&self, agent: &str, text: &str) { self.0.send_to_agent(agent, text) }
+        fn send_to_agent(&self, agent: &str, text: &str) -> Option<String> { self.0.send_to_agent(agent, text) }
         fn notify(&self, text: &str) { self.0.notify(text) }
         fn poll(&self) -> Vec<channel::IncomingMessage> { self.0.poll() }
     }
@@ -215,6 +220,23 @@ instances:
         assert_eq!(store.list("test-clear").len(), 2);
         store.clear("test-clear");
         assert_eq!(store.list("test-clear").len(), 0);
+    }
+
+    #[test]
+    fn inbox_drain_returns_and_clears() {
+        let store = inbox::InboxStore::new();
+        store.clear("test-drain");
+        store.store_or_inject("test-drain", "alice", &"X".repeat(600), "\r");
+        store.store_or_inject("test-drain", "bob", &"Y".repeat(600), "\r");
+        let msgs = store.drain("test-drain");
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].sender, "alice");
+        assert_eq!(msgs[1].sender, "bob");
+        // After drain, inbox is empty
+        assert_eq!(store.list("test-drain").len(), 0);
+        // Drain empty inbox returns empty
+        assert_eq!(store.drain("test-drain").len(), 0);
+        store.clear("test-drain");
     }
 
     // ── MCP config merge ────────────────────────────────────────────────
@@ -279,7 +301,69 @@ instances:
         vt.process(b"line1\r\nline2\r\ncursor here");
         let dump = vt.dump_screen();
         let text = String::from_utf8_lossy(&dump);
-        // Cursor should be positioned after "cursor here" (line 3, col 12)
         assert!(text.contains("\x1b[3;12H"), "dump should position cursor");
+    }
+
+    // ── NullAdapter ─────────────────────────────────────────────────────
+
+    #[test]
+    fn null_adapter_is_noop() {
+        let adapter = channel::NullAdapter;
+        assert_eq!(adapter.name(), "null");
+        adapter.on_agent_created("test");
+        adapter.on_agent_removed("test");
+        adapter.send_to_agent("test", "hello");
+        adapter.notify("hello");
+        assert!(adapter.poll().is_empty());
+    }
+
+    #[test]
+    fn channel_manager_no_adapters() {
+        let mgr = channel::ChannelManager::new();
+        let m = mgr.lock().unwrap();
+        assert!(!m.has_adapters());
+        assert!(m.poll_all().is_empty());
+    }
+
+    #[test]
+    fn channel_manager_with_null_adapter() {
+        let mgr = channel::ChannelManager::new();
+        mgr.lock().unwrap().add_adapter(Box::new(channel::NullAdapter));
+        let m = mgr.lock().unwrap();
+        assert!(m.has_adapters());
+        m.on_agent_created("test");
+        m.send_to_agent("test", "hello");
+        assert!(m.poll_all().is_empty());
+    }
+
+    // ── PID lockfile ────────────────────────────────────────────────────
+
+    #[test]
+    fn stale_pid_cleanup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let run_base = tmp.path().join("run");
+        let stale_dir = run_base.join("99999999");
+        std::fs::create_dir_all(stale_dir.join("agents")).unwrap();
+        // Write a lock file but DON'T hold flock → stale
+        std::fs::write(stale_dir.join("daemon.lock"), "99999999\n(test)\n0\n").unwrap();
+
+        // Try flock on the lock file — should succeed (no one holds it)
+        let lock_path = stale_dir.join("daemon.lock");
+        let file = std::fs::File::open(&lock_path).unwrap();
+        use std::os::unix::io::AsRawFd;
+        let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_eq!(ret, 0, "should be able to lock stale file");
+        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+        drop(file);
+
+        // Clean up stale dir manually (same logic as cleanup_stale)
+        std::fs::remove_dir_all(&stale_dir).unwrap();
+        assert!(!stale_dir.exists());
+    }
+
+    #[test]
+    fn list_daemons_returns_vec() {
+        // Just verify the function doesn't panic
+        let _ = paths::list_daemons();
     }
 }

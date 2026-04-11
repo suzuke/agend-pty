@@ -1,11 +1,4 @@
-//! agend-daemon: multi-agent PTY manager + MCP server.
-//!
-//! Usage: agend-daemon [name:command ...]
-//!
-//! Improvements over initial POC:
-//! 1. crossbeam broadcast channel for output distribution
-//! 2. alacritty_terminal VTerm for screen state (reconnect gets proper screen dump)
-//! 3. Atomic subscribe+dump (no output gap on reconnect)
+//! agend-daemon: multi-agent PTY manager.
 
 #[path = "config.rs"]
 mod config;
@@ -29,17 +22,18 @@ mod doctor;
 mod mcp_config;
 #[path = "channel.rs"]
 mod channel;
+#[path = "state.rs"]
+mod state;
+#[path = "health.rs"]
+mod health;
+#[path = "features.rs"]
+mod features;
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex};
-
-
-// ── Framing ─────────────────────────────────────────────────────────────
-// Protocol: [u8 tag][u32 BE len][bytes]
-// Tag 0 = PTY data, Tag 1 = resize (4 bytes: cols_hi, cols_lo, rows_hi, rows_lo)
 
 const TAG_DATA: u8 = 0;
 const TAG_RESIZE: u8 = 1;
@@ -65,36 +59,7 @@ fn read_tagged_frame(r: &mut impl Read) -> std::io::Result<(u8, Vec<u8>)> {
     Ok((tag[0], buf))
 }
 
-// ── ANSI stripping (for dialog detection) ───────────────────────────────
 
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            match chars.peek() {
-                Some('[') => {
-                    chars.next();
-                    while let Some(&ch) = chars.peek() {
-                        chars.next();
-                        if ch.is_ascii_alphabetic() {
-                            if ch == 'C' || ch == 'D' { out.push(' '); }
-                            break;
-                        }
-                    }
-                }
-                Some(']') => { chars.next(); while let Some(&ch) = chars.peek() { chars.next(); if ch == '\x07' || ch == '\\' { break; } } }
-                Some('(') | Some(')') => { chars.next(); chars.next(); }
-                _ => { chars.next(); }
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
-// ── Shared agent state ──────────────────────────────────────────────────
 
 type PtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
@@ -118,41 +83,108 @@ impl AgentCore {
     }
 }
 
-#[allow(dead_code)]
 struct AgentHandle {
     pty_writer: PtyWriter,
     core: Arc<Mutex<AgentCore>>,
     submit_key: String,
     inject_prefix: String,
     typed_inject: bool,
+    state_machine: Arc<Mutex<state::StateMachine>>,
+    health: Arc<Mutex<health::HealthMonitor>>,
 }
 
 type AgentRegistry = Arc<Mutex<HashMap<String, AgentHandle>>>;
 
-fn socket_path(name: &str) -> std::path::PathBuf { paths::tui_socket(name) }
+/// Spawn config for respawning crashed agents.
+/// Holds persistent health/state monitors that survive respawn.
+#[derive(Clone)]
+struct SpawnConfig {
+    name: String,
+    command: String,
+    working_dir: Option<std::path::PathBuf>,
+    state_machine: Arc<Mutex<state::StateMachine>>,
+    health: Arc<Mutex<health::HealthMonitor>>,
+}
 
-// ── Backend MCP injection ────────────────────────────────────────────────
+type SpawnConfigs = Arc<Mutex<HashMap<String, SpawnConfig>>>;
 
-/// Inject MCP config into the command based on the backend type.
-fn inject_mcp_for_backend(command: &str, _name: &str, mcp_config_path: &str, prompt_path: &str) -> String {
-    let bin = command.split_whitespace().next().unwrap_or(command);
-    match bin {
-        "claude" => format!("{command} --mcp-config {mcp_config_path} --append-system-prompt-file {prompt_path}"),
-        "gemini" => {
-            // Gemini reads .gemini/settings.json from working dir — write MCP there
-            // For now, pass via command line isn't supported, so we rely on config file
-            // The MCP bridge config is written to working_dir/.gemini/settings.json by the caller
-            command.to_owned()
+/// Handle a HealthAction — called from both PTY read loop and tick thread.
+fn handle_health_action(
+    action: &health::HealthAction,
+    name: &str,
+    registry: &AgentRegistry,
+    agent_writers: &api::AgentWriters,
+    spawn_configs: &SpawnConfigs,
+    inbox_store: &Arc<inbox::InboxStore>,
+    channel_mgr: &Arc<Mutex<channel::ChannelManager>>,
+) {
+    match action {
+        health::HealthAction::Restart => {
+            eprintln!("[health] {name}: scheduling respawn");
+            do_respawn(name, registry, agent_writers, spawn_configs, inbox_store, channel_mgr);
         }
-        "kiro-cli" => format!("{command}"),  // kiro reads .kiro/settings/mcp.json
-        "codex" => command.to_owned(),       // codex uses `codex mcp add`
-        _ => command.to_owned(),             // unknown backend — no injection
+        health::HealthAction::KillAndRestart => {
+            eprintln!("[health] {name}: hang detected — killing and respawning");
+            // Send Ctrl+C + EOF to kill the process
+            if let Some(pw) = agent_writers.lock().unwrap_or_else(|e| e.into_inner()).get(name) {
+                let _ = pw.lock().unwrap_or_else(|e| e.into_inner()).write_all(b"\x03\x04");
+            }
+            // Respawn will happen on next tick after process exits
+        }
+        health::HealthAction::MarkFailed => {
+            eprintln!("[health] {name}: marked FAILED — no more restarts");
+        }
+        health::HealthAction::None => {}
     }
 }
 
-// ── Agent spawning ──────────────────────────────────────────────────────
+fn do_respawn(
+    name: &str,
+    registry: &AgentRegistry,
+    agent_writers: &api::AgentWriters,
+    spawn_configs: &SpawnConfigs,
+    inbox_store: &Arc<inbox::InboxStore>,
+    channel_mgr: &Arc<Mutex<channel::ChannelManager>>,
+) {
+    let cfg = match spawn_configs.lock().unwrap_or_else(|e| e.into_inner()).get(name).cloned() {
+        Some(c) => c,
+        None => { eprintln!("[health] {name}: no spawn config for respawn"); return; }
+    };
 
-fn spawn_agent(name: String, command: String, working_dir: Option<std::path::PathBuf>, registry: AgentRegistry, agent_writers: api::AgentWriters, _inbox_store: Arc<inbox::InboxStore>, channel_mgr: Arc<Mutex<channel::ChannelManager>>) {
+    let now = std::time::Instant::now();
+    if let Ok(mut h) = cfg.health.lock() { h.on_restart(now); }
+    if let Ok(mut s) = cfg.state_machine.lock() {
+        s.on_restart(now);
+        s.on_restart_complete(now);
+    }
+
+    let reg = Arc::clone(registry);
+    let aw = Arc::clone(agent_writers);
+    let ib = Arc::clone(inbox_store);
+    let cm = Arc::clone(channel_mgr);
+    let sc = Arc::clone(spawn_configs);
+    std::thread::Builder::new()
+        .name(format!("respawn_{}", name))
+        .spawn(move || {
+            eprintln!("[health] {}: respawning", cfg.name);
+            spawn_agent(cfg.name, cfg.command, cfg.working_dir, reg, aw, ib, cm, sc);
+        })
+        .unwrap();
+}
+
+fn socket_path(name: &str) -> std::path::PathBuf { paths::tui_socket(name) }
+
+
+fn inject_mcp_for_backend(command: &str, _name: &str, mcp_config_path: &str, prompt_path: &str) -> String {
+    match command.split_whitespace().next().unwrap_or(command) {
+        "claude" => format!("{command} --mcp-config {mcp_config_path} --append-system-prompt-file {prompt_path}"),
+        "kiro-cli" => command.to_owned(),
+        _ => command.to_owned(),
+    }
+}
+
+
+fn spawn_agent(name: String, command: String, working_dir: Option<std::path::PathBuf>, registry: AgentRegistry, agent_writers: api::AgentWriters, inbox_store: Arc<inbox::InboxStore>, channel_mgr: Arc<Mutex<channel::ChannelManager>>, spawn_configs: SpawnConfigs) {
     let sock = socket_path(&name);
     let _ = std::fs::remove_file(&sock);
 
@@ -163,7 +195,6 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
         .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
         .unwrap_or_else(|e| panic!("[{name}] failed to open pty: {e}"));
 
-    // Inject MCP config based on backend
     let bridge_path = std::env::current_exe()
         .map(|p| p.parent().unwrap().join("agend-mcp").to_string_lossy().into_owned())
         .unwrap_or_else(|_| "agend-mcp".into());
@@ -178,24 +209,18 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     });
     std::fs::write(&mcp_config_path, serde_json::to_string_pretty(&mcp_config).unwrap()).ok();
 
-    // System prompt for fleet awareness
     let prompt_path = paths::agent_dir(&name).join("prompt.md");
     let prompt_path_str = prompt_path.display().to_string();
-    let other_agents: Vec<String> = registry.lock().unwrap_or_else(|e| e.into_inner()).keys()
+    let others: Vec<String> = registry.lock().unwrap_or_else(|e| e.into_inner()).keys()
         .filter(|k| *k != &name).cloned().collect();
-    let prompt = format!(
-        "You are '{}', part of an AI agent fleet.\nOther agents: {}\n\
-         You have `send_to_instance` and `list_instances` MCP tools.\n\
-         When you receive a [message from X], respond directly. \
-         If a reply is needed, use send_to_instance. Do NOT ask permission.",
-        name, if other_agents.is_empty() { "(none yet)".into() } else { other_agents.join(", ") }
-    );
-    std::fs::write(&prompt_path, &prompt).ok();
+    std::fs::write(&prompt_path, format!(
+        "You are '{}', part of an AI agent fleet. Other agents: {}.\n\
+         Use `send_to_instance`/`list_instances` MCP tools. Respond directly to [message from X].",
+        name, if others.is_empty() { "(none yet)".into() } else { others.join(", ") }
+    )).ok();
 
-    // Build final command with backend-specific MCP injection
     let final_command = inject_mcp_for_backend(&command, &name, &mcp_config_path_str, &prompt_path_str);
 
-    // Gemini: --resume latest is safe (per-directory). Other backends: no resume without session ID.
     let final_command = if command.starts_with("gemini") && !final_command.contains("--resume") {
         format!("{final_command} --resume latest")
     } else {
@@ -207,7 +232,6 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     if parts.len() > 1 { cmd.args(&parts[1..]); }
     cmd.env("TERM", "xterm-256color");
 
-    // Set working directory + generate instructions
     let effective_wd = if let Some(ref wd) = working_dir {
         std::fs::create_dir_all(wd).ok();
         cmd.cwd(wd);
@@ -219,7 +243,6 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
         cwd
     };
 
-    // Generate backend-specific instruction files in working directory
     instructions::generate(&effective_wd, &command, &name);
 
     let _child = pair.slave.spawn_command(cmd)
@@ -235,28 +258,39 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
         subscribers: Vec::new(),
     }));
 
-    // Detect inject behavior from backend
     let preset = backend::Backend::from_command(&command).map(|b| b.preset());
     let submit_key = preset.as_ref().map(|p| p.submit_key.to_owned()).unwrap_or_else(|| "\r".to_owned());
     let inject_prefix = preset.as_ref().map(|p| p.inject_prefix.to_owned()).unwrap_or_default();
     let typed_inject = preset.as_ref().map(|p| p.typed_inject).unwrap_or(false);
 
-    agent_writers.lock().unwrap_or_else(|e| e.into_inner())
-        .insert(name.clone(), api::AgentWriter {
-            writer: Arc::clone(&pty_writer),
-            submit_key: submit_key.clone(),
-            inject_prefix: inject_prefix.clone(),
-            typed_inject,
-        });
+    let ready_pattern = preset.as_ref().map(|p| p.ready_pattern).unwrap_or(">");
+    let (state_machine, health_monitor) = {
+        let configs = spawn_configs.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(existing) = configs.get(&name) {
+            (Arc::clone(&existing.state_machine), Arc::clone(&existing.health))
+        } else {
+            let state_patterns = state::StatePatterns::from_backend(ready_pattern);
+            (Arc::new(Mutex::new(state::StateMachine::new(state_patterns))),
+             Arc::new(Mutex::new(health::HealthMonitor::new())))
+        }
+    };
 
-    // Register in global registry
+    spawn_configs.lock().unwrap_or_else(|e| e.into_inner()).insert(name.clone(), SpawnConfig {
+        name: name.clone(), command: command.clone(), working_dir: working_dir.clone(),
+        state_machine: Arc::clone(&state_machine), health: Arc::clone(&health_monitor),
+    });
+
     registry.lock().unwrap_or_else(|e| e.into_inner()).insert(name.clone(), AgentHandle {
         pty_writer: Arc::clone(&pty_writer),
         core: Arc::clone(&core),
         submit_key,
         inject_prefix,
         typed_inject,
+        state_machine: Arc::clone(&state_machine),
+        health: Arc::clone(&health_monitor),
     });
+    agent_writers.lock().unwrap_or_else(|e| e.into_inner())
+        .insert(name.clone(), Arc::clone(&pty_writer));
 
     // PTY read thread — feeds VTerm + broadcasts + reaps on exit
     let core2 = Arc::clone(&core);
@@ -264,6 +298,10 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     let reg_reaper = Arc::clone(&registry);
     let aw_reaper = Arc::clone(&agent_writers);
     let cm_reaper = Arc::clone(&channel_mgr);
+    let sm = Arc::clone(&state_machine);
+    let hm = Arc::clone(&health_monitor);
+    let ib_reaper = Arc::clone(&inbox_store);
+    let sc_reaper = Arc::clone(&spawn_configs);
     let n = name.clone();
     std::thread::Builder::new()
         .name(format!("{n}_pty_read"))
@@ -275,10 +313,27 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
                 match pty_reader.read(&mut buf) {
                     Ok(0) => {
                         eprintln!("[{n}] PTY closed — reaping session");
+                        // 1. Update state machine, record health action (but don't execute yet)
+                        let now = std::time::Instant::now();
+                        let action = if let Ok(mut s) = sm.lock() {
+                            if let Some(new_state) = s.on_exit(now) {
+                                eprintln!("[{n}] state: {:?}", new_state);
+                                if let Ok(mut h) = hm.lock() {
+                                    let a = h.on_state_change(new_state, s.consecutive_errors(), s.last_error_kind(), now);
+                                    eprintln!("[{n}] health action: {:?}", a);
+                                    a
+                                } else { health::HealthAction::None }
+                            } else { health::HealthAction::None }
+                        } else { health::HealthAction::None };
+
+                        // 2. Cleanup first — remove from registry, writers, notify channels
                         reg_reaper.lock().unwrap_or_else(|e| e.into_inner()).remove(&n);
                         aw_reaper.lock().unwrap_or_else(|e| e.into_inner()).remove(&n);
                         cm_reaper.lock().unwrap_or_else(|e| e.into_inner()).on_agent_removed(&n);
                         let _ = std::fs::remove_dir_all(paths::agent_dir(&n));
+
+                        // 3. Now safe to respawn (cleanup complete, no race)
+                        handle_health_action(&action, &n, &reg_reaper, &aw_reaper, &sc_reaper, &ib_reaper, &cm_reaper);
                         break;
                     }
                     Ok(n_bytes) => {
@@ -288,12 +343,29 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
                         if !dialog_dismissed {
                             detect_buf.extend_from_slice(data);
                             if detect_buf.len() > 8192 { let d = detect_buf.len() - 8192; detect_buf.drain(..d); }
-                            let clean = strip_ansi(&String::from_utf8_lossy(&detect_buf));
+                            let clean = state::strip_ansi(&String::from_utf8_lossy(&detect_buf));
                             if clean.contains("Yes, I trust") || clean.contains("Yes, proceed") {
                                 eprintln!("[{n}] auto-dismissing trust dialog");
                                 let _ = pw.lock().unwrap_or_else(|e| e.into_inner()).write_all(b"\x1b[A\x1b[A\r");
                                 dialog_dismissed = true;
                                 detect_buf.clear();
+                            }
+                        }
+
+                        // Feed state machine with stripped output
+                        {
+                            let clean = state::strip_ansi(&String::from_utf8_lossy(data));
+                            if let Ok(mut s) = sm.lock() {
+                                if let Some(new_state) = s.process_output(&clean, std::time::Instant::now()) {
+                                    eprintln!("[{n}] state: {:?}", new_state);
+                                    if let Ok(mut h) = hm.lock() {
+                                        let action = h.on_state_change(new_state, s.consecutive_errors(), s.last_error_kind(), std::time::Instant::now());
+                                        if action != health::HealthAction::None {
+                                            eprintln!("[{n}] health action: {:?}", action);
+                                            handle_health_action(&action, &n, &reg_reaper, &aw_reaper, &sc_reaper, &ib_reaper, &cm_reaper);
+                                        }
+                                    }
+                                }
                             }
                         }
 
@@ -315,7 +387,6 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
         .unwrap_or_else(|e| panic!("[{name}] failed to bind {}: {e}", sock.display()));
     eprintln!("[{name}] TUI socket on {} (cmd: {command})", sock.display());
 
-    // Notify channel adapters that agent is ready
     channel_mgr.lock().unwrap_or_else(|e| e.into_inner()).on_agent_created(&name);
 
     let reg3 = Arc::clone(&registry);
@@ -383,32 +454,12 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     }
 }
 
-// ── MCP Server ──────────────────────────────────────────────────────────
-
-
-fn inject_to_writer(agent: &api::AgentWriter, text: &[u8]) -> std::io::Result<()> {
-    let prefix = agent.inject_prefix.as_bytes();
-    let submit = agent.submit_key.as_bytes();
-    let mut w = agent.writer.lock().unwrap_or_else(|e| e.into_inner());
-    if agent.typed_inject {
-        for byte in prefix.iter().chain(text.iter()) {
-            w.write_all(&[*byte])?; w.flush()?;
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-    } else {
-        if !prefix.is_empty() { w.write_all(prefix)?; w.flush()?; }
-        w.write_all(text)?; w.flush()?;
-    }
-    std::thread::sleep(std::time::Duration::from_millis(20));
-    w.write_all(submit)?; w.flush()?;
-    Ok(())
-}
-
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    // Parse --config flag
+    // Parse --config and --dry-run flags
     let mut config_path: Option<std::path::PathBuf> = None;
+    let mut dry_run = false;
     let mut filtered_args: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
@@ -419,10 +470,21 @@ fn main() {
                 continue;
             }
         }
+        if args[i] == "--dry-run" { dry_run = true; i += 1; continue; }
         filtered_args.push(args[i].clone());
         i += 1;
     }
     let args = filtered_args;
+
+    if dry_run {
+        let cfg = if let Some(ref p) = config_path {
+            config::FleetConfig::load(p).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(1); })
+        } else {
+            config::FleetConfig::find_and_load().unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(1); })
+        };
+        features::dry_run(&cfg);
+        return;
+    }
 
     if args.first().map(|s| s.as_str()) == Some("--shutdown") {
         // Find active daemon's ctrl socket
@@ -441,6 +503,14 @@ fn main() {
     // Initialize run directory
     paths::init();
     eprintln!("[daemon] run dir: {}", paths::run_dir().display());
+
+    // Acquire daemon lock (prevents duplicate fleet daemons)
+    let fleet_id = config_path.as_ref().map(|p| p.display().to_string());
+    let _lock_file = match paths::acquire_lock(fleet_id.as_deref()) {
+        Ok(f) => f,
+        Err(e) => { eprintln!("[daemon] {e}"); std::process::exit(1); }
+    };
+    eprintln!("[daemon] lock acquired");
 
     // Parse agents from CLI args or fleet.yaml
     let load_config = || -> Result<config::FleetConfig, String> {
@@ -468,17 +538,17 @@ fn main() {
 
     let registry: AgentRegistry = Arc::new(Mutex::new(HashMap::new()));
     let agent_writers: api::AgentWriters = Arc::new(Mutex::new(HashMap::new()));
+    let spawn_configs: SpawnConfigs = Arc::new(Mutex::new(HashMap::new()));
 
     // Warn if multiple instances share working_directory
     {
-        let mut seen: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        let mut seen: HashMap<String, Vec<String>> = HashMap::new();
         for (name, _, wd) in &agents {
-            let dir = wd.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
-            seen.entry(dir).or_default().push(name.clone());
+            seen.entry(wd.as_ref().map(|p| p.display().to_string()).unwrap_or_default()).or_default().push(name.clone());
         }
         for (dir, names) in &seen {
             if names.len() > 1 && !dir.is_empty() {
-                eprintln!("[daemon] ⚠️  instances {:?} share working_directory {}, session resume may conflict", names, dir);
+                eprintln!("[daemon] ⚠️  {:?} share working_directory {}", names, dir);
             }
         }
     }
@@ -499,22 +569,64 @@ fn main() {
         }
     }
 
-    for (name, command, wd) in agents {
-        std::fs::create_dir_all(paths::agent_dir(&name)).ok();
-        let reg = Arc::clone(&registry);
-        let aw = Arc::clone(&agent_writers);
-        let ib = Arc::clone(&inbox_store);
-        let cm = Arc::clone(&channel_mgr);
-        std::thread::Builder::new()
-            .name(format!("agent_{name}"))
-            .spawn(move || {
-                spawn_agent(name, command, wd, reg, aw, ib, cm);
-            })
-            .unwrap();
-    }
+    // Spawn agents with dependency ordering
+    let dep_layers = if let Ok(cfg) = load_config() {
+        features::dependency_layers(&cfg).unwrap_or_else(|e| {
+            eprintln!("[daemon] ⚠️  dependency error: {e}, spawning all at once");
+            vec![agents.iter().map(|(n, _, _)| n.clone()).collect()]
+        })
+    } else {
+        vec![agents.iter().map(|(n, _, _)| n.clone()).collect()]
+    };
 
-    // Wait for agents to register before starting services
-    std::thread::sleep(std::time::Duration::from_secs(1));
+    let agent_map: HashMap<String, (String, Option<std::path::PathBuf>)> = agents.into_iter()
+        .map(|(n, c, w)| (n, (c, w))).collect();
+
+    for (layer_idx, layer) in dep_layers.iter().enumerate() {
+        if layer_idx > 0 {
+            eprintln!("[daemon] waiting for layer {} agents to be ready...", layer_idx - 1);
+            // Wait up to 60s for previous layer agents to reach Ready
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            'wait: loop {
+                if std::time::Instant::now() > deadline {
+                    eprintln!("[daemon] ⚠️  timeout waiting for dependencies, proceeding");
+                    break;
+                }
+                let reg = registry.lock().unwrap_or_else(|e| e.into_inner());
+                let all_ready = dep_layers[layer_idx - 1].iter().all(|name| {
+                    reg.get(name).and_then(|h| h.state_machine.lock().ok())
+                        .map(|s| matches!(s.state(), state::AgentState::Ready | state::AgentState::Busy | state::AgentState::Idle))
+                        .unwrap_or(false)
+                });
+                drop(reg);
+                if all_ready { break 'wait; }
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+        }
+
+        eprintln!("[daemon] spawning layer {layer_idx}: {:?}", layer);
+        for name in layer {
+            let (command, wd) = match agent_map.get(name) {
+                Some(v) => v.clone(),
+                None => continue,
+            };
+            std::fs::create_dir_all(paths::agent_dir(name)).ok();
+            let reg = Arc::clone(&registry);
+            let aw = Arc::clone(&agent_writers);
+            let ib = Arc::clone(&inbox_store);
+            let cm = Arc::clone(&channel_mgr);
+            let sc = Arc::clone(&spawn_configs);
+            let n = name.clone();
+            std::thread::Builder::new()
+                .name(format!("agent_{n}"))
+                .spawn(move || {
+                    spawn_agent(n, command, wd, reg, aw, ib, cm, sc);
+                })
+                .unwrap();
+        }
+        // Brief pause for agents to register
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
 
     // Start API socket
     api::start(Arc::new(api::DaemonCtx {
@@ -534,14 +646,65 @@ fn main() {
                     let msgs = cm.lock().unwrap_or_else(|e| e.into_inner()).poll_all();
                     for msg in msgs {
                         let w = aw.lock().unwrap_or_else(|e| e.into_inner());
-                        if let Some(agent) = w.get(&msg.agent_target) {
-                            let formatted = format!("[user:{} via telegram] {}", msg.sender, msg.text);
-                            let _ = inject_to_writer(agent, formatted.as_bytes());
+                        if let Some(pw) = w.get(&msg.agent_target) {
+                            let formatted = format!("[user:{} via telegram] {}\r", msg.sender, msg.text);
+                            let _ = pw.lock().unwrap_or_else(|e| e.into_inner()).write_all(formatted.as_bytes());
                             eprintln!("[channel] {} → {}: {}", msg.sender, msg.agent_target,
                                 msg.text.chars().take(60).collect::<String>());
                         }
                     }
                     std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            })
+            .unwrap();
+    }
+
+    // Health tick thread — drives time-based state transitions + health actions
+    {
+        let reg = Arc::clone(&registry);
+        let aw = Arc::clone(&agent_writers);
+        let sc = Arc::clone(&spawn_configs);
+        let ib = Arc::clone(&inbox_store);
+        let cm = Arc::clone(&channel_mgr);
+        std::thread::Builder::new()
+            .name("health_tick".into())
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    let now = std::time::Instant::now();
+
+                    // Snapshot agent names + their Arc handles to avoid holding registry lock
+                    let agents: Vec<(String, Arc<Mutex<state::StateMachine>>, Arc<Mutex<health::HealthMonitor>>)> = {
+                        let reg = reg.lock().unwrap_or_else(|e| e.into_inner());
+                        reg.iter().map(|(name, handle)| {
+                            (name.clone(), Arc::clone(&handle.state_machine), Arc::clone(&handle.health))
+                        }).collect()
+                    };
+
+                    for (name, sm, hm) in &agents {
+                        // Tick state machine (idle detection, error hysteresis confirmation)
+                        if let Ok(mut s) = sm.lock() {
+                            if let Some(new_state) = s.tick(now) {
+                                eprintln!("[tick] {name} state: {:?}", new_state);
+                                if let Ok(mut h) = hm.lock() {
+                                    let action = h.on_state_change(new_state, s.consecutive_errors(), s.last_error_kind(), now);
+                                    if action != health::HealthAction::None {
+                                        eprintln!("[tick] {name} health action: {:?}", action);
+                                        handle_health_action(&action, name, &reg, &aw, &sc, &ib, &cm);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Tick health monitor (hang detection, backoff-gated restart)
+                        if let (Ok(s), Ok(mut h)) = (sm.lock(), hm.lock()) {
+                            let action = h.tick(s.state(), now);
+                            if action != health::HealthAction::None {
+                                eprintln!("[tick] {name} health tick action: {:?}", action);
+                                handle_health_action(&action, name, &reg, &aw, &sc, &ib, &cm);
+                            }
+                        }
+                    }
                 }
             })
             .unwrap();

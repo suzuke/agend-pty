@@ -1,5 +1,3 @@
-//! Virtual terminal — wraps alacritty_terminal for screen state tracking.
-//! Processes raw PTY output and can dump current screen as ANSI for reconnection.
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;

@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 //! Fleet configuration — reads fleet.yaml to define agents.
 
 use serde::Deserialize;
@@ -42,6 +41,8 @@ pub struct InstanceConfig {
     pub command: Option<String>,
     #[serde(default)]
     pub skip_permissions: bool,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
 }
 
 fn default_backend() -> String { "claude".into() }

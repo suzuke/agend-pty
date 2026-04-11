@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 //! Channel — abstract interface for messaging platforms (Telegram, Discord, Slack, etc.)
 //!
 //! Each adapter implements the ChannelAdapter trait. The daemon calls lifecycle
@@ -13,6 +12,7 @@ pub struct IncomingMessage {
     pub agent_target: String,
     pub sender: String,
     pub text: String,
+    pub message_id: Option<String>,
 }
 
 /// Abstract channel adapter. Implementations handle platform-specific logic.
@@ -21,8 +21,8 @@ pub trait ChannelAdapter: Send + Sync {
     fn on_agent_created(&self, name: &str);
     /// Called when an agent is removed. Optionally archive the topic.
     fn on_agent_removed(&self, name: &str);
-    /// Send a message to a specific agent's topic/thread.
-    fn send_to_agent(&self, agent: &str, text: &str);
+    /// Send a message to a specific agent's topic/thread. Returns message ID if available.
+    fn send_to_agent(&self, agent: &str, text: &str) -> Option<String>;
     /// Send a notification to the general/default topic.
     fn notify(&self, text: &str);
     /// Poll for incoming messages (blocking, with timeout).
@@ -46,35 +46,39 @@ impl ChannelManager {
         self.adapters.push(adapter);
     }
 
+    pub fn has_adapters(&self) -> bool { !self.adapters.is_empty() }
+
     pub fn on_agent_created(&self, name: &str) {
-        for adapter in &self.adapters {
-            adapter.on_agent_created(name);
-        }
+        for adapter in &self.adapters { adapter.on_agent_created(name); }
     }
 
     pub fn on_agent_removed(&self, name: &str) {
-        for adapter in &self.adapters {
-            adapter.on_agent_removed(name);
-        }
+        for adapter in &self.adapters { adapter.on_agent_removed(name); }
     }
 
-    pub fn send_to_agent(&self, agent: &str, text: &str) {
-        for adapter in &self.adapters {
-            adapter.send_to_agent(agent, text);
-        }
+    pub fn send_to_agent(&self, agent: &str, text: &str) -> Option<String> {
+        let mut last_id = None;
+        for adapter in &self.adapters { last_id = adapter.send_to_agent(agent, text).or(last_id); }
+        last_id
     }
 
     pub fn notify(&self, text: &str) {
-        for adapter in &self.adapters {
-            adapter.notify(text);
-        }
+        for adapter in &self.adapters { adapter.notify(text); }
     }
 
     pub fn poll_all(&self) -> Vec<IncomingMessage> {
-        let mut msgs = Vec::new();
-        for adapter in &self.adapters {
-            msgs.extend(adapter.poll());
-        }
-        msgs
+        self.adapters.iter().flat_map(|a| a.poll()).collect()
     }
+}
+
+/// Null adapter — no-op for local dev/testing without external channels.
+pub struct NullAdapter;
+
+impl ChannelAdapter for NullAdapter {
+    fn name(&self) -> &str { "null" }
+    fn on_agent_created(&self, _name: &str) {}
+    fn on_agent_removed(&self, _name: &str) {}
+    fn send_to_agent(&self, _agent: &str, _text: &str) -> Option<String> { None }
+    fn notify(&self, _text: &str) {}
+    fn poll(&self) -> Vec<IncomingMessage> { vec![] }
 }
