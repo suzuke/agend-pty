@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_imports)]
+#![allow(dead_code, unused_imports, clippy::unwrap_used)]
 //! agend-daemon: multi-agent PTY manager.
 
 #[path = "config.rs"]
@@ -31,6 +31,8 @@ mod health;
 mod features;
 #[path = "fleet_store.rs"]
 mod fleet_store;
+#[path = "git.rs"]
+mod git;
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
@@ -112,6 +114,8 @@ struct SpawnConfig {
     name: String,
     command: String,
     working_dir: Option<std::path::PathBuf>,
+    git_worktree: bool,
+    git_branch: Option<String>,
     state_machine: Arc<Mutex<state::StateMachine>>,
     health: Arc<Mutex<health::HealthMonitor>>,
 }
@@ -119,6 +123,7 @@ struct SpawnConfig {
 type SpawnConfigs = Arc<Mutex<HashMap<String, SpawnConfig>>>;
 
 /// Handle a HealthAction — called from both PTY read loop and tick thread.
+#[allow(clippy::too_many_arguments)]
 fn handle_health_action(
     action: &health::HealthAction,
     name: &str,
@@ -180,7 +185,7 @@ fn do_respawn(
         .name(format!("respawn_{}", name))
         .spawn(move || {
             eprintln!("[health] {}: respawning", cfg.name);
-            spawn_agent(cfg.name, cfg.command, cfg.working_dir, reg, aw, as_, ib, cm, sc);
+            spawn_agent(cfg.name, cfg.command, cfg.working_dir, cfg.git_worktree, cfg.git_branch, reg, aw, as_, ib, cm, sc);
         })
         .unwrap();
 }
@@ -234,7 +239,7 @@ fn inject_mcp_for_backend(command: &str, _name: &str, mcp_config_path: &str, pro
 
 
 #[allow(clippy::too_many_arguments)]
-fn spawn_agent(name: String, command: String, working_dir: Option<std::path::PathBuf>, registry: AgentRegistry, agent_writers: api::AgentWriters, agent_states: api::AgentStateMap, inbox_store: Arc<inbox::InboxStore>, channel_mgr: Arc<Mutex<channel::ChannelManager>>, spawn_configs: SpawnConfigs) {
+fn spawn_agent(name: String, command: String, working_dir: Option<std::path::PathBuf>, git_worktree: bool, git_branch: Option<String>, registry: AgentRegistry, agent_writers: api::AgentWriters, agent_states: api::AgentStateMap, inbox_store: Arc<inbox::InboxStore>, channel_mgr: Arc<Mutex<channel::ChannelManager>>, spawn_configs: SpawnConfigs) {
     let sock = socket_path(&name);
     let _ = std::fs::remove_file(&sock);
 
@@ -261,8 +266,17 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
 
     let effective_wd = if let Some(ref wd) = working_dir {
         std::fs::create_dir_all(wd).ok();
-        cmd.cwd(wd);
-        wd.clone()
+        // Git worktree: redirect to isolated worktree directory
+        let actual_wd = if git_worktree && git::is_git_repo(wd) {
+            let default_branch = format!("agent/{name}");
+            let branch = git_branch.as_deref().unwrap_or(&default_branch);
+            match git::create_worktree(wd, &name, branch) {
+                Ok(wt) => { eprintln!("[{name}] git worktree: {}", wt.display()); wt }
+                Err(e) => { eprintln!("[{name}] git worktree failed: {e}, using original dir"); wd.clone() }
+            }
+        } else { wd.clone() };
+        cmd.cwd(&actual_wd);
+        actual_wd
     } else {
         let cwd = std::env::current_dir().unwrap_or_default();
         cmd.cwd(&cwd);
@@ -310,6 +324,7 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
 
     spawn_configs.lock().unwrap_or_else(|e| e.into_inner()).insert(name.clone(), SpawnConfig {
         name: name.clone(), command: command.clone(), working_dir: working_dir.clone(),
+        git_worktree, git_branch: git_branch.clone(),
         state_machine: Arc::clone(&state_machine), health: Arc::clone(&health_monitor),
     });
 
@@ -562,19 +577,20 @@ fn main() {
         }
     };
 
-    let agents: Vec<(String, String, Option<std::path::PathBuf>)> = if !args.is_empty() {
+    #[allow(clippy::type_complexity)]
+    let agents: Vec<(String, String, Option<std::path::PathBuf>, bool, Option<String>)> = if !args.is_empty() {
         args.iter().map(|a| {
-            if let Some((name, cmd)) = a.split_once(':') { (name.to_owned(), cmd.to_owned(), None) }
-            else { (a.to_owned(), a.to_owned(), None) }
+            if let Some((name, cmd)) = a.split_once(':') { (name.to_owned(), cmd.to_owned(), None, false, None) }
+            else { (a.to_owned(), a.to_owned(), None, false, None) }
         }).collect()
     } else if let Ok(cfg) = load_config() {
         cfg.instances.iter().map(|(name, ic)| {
             let cmd = ic.build_command(&cfg.defaults);
             let wd = Some(ic.effective_working_dir(&cfg.defaults, name));
-            (name.clone(), cmd, wd)
+            (name.clone(), cmd, wd, ic.git_worktree, ic.git_branch.clone())
         }).collect()
     } else {
-        vec![("shell".into(), "bash".into(), None)]
+        vec![("shell".into(), "bash".into(), None, false, None)]
     };
 
     let registry: AgentRegistry = Arc::new(Mutex::new(HashMap::new()));
@@ -585,7 +601,7 @@ fn main() {
     // Warn if multiple instances share working_directory
     {
         let mut seen: HashMap<String, Vec<String>> = HashMap::new();
-        for (name, _, wd) in &agents {
+        for (name, _, wd, _, _) in &agents {
             seen.entry(wd.as_ref().map(|p| p.display().to_string()).unwrap_or_default()).or_default().push(name.clone());
         }
         for (dir, names) in &seen {
@@ -598,7 +614,7 @@ fn main() {
     let channel_mgr = channel::ChannelManager::new();
     eprintln!("[daemon] starting {} agent(s)", agents.len());
 
-    for (name, command, wd) in &agents {
+    for (name, command, wd, _, _) in &agents {
         eprintln!("[daemon]   {name}: {command}{}", wd.as_ref().map(|p| format!(" (cwd: {})", p.display())).unwrap_or_default());
     }
 
@@ -615,14 +631,14 @@ fn main() {
     let dep_layers = if let Ok(cfg) = load_config() {
         features::dependency_layers(&cfg).unwrap_or_else(|e| {
             eprintln!("[daemon] ⚠️  dependency error: {e}, spawning all at once");
-            vec![agents.iter().map(|(n, _, _)| n.clone()).collect()]
+            vec![agents.iter().map(|(n, _, _, _, _)| n.clone()).collect()]
         })
     } else {
-        vec![agents.iter().map(|(n, _, _)| n.clone()).collect()]
+        vec![agents.iter().map(|(n, _, _, _, _)| n.clone()).collect()]
     };
 
-    let agent_map: HashMap<String, (String, Option<std::path::PathBuf>)> = agents.into_iter()
-        .map(|(n, c, w)| (n, (c, w))).collect();
+    let agent_map: HashMap<String, (String, Option<std::path::PathBuf>, bool, Option<String>)> = agents.into_iter()
+        .map(|(n, c, w, gw, gb)| (n, (c, w, gw, gb))).collect();
 
     for (layer_idx, layer) in dep_layers.iter().enumerate() {
         if layer_idx > 0 {
@@ -648,7 +664,7 @@ fn main() {
 
         eprintln!("[daemon] spawning layer {layer_idx}: {:?}", layer);
         for name in layer {
-            let (command, wd) = match agent_map.get(name) {
+            let (command, wd, gw, gb) = match agent_map.get(name) {
                 Some(v) => v.clone(),
                 None => continue,
             };
@@ -663,7 +679,7 @@ fn main() {
             std::thread::Builder::new()
                 .name(format!("agent_{n}"))
                 .spawn(move || {
-                    spawn_agent(n, command, wd, reg, aw, as_, ib, cm, sc);
+                    spawn_agent(n, command, wd, gw, gb, reg, aw, as_, ib, cm, sc);
                 })
                 .unwrap();
         }

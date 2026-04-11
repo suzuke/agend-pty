@@ -43,6 +43,9 @@ pub struct InstanceConfig {
     pub skip_permissions: bool,
     #[serde(default)]
     pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub git_worktree: bool,
+    pub git_branch: Option<String>,
 }
 
 fn default_backend() -> String { "claude".into() }

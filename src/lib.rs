@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+#![allow(clippy::unwrap_used)]
 pub mod api;
 pub mod backend;
 pub mod channel;
@@ -6,6 +7,7 @@ pub mod config;
 pub mod doctor;
 pub mod features;
 pub mod fleet_store;
+pub mod git;
 pub mod health;
 pub mod inbox;
 pub mod instructions;

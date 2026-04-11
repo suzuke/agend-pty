@@ -3,7 +3,7 @@
 //! Listens on ~/.agend/run/<pid>/api.sock
 //! Protocol: newline-delimited JSON (one request per line, one response per line)
 
-use crate::{channel, fleet_store, inbox, paths, state};
+use crate::{channel, fleet_store, git, inbox, paths, state};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -315,6 +315,28 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                 std::thread::sleep(Duration::from_secs(2));
             }
         }
+        "merge_preview" => {
+            let target = args["instance_name"].as_str().unwrap_or(instance);
+            let branch = format!("agent/{target}");
+            let cwd = std::env::current_dir().unwrap_or_default();
+            match git::merge_preview(&cwd, &branch) {
+                Ok(p) => json!({"content": [{"type": "text", "text": json!({
+                    "diff_stat": p.diff_stat, "files_changed": p.files_changed, "has_conflicts": p.has_conflicts
+                }).to_string()}]}),
+                Err(e) => json!({"content": [{"type": "text", "text": e}], "isError": true}),
+            }
+        }
+        "merge_agent" => {
+            let target = args["instance_name"].as_str().unwrap_or(instance);
+            let default_msg = format!("merge agent/{target}");
+            let message = args["message"].as_str().unwrap_or(&default_msg);
+            let branch = format!("agent/{target}");
+            let cwd = std::env::current_dir().unwrap_or_default();
+            match git::squash_merge(&cwd, &branch, message) {
+                Ok(()) => json!({"content": [{"type": "text", "text": "{\"merged\":true}"}]}),
+                Err(e) => json!({"content": [{"type": "text", "text": e}], "isError": true}),
+            }
+        }
         _ => json!({"content": [{"type": "text", "text": format!("unknown tool: {tool}")}], "isError": true}),
     }
 }
@@ -355,6 +377,8 @@ pub fn mcp_tools_list() -> Value {
         {"name":"task","description":"Task board operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["create","list","claim","done","update"]},"title":{"type":"string"},"description":{"type":"string"},"id":{"type":"string"},"assignee":{"type":"string"},"status":{"type":"string","enum":["open","claimed","done","blocked"]},"result":{"type":"string"}},"required":["action"]}},
         {"name":"react","description":"React to a message with emoji.","inputSchema":{"type":"object","properties":{"message_id":{"type":"string"},"emoji":{"type":"string"}},"required":["message_id","emoji"]}},
         {"name":"edit_message","description":"Edit a sent message.","inputSchema":{"type":"object","properties":{"message_id":{"type":"string"},"text":{"type":"string"}},"required":["message_id","text"]}},
-        {"name":"wait_for_idle","description":"Wait for an agent to become idle.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"timeout_secs":{"type":"integer"}},"required":["instance_name"]}}
+        {"name":"wait_for_idle","description":"Wait for an agent to become idle.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"timeout_secs":{"type":"integer"}},"required":["instance_name"]}},
+        {"name":"merge_preview","description":"Preview merge of agent branch.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"}},"required":["instance_name"]}},
+        {"name":"merge_agent","description":"Squash merge agent branch.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"message":{"type":"string"}},"required":["instance_name"]}}
     ]})
 }

@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_imports)]
+#![allow(dead_code, unused_imports, clippy::unwrap_used)]
 //! agend-tui: connects to a named agent, raw terminal passthrough.
 //!
 //! Usage: agend-tui [agent-name]

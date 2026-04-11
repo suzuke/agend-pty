@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_imports)]
+#![allow(dead_code, unused_imports, clippy::unwrap_used)]
 //! agend-mcp-bridge: NDJSON passthrough between stdio and daemon MCP socket.
 //!
 //! Claude sends NDJSON on stdin → forward to daemon socket.

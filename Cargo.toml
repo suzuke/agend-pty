@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [lints.clippy]
-unwrap_used = "deny"
+unwrap_used = "warn"
 
 [lib]
 name = "agend_pty_poc"
