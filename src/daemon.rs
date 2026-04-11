@@ -191,11 +191,23 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     );
     std::fs::write(&prompt_path, &prompt).ok();
 
-    // Build final command with backend-specific MCP injection
-    // Add --continue for Claude to resume previous session
+    // Build final command with backend-specific MCP injection + resume
     let mut final_command = inject_mcp_for_backend(&command, &name, &mcp_config_path_str, &prompt_path_str);
-    if command.starts_with("claude") && !final_command.contains("--continue") {
-        final_command.push_str(" --continue");
+
+    // Add per-backend resume flag
+    let bin = command.split_whitespace().next().unwrap_or("");
+    match bin {
+        "claude" if !final_command.contains("--continue") => final_command.push_str(" --continue"),
+        "gemini" if !final_command.contains("--resume") => final_command.push_str(" --resume latest"),
+        "kiro-cli" if !final_command.contains("--resume") => final_command.push_str(" --resume"),
+        "opencode" if !final_command.contains("--continue") => final_command.push_str(" --continue"),
+        _ => {}
+    }
+    // Codex: resume --last needs to replace the command, not append a flag
+    if bin == "codex" && !final_command.contains("resume") {
+        // Try resume first, fallback to normal start
+        let codex_bin = final_command.clone();
+        final_command = format!("bash -c '{codex_bin} resume --last 2>/dev/null || {codex_bin}'");
     }
 
     let parts: Vec<&str> = final_command.split_whitespace().collect();
