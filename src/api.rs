@@ -189,8 +189,9 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
         "reply" => {
             let text = args["text"].as_str().unwrap_or("");
             let formatted = format!("[{instance}] {text}");
-            ctx.channel_mgr.lock().unwrap_or_else(|e| e.into_inner()).send_to_agent(instance, &formatted);
-            json!({"content": [{"type": "text", "text": "{\"replied\":true}"}]})
+            let msg_id = ctx.channel_mgr.lock().unwrap_or_else(|e| e.into_inner()).send_to_agent(instance, &formatted);
+            let id_str = msg_id.unwrap_or_default();
+            json!({"content": [{"type": "text", "text": json!({"replied": true, "message_id": id_str}).to_string()}]})
         }
         "inbox" => {
             if let Some(id) = args["id"].as_u64() {
@@ -284,23 +285,22 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
             }
         }
         "wait_for_idle" => {
-            // This is a synchronous wait — blocks the API thread for this request
             let target = args["instance_name"].as_str().unwrap_or("");
-            let timeout = args["timeout_secs"].as_u64().unwrap_or(300);
+            let timeout = args["timeout_secs"].as_u64().unwrap_or(120).min(300);
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout);
+            // Check instance exists first
+            if !ctx.writers.lock().unwrap_or_else(|e| e.into_inner()).contains_key(target) {
+                return json!({"content": [{"type": "text", "text": json!({"status": "not_found", "instance": target}).to_string()}], "isError": true});
+            }
             loop {
-                let w = ctx.writers.lock().unwrap_or_else(|e| e.into_inner());
-                if !w.contains_key(target) {
-                    break json!({"content": [{"type": "text", "text": json!({"status": "not_found"}).to_string()}], "isError": true});
-                }
-                drop(w);
-                // We can't access state machine from api.rs — check if agent has no writers (crashed)
-                if std::time::Instant::now() > deadline {
-                    break json!({"content": [{"type": "text", "text": json!({"status": "timeout"}).to_string()}]});
-                }
                 std::thread::sleep(std::time::Duration::from_secs(2));
-                // For now, return after one check — full state machine integration needs registry access
-                break json!({"content": [{"type": "text", "text": json!({"status": "checked", "instance": target}).to_string()}]});
+                // Agent removed from writers = crashed/exited
+                if !ctx.writers.lock().unwrap_or_else(|e| e.into_inner()).contains_key(target) {
+                    break json!({"content": [{"type": "text", "text": json!({"status": "crashed", "instance": target}).to_string()}], "isError": true});
+                }
+                if std::time::Instant::now() > deadline {
+                    break json!({"content": [{"type": "text", "text": json!({"status": "timeout", "instance": target}).to_string()}]});
+                }
             }
         }
         _ => json!({"content": [{"type": "text", "text": format!("unknown tool: {tool}")}], "isError": true}),

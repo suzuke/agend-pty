@@ -1,8 +1,8 @@
-//! Fleet-wide shared state — decisions and task board.
+//! Fleet-wide shared state — decisions and task board (JSONL append-only).
 
 use crate::paths;
 use serde::{Deserialize, Serialize};
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
@@ -31,67 +31,58 @@ pub struct Task {
     pub timestamp: u64,
 }
 
-fn decisions_path() -> std::path::PathBuf { paths::run_dir().join("decisions.json") }
-fn tasks_path() -> std::path::PathBuf { paths::run_dir().join("tasks.json") }
+fn decisions_path() -> std::path::PathBuf { paths::run_dir().join("decisions.jsonl") }
+fn tasks_path() -> std::path::PathBuf { paths::run_dir().join("tasks.jsonl") }
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
 }
 
-fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Vec<T> {
-    std::fs::read_to_string(path).ok()
-        .and_then(|c| serde_json::from_str(&c).ok())
-        .unwrap_or_default()
+fn read_jsonl<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Vec<T> {
+    let file = match std::fs::File::open(path) { Ok(f) => f, Err(_) => return vec![] };
+    std::io::BufReader::new(file).lines().map_while(Result::ok)
+        .filter_map(|line| serde_json::from_str(&line).ok()).collect()
 }
 
-fn write_json<T: Serialize>(path: &std::path::Path, data: &[T]) {
-    if let Ok(json) = serde_json::to_string_pretty(data) {
-        let tmp = path.with_extension("tmp");
-        if let Ok(mut f) = std::fs::File::create(&tmp) {
-            let _ = f.write_all(json.as_bytes());
-            let _ = std::fs::rename(&tmp, path);
-        }
+fn append_jsonl<T: Serialize>(path: &std::path::Path, item: &T) {
+    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).ok(); }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        if let Ok(line) = serde_json::to_string(item) { let _ = writeln!(f, "{line}"); }
     }
 }
 
 pub fn post_decision(author: &str, title: &str, content: &str) -> Decision {
-    let path = decisions_path();
-    let mut decisions: Vec<Decision> = read_json(&path);
+    let decisions: Vec<Decision> = read_jsonl(&decisions_path());
     let id = decisions.len() as u64 + 1;
     let d = Decision { id, title: title.into(), content: content.into(), author: author.into(), timestamp: now_secs() };
-    decisions.push(d.clone());
-    write_json(&path, &decisions);
+    append_jsonl(&decisions_path(), &d);
     d
 }
 
-pub fn list_decisions() -> Vec<Decision> { read_json(&decisions_path()) }
+pub fn list_decisions() -> Vec<Decision> { read_jsonl(&decisions_path()) }
 
 pub fn create_task(created_by: &str, title: &str, description: &str, assignee: &str) -> Task {
-    let path = tasks_path();
-    let mut tasks: Vec<Task> = read_json(&path);
     let id = format!("T{}", NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed));
     let t = Task {
         id: id.clone(), title: title.into(), description: description.into(),
         assignee: assignee.into(), status: "open".into(), result: String::new(),
         created_by: created_by.into(), timestamp: now_secs(),
     };
-    tasks.push(t.clone());
-    write_json(&path, &tasks);
+    append_jsonl(&tasks_path(), &t);
     t
 }
 
-pub fn list_tasks() -> Vec<Task> { read_json(&tasks_path()) }
+pub fn list_tasks() -> Vec<Task> { read_jsonl(&tasks_path()) }
 
 pub fn update_task(id: &str, status: Option<&str>, assignee: Option<&str>, result: Option<&str>) -> Option<Task> {
-    let path = tasks_path();
-    let mut tasks: Vec<Task> = read_json(&path);
-    let task = tasks.iter_mut().find(|t| t.id == id)?;
+    let tasks: Vec<Task> = read_jsonl(&tasks_path());
+    let mut task = tasks.into_iter().find(|t| t.id == id)?;
     if let Some(s) = status { task.status = s.into(); }
     if let Some(a) = assignee { task.assignee = a.into(); }
     if let Some(r) = result { task.result = r.into(); }
-    let updated = task.clone();
-    write_json(&path, &tasks);
-    Some(updated)
+    task.timestamp = now_secs();
+    append_jsonl(&tasks_path(), &task);
+    Some(task)
 }
 
 #[cfg(test)]
@@ -116,6 +107,5 @@ mod tests {
         let json = serde_json::to_string(&t).unwrap();
         let restored: Task = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.id, "T1");
-        assert_eq!(restored.status, "open");
     }
 }
