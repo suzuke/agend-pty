@@ -54,6 +54,16 @@ impl InstanceConfig {
         self.working_directory.as_deref().or(defaults.working_directory.as_deref())
     }
 
+    /// Get working directory, auto-generating ~/.agend/workspaces/{name}/ if not set.
+    pub fn effective_working_dir(&self, defaults: &Defaults, name: &str) -> PathBuf {
+        self.working_directory.clone()
+            .or_else(|| defaults.working_directory.clone())
+            .unwrap_or_else(|| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+                PathBuf::from(home).join(".agend").join("workspaces").join(name)
+            })
+    }
+
     /// Build the full command string for this instance.
     pub fn build_command(&self, defaults: &Defaults) -> String {
         if let Some(cmd) = &self.command {

@@ -191,24 +191,15 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     );
     std::fs::write(&prompt_path, &prompt).ok();
 
-    // Build final command with backend-specific MCP injection + resume
-    let mut final_command = inject_mcp_for_backend(&command, &name, &mcp_config_path_str, &prompt_path_str);
+    // Build final command with backend-specific MCP injection
+    let final_command = inject_mcp_for_backend(&command, &name, &mcp_config_path_str, &prompt_path_str);
 
-    // Add per-backend resume flag
-    let bin = command.split_whitespace().next().unwrap_or("");
-    match bin {
-        "claude" if !final_command.contains("--continue") => final_command.push_str(" --continue"),
-        "gemini" if !final_command.contains("--resume") => final_command.push_str(" --resume latest"),
-        "kiro-cli" if !final_command.contains("--resume") => final_command.push_str(" --resume"),
-        "opencode" if !final_command.contains("--continue") => final_command.push_str(" --continue"),
-        _ => {}
-    }
-    // Codex: resume --last needs to replace the command, not append a flag
-    if bin == "codex" && !final_command.contains("resume") {
-        // Try resume first, fallback to normal start
-        let codex_bin = final_command.clone();
-        final_command = format!("bash -c '{codex_bin} resume --last 2>/dev/null || {codex_bin}'");
-    }
+    // Gemini: --resume latest is safe (per-directory). Other backends: no resume without session ID.
+    let final_command = if command.starts_with("gemini") && !final_command.contains("--resume") {
+        format!("{final_command} --resume latest")
+    } else {
+        final_command
+    };
 
     let parts: Vec<&str> = final_command.split_whitespace().collect();
     let mut cmd = CommandBuilder::new(parts[0]);
@@ -723,7 +714,7 @@ fn main() {
     } else if let Ok(cfg) = load_config() {
         cfg.instances.iter().map(|(name, ic)| {
             let cmd = ic.build_command(&cfg.defaults);
-            let wd = ic.working_dir_or(&cfg.defaults).map(|p| p.to_path_buf());
+            let wd = Some(ic.effective_working_dir(&cfg.defaults, name));
             (name.clone(), cmd, wd)
         }).collect()
     } else {
@@ -732,6 +723,20 @@ fn main() {
 
     let registry: AgentRegistry = Arc::new(Mutex::new(HashMap::new()));
     let agent_writers: api::AgentWriters = Arc::new(Mutex::new(HashMap::new()));
+
+    // Warn if multiple instances share working_directory
+    {
+        let mut seen: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        for (name, _, wd) in &agents {
+            let dir = wd.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
+            seen.entry(dir).or_default().push(name.clone());
+        }
+        for (dir, names) in &seen {
+            if names.len() > 1 && !dir.is_empty() {
+                eprintln!("[daemon] ⚠️  instances {:?} share working_directory {}, session resume may conflict", names, dir);
+            }
+        }
+    }
     let inbox_store = inbox::InboxStore::new();
     let channel_mgr = channel::ChannelManager::new();
     eprintln!("[daemon] starting {} agent(s)", agents.len());
