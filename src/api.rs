@@ -3,13 +3,14 @@
 //! Listens on ~/.agend/run/<pid>/api.sock
 //! Protocol: newline-delimited JSON (one request per line, one response per line)
 
-use crate::{channel, fleet_store, inbox, paths};
+use crate::{channel, fleet_store, inbox, paths, state};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Deserialize)]
 pub struct ApiRequest {
@@ -30,9 +31,16 @@ pub struct ApiResponse {
 pub type PtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 pub type AgentWriters = Arc<Mutex<HashMap<String, PtyWriter>>>;
 
+/// Agent state handle exposed to API layer.
+pub struct AgentStateHandle {
+    pub state_machine: Arc<Mutex<state::StateMachine>>,
+}
+pub type AgentStateMap = Arc<Mutex<HashMap<String, AgentStateHandle>>>;
+
 /// Shared daemon context for API handlers.
 pub struct DaemonCtx {
     pub writers: AgentWriters,
+    pub states: AgentStateMap,
     pub inbox: Arc<inbox::InboxStore>,
     pub channel_mgr: Arc<Mutex<channel::ChannelManager>>,
 }
@@ -287,20 +295,24 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
         "wait_for_idle" => {
             let target = args["instance_name"].as_str().unwrap_or("");
             let timeout = args["timeout_secs"].as_u64().unwrap_or(120).min(300);
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout);
-            // Check instance exists first
-            if !ctx.writers.lock().unwrap_or_else(|e| e.into_inner()).contains_key(target) {
-                return json!({"content": [{"type": "text", "text": json!({"status": "not_found", "instance": target}).to_string()}], "isError": true});
-            }
+            let deadline = Instant::now() + Duration::from_secs(timeout);
             loop {
-                std::thread::sleep(std::time::Duration::from_secs(2));
-                // Agent removed from writers = crashed/exited
-                if !ctx.writers.lock().unwrap_or_else(|e| e.into_inner()).contains_key(target) {
-                    break json!({"content": [{"type": "text", "text": json!({"status": "crashed", "instance": target}).to_string()}], "isError": true});
+                let agent_state = ctx.states.lock().unwrap_or_else(|e| e.into_inner())
+                    .get(target)
+                    .and_then(|h| h.state_machine.lock().ok().map(|s| s.state()));
+                match agent_state {
+                    Some(state::AgentState::Ready | state::AgentState::Idle) =>
+                        break json!({"content": [{"type": "text", "text": json!({"idle": true, "state": format!("{:?}", agent_state.unwrap())}).to_string()}]}),
+                    Some(state::AgentState::Crashed | state::AgentState::Errored) =>
+                        break json!({"content": [{"type": "text", "text": format!("agent '{target}' is {:?}", agent_state.unwrap())}], "isError": true}),
+                    None =>
+                        break json!({"content": [{"type": "text", "text": format!("instance '{target}' not found")}], "isError": true}),
+                    _ => {}
                 }
-                if std::time::Instant::now() > deadline {
-                    break json!({"content": [{"type": "text", "text": json!({"status": "timeout", "instance": target}).to_string()}]});
+                if Instant::now() > deadline {
+                    break json!({"content": [{"type": "text", "text": format!("timeout after {timeout}s waiting for '{target}'")}], "isError": true});
                 }
+                std::thread::sleep(Duration::from_secs(2));
             }
         }
         _ => json!({"content": [{"type": "text", "text": format!("unknown tool: {tool}")}], "isError": true}),

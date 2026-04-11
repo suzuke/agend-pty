@@ -124,6 +124,7 @@ fn handle_health_action(
     name: &str,
     registry: &AgentRegistry,
     agent_writers: &api::AgentWriters,
+    agent_states: &api::AgentStateMap,
     spawn_configs: &SpawnConfigs,
     inbox_store: &Arc<inbox::InboxStore>,
     channel_mgr: &Arc<Mutex<channel::ChannelManager>>,
@@ -131,7 +132,7 @@ fn handle_health_action(
     match action {
         health::HealthAction::Restart => {
             eprintln!("[health] {name}: scheduling respawn");
-            do_respawn(name, registry, agent_writers, spawn_configs, inbox_store, channel_mgr);
+            do_respawn(name, registry, agent_writers, agent_states, spawn_configs, inbox_store, channel_mgr);
         }
         health::HealthAction::KillAndRestart => {
             eprintln!("[health] {name}: hang detected — killing and respawning");
@@ -152,6 +153,7 @@ fn do_respawn(
     name: &str,
     registry: &AgentRegistry,
     agent_writers: &api::AgentWriters,
+    agent_states: &api::AgentStateMap,
     spawn_configs: &SpawnConfigs,
     inbox_store: &Arc<inbox::InboxStore>,
     channel_mgr: &Arc<Mutex<channel::ChannelManager>>,
@@ -170,6 +172,7 @@ fn do_respawn(
 
     let reg = Arc::clone(registry);
     let aw = Arc::clone(agent_writers);
+    let as_ = Arc::clone(agent_states);
     let ib = Arc::clone(inbox_store);
     let cm = Arc::clone(channel_mgr);
     let sc = Arc::clone(spawn_configs);
@@ -177,7 +180,7 @@ fn do_respawn(
         .name(format!("respawn_{}", name))
         .spawn(move || {
             eprintln!("[health] {}: respawning", cfg.name);
-            spawn_agent(cfg.name, cfg.command, cfg.working_dir, reg, aw, ib, cm, sc);
+            spawn_agent(cfg.name, cfg.command, cfg.working_dir, reg, aw, as_, ib, cm, sc);
         })
         .unwrap();
 }
@@ -231,7 +234,7 @@ fn inject_mcp_for_backend(command: &str, _name: &str, mcp_config_path: &str, pro
 
 
 #[allow(clippy::too_many_arguments)]
-fn spawn_agent(name: String, command: String, working_dir: Option<std::path::PathBuf>, registry: AgentRegistry, agent_writers: api::AgentWriters, inbox_store: Arc<inbox::InboxStore>, channel_mgr: Arc<Mutex<channel::ChannelManager>>, spawn_configs: SpawnConfigs) {
+fn spawn_agent(name: String, command: String, working_dir: Option<std::path::PathBuf>, registry: AgentRegistry, agent_writers: api::AgentWriters, agent_states: api::AgentStateMap, inbox_store: Arc<inbox::InboxStore>, channel_mgr: Arc<Mutex<channel::ChannelManager>>, spawn_configs: SpawnConfigs) {
     let sock = socket_path(&name);
     let _ = std::fs::remove_file(&sock);
 
@@ -321,6 +324,8 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     });
     agent_writers.lock().unwrap_or_else(|e| e.into_inner())
         .insert(name.clone(), Arc::clone(&pty_writer));
+    agent_states.lock().unwrap_or_else(|e| e.into_inner())
+        .insert(name.clone(), api::AgentStateHandle { state_machine: Arc::clone(&state_machine) });
 
     // PTY read thread — feeds VTerm + broadcasts + reaps on exit
     let core2 = Arc::clone(&core);
@@ -332,6 +337,7 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     let hm = Arc::clone(&health_monitor);
     let ib_reaper = Arc::clone(&inbox_store);
     let sc_reaper = Arc::clone(&spawn_configs);
+    let as_reaper = Arc::clone(&agent_states);
     let n = name.clone();
     std::thread::Builder::new()
         .name(format!("{n}_pty_read"))
@@ -363,7 +369,7 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
                         let _ = std::fs::remove_dir_all(paths::agent_dir(&n));
 
                         // 3. Now safe to respawn (cleanup complete, no race)
-                        handle_health_action(&action, &n, &reg_reaper, &aw_reaper, &sc_reaper, &ib_reaper, &cm_reaper);
+                        handle_health_action(&action, &n, &reg_reaper, &aw_reaper, &as_reaper, &sc_reaper, &ib_reaper, &cm_reaper);
                         break;
                     }
                     Ok(n_bytes) => {
@@ -392,7 +398,7 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
                                         let action = h.on_state_change(new_state, s.consecutive_errors(), s.last_error_kind(), std::time::Instant::now());
                                         if action != health::HealthAction::None {
                                             eprintln!("[{n}] health action: {:?}", action);
-                                            handle_health_action(&action, &n, &reg_reaper, &aw_reaper, &sc_reaper, &ib_reaper, &cm_reaper);
+                                            handle_health_action(&action, &n, &reg_reaper, &aw_reaper, &as_reaper, &sc_reaper, &ib_reaper, &cm_reaper);
                                         }
                                     }
                                 }
@@ -573,6 +579,7 @@ fn main() {
 
     let registry: AgentRegistry = Arc::new(Mutex::new(HashMap::new()));
     let agent_writers: api::AgentWriters = Arc::new(Mutex::new(HashMap::new()));
+    let agent_states: api::AgentStateMap = Arc::new(Mutex::new(HashMap::new()));
     let spawn_configs: SpawnConfigs = Arc::new(Mutex::new(HashMap::new()));
 
     // Warn if multiple instances share working_directory
@@ -648,6 +655,7 @@ fn main() {
             std::fs::create_dir_all(paths::agent_dir(name)).ok();
             let reg = Arc::clone(&registry);
             let aw = Arc::clone(&agent_writers);
+            let as_ = Arc::clone(&agent_states);
             let ib = Arc::clone(&inbox_store);
             let cm = Arc::clone(&channel_mgr);
             let sc = Arc::clone(&spawn_configs);
@@ -655,7 +663,7 @@ fn main() {
             std::thread::Builder::new()
                 .name(format!("agent_{n}"))
                 .spawn(move || {
-                    spawn_agent(n, command, wd, reg, aw, ib, cm, sc);
+                    spawn_agent(n, command, wd, reg, aw, as_, ib, cm, sc);
                 })
                 .unwrap();
         }
@@ -666,6 +674,7 @@ fn main() {
     // Start API socket
     api::start(Arc::new(api::DaemonCtx {
         writers: Arc::clone(&agent_writers),
+        states: Arc::clone(&agent_states),
         inbox: Arc::clone(&inbox_store),
         channel_mgr: Arc::clone(&channel_mgr),
     }));
@@ -702,6 +711,7 @@ fn main() {
     {
         let reg = Arc::clone(&registry);
         let aw = Arc::clone(&agent_writers);
+        let as2 = Arc::clone(&agent_states);
         let sc = Arc::clone(&spawn_configs);
         let ib = Arc::clone(&inbox_store);
         let cm = Arc::clone(&channel_mgr);
@@ -729,7 +739,7 @@ fn main() {
                                     let action = h.on_state_change(new_state, s.consecutive_errors(), s.last_error_kind(), now);
                                     if action != health::HealthAction::None {
                                         eprintln!("[tick] {name} health action: {:?}", action);
-                                        handle_health_action(&action, name, &reg, &aw, &sc, &ib, &cm);
+                                        handle_health_action(&action, name, &reg, &aw, &as2, &sc, &ib, &cm);
                                     }
                                 }
                             }
@@ -740,7 +750,7 @@ fn main() {
                             let action = h.tick(s.state(), now);
                             if action != health::HealthAction::None {
                                 eprintln!("[tick] {name} health tick action: {:?}", action);
-                                handle_health_action(&action, name, &reg, &aw, &sc, &ib, &cm);
+                                handle_health_action(&action, name, &reg, &aw, &as2, &sc, &ib, &cm);
                             }
                         }
                     }
