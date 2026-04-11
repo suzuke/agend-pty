@@ -561,6 +561,14 @@ fn main() {
     paths::init();
     eprintln!("[daemon] run dir: {}", paths::run_dir().display());
 
+    // Acquire daemon lock (prevents duplicate fleet daemons)
+    let fleet_id = config_path.as_ref().map(|p| p.display().to_string());
+    let _lock_file = match paths::acquire_lock(fleet_id.as_deref()) {
+        Ok(f) => f,
+        Err(e) => { eprintln!("[daemon] {e}"); std::process::exit(1); }
+    };
+    eprintln!("[daemon] lock acquired");
+
     // Parse agents from CLI args or fleet.yaml
     let load_config = || -> Result<config::FleetConfig, String> {
         if let Some(ref p) = config_path {

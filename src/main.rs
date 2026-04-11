@@ -74,6 +74,21 @@ fn main() {
                 for a in &agents { println!("  {a}"); }
             }
         }
+        "status" => {
+            let daemons = paths::list_daemons();
+            if daemons.is_empty() {
+                println!("No running daemons.");
+            } else {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+                for d in &daemons {
+                    let uptime = now.saturating_sub(d.start_time);
+                    let h = uptime / 3600; let m = (uptime % 3600) / 60;
+                    println!("  PID {} | fleet: {} | agents: {} | uptime: {}h{}m",
+                        d.pid, d.fleet_config, d.agent_count, h, m);
+                }
+            }
+        }
         "inject" => {
             let agent = sub_args.first().map(|s| s.as_str()).unwrap_or("");
             let msg = sub_args.get(1..).unwrap_or_default().join(" ");
@@ -114,6 +129,7 @@ fn print_help() {
     println!("  attach [agent]         Attach to agent terminal (Ctrl+B d to detach)");
     println!("  doctor                 Health check");
     println!("  list                   List running agents");
+    println!("  status                 List running daemons");
     println!("  inject <agent> <msg>   Inject message to agent");
     println!("  shutdown               Stop running daemon");
 }

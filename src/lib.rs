@@ -15,6 +15,7 @@ pub mod vterm;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use channel::ChannelAdapter;
 
     #[test]
     fn config_parse_minimal() {
@@ -281,7 +282,68 @@ instances:
         vt.process(b"line1\r\nline2\r\ncursor here");
         let dump = vt.dump_screen();
         let text = String::from_utf8_lossy(&dump);
-        // Cursor should be positioned after "cursor here" (line 3, col 12)
         assert!(text.contains("\x1b[3;12H"), "dump should position cursor");
+    }
+
+    // ── NullAdapter ─────────────────────────────────────────────────────
+
+    #[test]
+    fn null_adapter_is_noop() {
+        let adapter = channel::NullAdapter;
+        assert_eq!(adapter.name(), "null");
+        adapter.on_agent_created("test");
+        adapter.on_agent_removed("test");
+        adapter.send_to_agent("test", "hello");
+        adapter.notify("hello");
+        assert!(adapter.poll().is_empty());
+    }
+
+    #[test]
+    fn channel_manager_no_adapters() {
+        let mgr = channel::ChannelManager::new();
+        let m = mgr.lock().unwrap();
+        assert!(!m.has_adapters());
+        assert!(m.poll_all().is_empty());
+    }
+
+    #[test]
+    fn channel_manager_with_null_adapter() {
+        let mgr = channel::ChannelManager::new();
+        mgr.lock().unwrap().add_adapter(Box::new(channel::NullAdapter));
+        let m = mgr.lock().unwrap();
+        assert!(m.has_adapters());
+        m.on_agent_created("test");
+        m.send_to_agent("test", "hello");
+        assert!(m.poll_all().is_empty());
+    }
+
+    // ── PID lockfile ────────────────────────────────────────────────────
+
+    #[test]
+    fn stale_pid_cleanup() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Create a fake stale run dir with a dead PID
+        let run_base = tmp.path().join("run");
+        let stale_dir = run_base.join("99999999");
+        std::fs::create_dir_all(stale_dir.join("agents")).unwrap();
+        std::fs::write(stale_dir.join("daemon.lock"), "99999999\n(test)\n0\n").unwrap();
+
+        // Manually do what cleanup_stale does, but on our temp dir
+        for entry in std::fs::read_dir(&run_base).unwrap().flatten() {
+            if let Some(pid_str) = entry.file_name().to_str() {
+                if let Ok(pid) = pid_str.parse::<u32>() {
+                    if unsafe { libc::kill(pid as i32, 0) } != 0 {
+                        std::fs::remove_dir_all(entry.path()).unwrap();
+                    }
+                }
+            }
+        }
+        assert!(!stale_dir.exists(), "stale dir should be cleaned up");
+    }
+
+    #[test]
+    fn list_daemons_returns_vec() {
+        // Just verify the function doesn't panic
+        let _ = paths::list_daemons();
     }
 }

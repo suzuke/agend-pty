@@ -45,35 +45,37 @@ impl ChannelManager {
         self.adapters.push(adapter);
     }
 
+    pub fn has_adapters(&self) -> bool { !self.adapters.is_empty() }
+
     pub fn on_agent_created(&self, name: &str) {
-        for adapter in &self.adapters {
-            adapter.on_agent_created(name);
-        }
+        for adapter in &self.adapters { adapter.on_agent_created(name); }
     }
 
     pub fn on_agent_removed(&self, name: &str) {
-        for adapter in &self.adapters {
-            adapter.on_agent_removed(name);
-        }
+        for adapter in &self.adapters { adapter.on_agent_removed(name); }
     }
 
     pub fn send_to_agent(&self, agent: &str, text: &str) {
-        for adapter in &self.adapters {
-            adapter.send_to_agent(agent, text);
-        }
+        for adapter in &self.adapters { adapter.send_to_agent(agent, text); }
     }
 
     pub fn notify(&self, text: &str) {
-        for adapter in &self.adapters {
-            adapter.notify(text);
-        }
+        for adapter in &self.adapters { adapter.notify(text); }
     }
 
     pub fn poll_all(&self) -> Vec<IncomingMessage> {
-        let mut msgs = Vec::new();
-        for adapter in &self.adapters {
-            msgs.extend(adapter.poll());
-        }
-        msgs
+        self.adapters.iter().flat_map(|a| a.poll()).collect()
     }
+}
+
+/// Null adapter — no-op for local dev/testing without external channels.
+pub struct NullAdapter;
+
+impl ChannelAdapter for NullAdapter {
+    fn name(&self) -> &str { "null" }
+    fn on_agent_created(&self, _name: &str) {}
+    fn on_agent_removed(&self, _name: &str) {}
+    fn send_to_agent(&self, _agent: &str, _text: &str) {}
+    fn notify(&self, _text: &str) {}
+    fn poll(&self) -> Vec<IncomingMessage> { vec![] }
 }
