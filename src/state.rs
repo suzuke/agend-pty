@@ -163,7 +163,11 @@ impl StateMachine {
         self.detect_buf.push_str(clean_text);
         // Cap buffer at 4KB
         if self.detect_buf.len() > 4096 {
-            let drain = self.detect_buf.len() - 4096;
+            let mut drain = self.detect_buf.len() - 4096;
+            // Ensure we drain at a char boundary to avoid panic
+            while drain < self.detect_buf.len() && !self.detect_buf.is_char_boundary(drain) {
+                drain += 1;
+            }
             self.detect_buf.drain(..drain);
         }
 
