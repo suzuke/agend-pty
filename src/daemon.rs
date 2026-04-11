@@ -29,6 +29,10 @@ mod doctor;
 mod mcp_config;
 #[path = "channel.rs"]
 mod channel;
+#[path = "state.rs"]
+mod state;
+#[path = "health.rs"]
+mod health;
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
@@ -124,6 +128,8 @@ struct AgentHandle {
     submit_key: String,
     inject_prefix: String,
     typed_inject: bool,
+    state_machine: Arc<Mutex<state::StateMachine>>,
+    health: Arc<Mutex<health::HealthMonitor>>,
 }
 
 type AgentRegistry = Arc<Mutex<HashMap<String, AgentHandle>>>;
@@ -241,6 +247,12 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     let inject_prefix = preset.as_ref().map(|p| p.inject_prefix.to_owned()).unwrap_or_default();
     let typed_inject = preset.as_ref().map(|p| p.typed_inject).unwrap_or(false);
 
+    // State machine + health monitor
+    let ready_pattern = preset.as_ref().map(|p| p.ready_pattern).unwrap_or(">");
+    let state_patterns = state::StatePatterns::from_backend(ready_pattern);
+    let state_machine = Arc::new(Mutex::new(state::StateMachine::new(state_patterns)));
+    let health_monitor = Arc::new(Mutex::new(health::HealthMonitor::new()));
+
     // Register in global registry + writers map
     registry.lock().unwrap_or_else(|e| e.into_inner()).insert(name.clone(), AgentHandle {
         pty_writer: Arc::clone(&pty_writer),
@@ -248,6 +260,8 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
         submit_key,
         inject_prefix,
         typed_inject,
+        state_machine: Arc::clone(&state_machine),
+        health: Arc::clone(&health_monitor),
     });
     agent_writers.lock().unwrap_or_else(|e| e.into_inner())
         .insert(name.clone(), Arc::clone(&pty_writer));
@@ -258,6 +272,8 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     let reg_reaper = Arc::clone(&registry);
     let aw_reaper = Arc::clone(&agent_writers);
     let cm_reaper = Arc::clone(&channel_mgr);
+    let sm = Arc::clone(&state_machine);
+    let hm = Arc::clone(&health_monitor);
     let n = name.clone();
     std::thread::Builder::new()
         .name(format!("{n}_pty_read"))
@@ -269,6 +285,17 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
                 match pty_reader.read(&mut buf) {
                     Ok(0) => {
                         eprintln!("[{n}] PTY closed — reaping session");
+                        // Update state machine
+                        let now = std::time::Instant::now();
+                        if let Ok(mut s) = sm.lock() {
+                            if let Some(new_state) = s.on_exit(now) {
+                                eprintln!("[{n}] state: {:?}", new_state);
+                                if let Ok(mut h) = hm.lock() {
+                                    let action = h.on_state_change(new_state, s.consecutive_errors(), now);
+                                    eprintln!("[{n}] health action: {:?}", action);
+                                }
+                            }
+                        }
                         reg_reaper.lock().unwrap_or_else(|e| e.into_inner()).remove(&n);
                         aw_reaper.lock().unwrap_or_else(|e| e.into_inner()).remove(&n);
                         cm_reaper.lock().unwrap_or_else(|e| e.into_inner()).on_agent_removed(&n);
@@ -288,6 +315,19 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
                                 let _ = pw.lock().unwrap_or_else(|e| e.into_inner()).write_all(b"\x1b[A\x1b[A\r");
                                 dialog_dismissed = true;
                                 detect_buf.clear();
+                            }
+                        }
+
+                        // Feed state machine with stripped output
+                        {
+                            let clean = state::strip_ansi(&String::from_utf8_lossy(data));
+                            if let Ok(mut s) = sm.lock() {
+                                if let Some(new_state) = s.process_output(&clean, std::time::Instant::now()) {
+                                    eprintln!("[{n}] state: {:?}", new_state);
+                                    if let Ok(mut h) = hm.lock() {
+                                        h.on_state_change(new_state, s.consecutive_errors(), std::time::Instant::now());
+                                    }
+                                }
                             }
                         }
 

@@ -3,10 +3,12 @@ pub mod backend;
 pub mod channel;
 pub mod config;
 pub mod doctor;
+pub mod health;
 pub mod inbox;
 pub mod instructions;
 pub mod mcp_config;
 pub mod paths;
+pub mod state;
 pub mod telegram;
 pub mod vterm;
 
