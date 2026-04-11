@@ -14,6 +14,10 @@ mod paths;
 mod doctor;
 #[path = "config.rs"]
 mod config;
+#[path = "instructions.rs"]
+mod instructions;
+#[path = "features.rs"]
+mod features;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -50,6 +54,30 @@ fn main() {
         }
         "doctor" | "doc" => {
             doctor::run();
+        }
+        "dry-run" | "dryrun" => {
+            match config::FleetConfig::find_and_load() {
+                Ok(cfg) => features::dry_run(&cfg),
+                Err(e) => { eprintln!("Error: {e}"); std::process::exit(1); }
+            }
+        }
+        "snapshot" => {
+            let output = sub_args.iter().position(|s| s == "--output" || s == "-o")
+                .and_then(|i| sub_args.get(i + 1))
+                .map(|s| std::path::PathBuf::from(s))
+                .unwrap_or_else(|| "fleet-snapshot.json".into());
+            if let Err(e) = features::snapshot(None, &output) {
+                eprintln!("Error: {e}"); std::process::exit(1);
+            }
+        }
+        "restore" => {
+            let input = sub_args.iter().position(|s| s == "--input" || s == "-i")
+                .and_then(|i| sub_args.get(i + 1))
+                .map(|s| std::path::PathBuf::from(s))
+                .unwrap_or_else(|| "fleet-snapshot.json".into());
+            if let Err(e) = features::restore(&input) {
+                eprintln!("Error: {e}"); std::process::exit(1);
+            }
         }
         "--shutdown" | "shutdown" | "stop" => {
             if let Some(run) = paths::find_active_run_dir() {
@@ -127,10 +155,13 @@ fn print_help() {
     println!("Commands:");
     println!("  daemon [name:cmd ...]  Start daemon (reads fleet.yaml if no args)");
     println!("  attach [agent]         Attach to agent terminal (Ctrl+B d to detach)");
+    println!("  dry-run                Validate fleet.yaml without starting");
     println!("  doctor                 Health check");
     println!("  list                   List running agents");
     println!("  status                 List running daemons");
     println!("  inject <agent> <msg>   Inject message to agent");
+    println!("  snapshot [-o file]     Save fleet state to JSON");
+    println!("  restore [-i file]      Restore fleet.yaml from snapshot");
     println!("  shutdown               Stop running daemon");
 }
 
