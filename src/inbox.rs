@@ -41,10 +41,10 @@ impl InboxStore {
         std::sync::Arc::new(Self)
     }
 
-    pub fn store_or_inject(&self, agent: &str, sender: &str, message: &str, _submit_key: &str) -> InjectAction {
+    pub fn store_or_inject(&self, agent: &str, sender: &str, message: &str, submit_key: &str) -> InjectAction {
         if message.len() <= MAX_DIRECT_INJECT_LEN {
             return InjectAction::Direct(format!(
-                "[message from {sender} (reply via send_to_instance to \"{sender}\")] {message}"
+                "[message from {sender} (reply via send_to_instance to \"{sender}\")] {message}{submit_key}"
             ));
         }
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
@@ -63,7 +63,7 @@ impl InboxStore {
         }
         let preview: String = message.chars().take(100).collect();
         InjectAction::Notification(format!(
-            "[message from {sender}] {preview}... (full message in inbox, use inbox tool with id={id})"
+            "[message from {sender}] {preview}... (full message in inbox, use inbox tool with id={id}){submit_key}"
         ))
     }
 
