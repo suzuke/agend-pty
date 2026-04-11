@@ -161,14 +161,10 @@ impl StateMachine {
     pub fn process_output(&mut self, clean_text: &str, now: Instant) -> Option<AgentState> {
         self.last_output = now;
         self.detect_buf.push_str(clean_text);
-        // Cap buffer at 4KB
+        // Cap buffer at ~4KB, splitting at a valid char boundary
         if self.detect_buf.len() > 4096 {
-            let mut drain = self.detect_buf.len() - 4096;
-            // Ensure we drain at a char boundary to avoid panic
-            while drain < self.detect_buf.len() && !self.detect_buf.is_char_boundary(drain) {
-                drain += 1;
-            }
-            self.detect_buf.drain(..drain);
+            let keep_from = self.detect_buf.ceil_char_boundary(self.detect_buf.len() - 4096);
+            self.detect_buf = self.detect_buf[keep_from..].to_string();
         }
 
         // Check input prompts (WaitingForInput)
