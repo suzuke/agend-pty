@@ -103,13 +103,14 @@ impl ChannelAdapter for TelegramAdapter {
         }
     }
 
-    fn send_to_agent(&self, agent: &str, text: &str) {
+    fn send_to_agent(&self, agent: &str, text: &str) -> Option<String> {
         let thread_id = self.topics.lock().unwrap_or_else(|e| e.into_inner()).get(agent).copied();
         if let Some(tid) = thread_id {
-            if let Err(e) = self.bot.send_message(self.group_id, text, Some(tid)) {
-                eprintln!("[telegram] send to '{agent}' failed: {e}");
+            match self.bot.send_message(self.group_id, text, Some(tid)) {
+                Ok(val) => val["message_id"].as_i64().map(|id| id.to_string()),
+                Err(e) => { eprintln!("[telegram] send to '{agent}' failed: {e}"); None }
             }
-        }
+        } else { None }
     }
 
     fn notify(&self, text: &str) {
@@ -146,6 +147,7 @@ impl ChannelAdapter for TelegramAdapter {
                     agent_target: agent,
                     sender: username.to_owned(),
                     text: text.to_owned(),
+                    message_id: msg["message_id"].as_i64().map(|id| id.to_string()),
                 });
             }
         }

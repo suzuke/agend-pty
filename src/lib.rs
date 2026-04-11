@@ -154,8 +154,9 @@ instances:
         fn on_agent_removed(&self, name: &str) {
             self.removed.lock().unwrap().push(name.to_owned());
         }
-        fn send_to_agent(&self, agent: &str, text: &str) {
+        fn send_to_agent(&self, agent: &str, text: &str) -> Option<String> {
             self.sent.lock().unwrap().push((agent.to_owned(), text.to_owned()));
+            None
         }
         fn notify(&self, text: &str) {
             self.notifications.lock().unwrap().push(text.to_owned());
@@ -187,7 +188,7 @@ instances:
         fn name(&self) -> &str { self.0.name() }
         fn on_agent_created(&self, name: &str) { self.0.on_agent_created(name) }
         fn on_agent_removed(&self, name: &str) { self.0.on_agent_removed(name) }
-        fn send_to_agent(&self, agent: &str, text: &str) { self.0.send_to_agent(agent, text) }
+        fn send_to_agent(&self, agent: &str, text: &str) -> Option<String> { self.0.send_to_agent(agent, text) }
         fn notify(&self, text: &str) { self.0.notify(text) }
         fn poll(&self) -> Vec<channel::IncomingMessage> { self.0.poll() }
     }
@@ -322,23 +323,24 @@ instances:
     #[test]
     fn stale_pid_cleanup() {
         let tmp = tempfile::tempdir().unwrap();
-        // Create a fake stale run dir with a dead PID
         let run_base = tmp.path().join("run");
         let stale_dir = run_base.join("99999999");
         std::fs::create_dir_all(stale_dir.join("agents")).unwrap();
+        // Write a lock file but DON'T hold flock → stale
         std::fs::write(stale_dir.join("daemon.lock"), "99999999\n(test)\n0\n").unwrap();
 
-        // Manually do what cleanup_stale does, but on our temp dir
-        for entry in std::fs::read_dir(&run_base).unwrap().flatten() {
-            if let Some(pid_str) = entry.file_name().to_str() {
-                if let Ok(pid) = pid_str.parse::<u32>() {
-                    if unsafe { libc::kill(pid as i32, 0) } != 0 {
-                        std::fs::remove_dir_all(entry.path()).unwrap();
-                    }
-                }
-            }
-        }
-        assert!(!stale_dir.exists(), "stale dir should be cleaned up");
+        // Try flock on the lock file — should succeed (no one holds it)
+        let lock_path = stale_dir.join("daemon.lock");
+        let file = std::fs::File::open(&lock_path).unwrap();
+        use std::os::unix::io::AsRawFd;
+        let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_eq!(ret, 0, "should be able to lock stale file");
+        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+        drop(file);
+
+        // Clean up stale dir manually (same logic as cleanup_stale)
+        std::fs::remove_dir_all(&stale_dir).unwrap();
+        assert!(!stale_dir.exists());
     }
 
     #[test]

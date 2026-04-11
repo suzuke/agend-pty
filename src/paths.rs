@@ -82,11 +82,16 @@ pub fn acquire_lock(fleet_config_path: Option<&str>) -> Result<std::fs::File, St
     let file = std::fs::File::create(&path)
         .map_err(|e| format!("create lock: {e}"))?;
 
+    use std::os::unix::io::AsRawFd;
+    let fd = file.as_raw_fd();
+
     // flock LOCK_EX | LOCK_NB
-    let ret = unsafe { libc::flock(std::os::unix::io::AsRawFd::as_raw_fd(&file), libc::LOCK_EX | libc::LOCK_NB) };
-    if ret != 0 {
-        return Err("failed to acquire lock (another daemon with this PID?)".into());
+    if unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err("failed to acquire lock".into());
     }
+
+    // FD_CLOEXEC — prevent child processes (PTY spawns) from inheriting the lock
+    unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
 
     // Write lock content
     use std::io::Write;
@@ -126,22 +131,32 @@ fn read_lock_info(dir: &std::path::Path) -> Option<DaemonInfo> {
     Some(DaemonInfo { pid, fleet_config, start_time, agent_count, run_dir: dir.to_path_buf() })
 }
 
-/// Check if a PID is alive.
-fn pid_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as i32, 0) == 0 }
+/// Check if a daemon's lock is still held (flock-based, immune to PID reuse).
+fn is_lock_held(dir: &std::path::Path) -> bool {
+    let lock_path = dir.join("daemon.lock");
+    let file = match std::fs::File::open(&lock_path) { Ok(f) => f, Err(_) => return false };
+    use std::os::unix::io::AsRawFd;
+    // Try non-blocking exclusive lock: if it succeeds, the lock was stale
+    let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if ret == 0 {
+        // We got the lock → original holder is dead. Release immediately.
+        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+        false
+    } else {
+        true // Lock held by a live daemon
+    }
 }
 
-/// Clean up stale run directories (dead PIDs).
+/// Clean up stale run directories (flock-based detection).
 pub fn cleanup_stale() {
     let run_base = home().join("run");
     let entries = match std::fs::read_dir(&run_base) { Ok(e) => e, Err(_) => return };
     for entry in entries.flatten() {
-        if let Some(pid_str) = entry.file_name().to_str() {
-            if let Ok(pid) = pid_str.parse::<u32>() {
-                if !pid_alive(pid) {
-                    let _ = std::fs::remove_dir_all(entry.path());
-                }
-            }
+        let path = entry.path();
+        // Skip our own run dir
+        if path == run_dir() { continue; }
+        if path.join("daemon.lock").exists() && !is_lock_held(&path) {
+            let _ = std::fs::remove_dir_all(&path);
         }
     }
 }
@@ -150,8 +165,9 @@ pub fn cleanup_stale() {
 fn find_daemon_for_fleet(fleet_id: &str) -> Option<DaemonInfo> {
     let run_base = home().join("run");
     for entry in std::fs::read_dir(&run_base).ok()?.flatten() {
-        if let Some(info) = read_lock_info(&entry.path()) {
-            if info.fleet_config == fleet_id && pid_alive(info.pid) {
+        let path = entry.path();
+        if let Some(info) = read_lock_info(&path) {
+            if info.fleet_config == fleet_id && is_lock_held(&path) {
                 return Some(info);
             }
         }
@@ -164,8 +180,10 @@ pub fn list_daemons() -> Vec<DaemonInfo> {
     let run_base = home().join("run");
     let entries = match std::fs::read_dir(&run_base) { Ok(e) => e, Err(_) => return vec![] };
     entries.flatten()
-        .filter_map(|e| read_lock_info(&e.path()))
-        .filter(|info| pid_alive(info.pid))
+        .filter_map(|e| {
+            let path = e.path();
+            if is_lock_held(&path) { read_lock_info(&path) } else { None }
+        })
         .collect()
 }
 
