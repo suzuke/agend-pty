@@ -23,6 +23,8 @@ pub trait ChannelAdapter: Send + Sync {
     fn on_agent_removed(&self, name: &str);
     /// Send a message to a specific agent's topic/thread. Returns message ID if available.
     fn send_to_agent(&self, agent: &str, text: &str) -> Option<String>;
+    fn react(&self, _agent: &str, _message_id: &str, _emoji: &str) -> Result<(), String> { Ok(()) }
+    fn edit_message(&self, _agent: &str, _message_id: &str, _text: &str) -> Result<(), String> { Ok(()) }
     /// Send a notification to the general/default topic.
     fn notify(&self, text: &str);
     /// Poll for incoming messages (blocking, with timeout).
@@ -68,6 +70,12 @@ impl ChannelManager {
 
     pub fn poll_all(&self) -> Vec<IncomingMessage> {
         self.adapters.iter().flat_map(|a| a.poll()).collect()
+    }
+    pub fn react(&self, agent: &str, message_id: &str, emoji: &str) -> Result<(), String> {
+        for a in &self.adapters { a.react(agent, message_id, emoji)?; } Ok(())
+    }
+    pub fn edit_message(&self, agent: &str, message_id: &str, text: &str) -> Result<(), String> {
+        for a in &self.adapters { a.edit_message(agent, message_id, text)?; } Ok(())
     }
 }
 

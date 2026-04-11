@@ -29,6 +29,8 @@ mod state;
 mod health;
 #[path = "features.rs"]
 mod features;
+#[path = "fleet_store.rs"]
+mod fleet_store;
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;

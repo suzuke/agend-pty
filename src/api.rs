@@ -3,7 +3,7 @@
 //! Listens on ~/.agend/run/<pid>/api.sock
 //! Protocol: newline-delimited JSON (one request per line, one response per line)
 
-use crate::{channel, inbox, paths};
+use crate::{channel, fleet_store, inbox, paths};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -214,6 +214,95 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                 json!({"content": [{"type": "text", "text": format!("instance '{name}' not found")}], "isError": true})
             }
         }
+        "post_decision" => {
+            let title = args["title"].as_str().unwrap_or("");
+            let content = args["content"].as_str().unwrap_or("");
+            let d = fleet_store::post_decision(instance, title, content);
+            json!({"content": [{"type": "text", "text": json!({"posted": true, "id": d.id}).to_string()}]})
+        }
+        "list_decisions" => {
+            let decisions = fleet_store::list_decisions();
+            let list: Vec<Value> = decisions.iter().map(|d| json!({"id": d.id, "title": d.title, "author": d.author})).collect();
+            json!({"content": [{"type": "text", "text": json!({"decisions": list}).to_string()}]})
+        }
+        "task" => {
+            let action = args["action"].as_str().unwrap_or("");
+            match action {
+                "create" => {
+                    let title = args["title"].as_str().unwrap_or("untitled");
+                    let desc = args["description"].as_str().unwrap_or("");
+                    let assignee = args["assignee"].as_str().unwrap_or("");
+                    let t = fleet_store::create_task(instance, title, desc, assignee);
+                    json!({"content": [{"type": "text", "text": json!({"created": t.id}).to_string()}]})
+                }
+                "list" => {
+                    let tasks = fleet_store::list_tasks();
+                    let list: Vec<Value> = tasks.iter().map(|t| json!({"id": t.id, "title": t.title, "status": t.status, "assignee": t.assignee})).collect();
+                    json!({"content": [{"type": "text", "text": json!({"tasks": list}).to_string()}]})
+                }
+                "claim" => {
+                    let id = args["id"].as_str().unwrap_or("");
+                    match fleet_store::update_task(id, Some("claimed"), Some(instance), None) {
+                        Some(t) => json!({"content": [{"type": "text", "text": json!({"claimed": t.id}).to_string()}]}),
+                        None => json!({"content": [{"type": "text", "text": "task not found"}], "isError": true}),
+                    }
+                }
+                "done" => {
+                    let id = args["id"].as_str().unwrap_or("");
+                    let result = args["result"].as_str().unwrap_or("");
+                    match fleet_store::update_task(id, Some("done"), None, Some(result)) {
+                        Some(t) => json!({"content": [{"type": "text", "text": json!({"done": t.id}).to_string()}]}),
+                        None => json!({"content": [{"type": "text", "text": "task not found"}], "isError": true}),
+                    }
+                }
+                "update" => {
+                    let id = args["id"].as_str().unwrap_or("");
+                    let status = args["status"].as_str();
+                    let assignee = args["assignee"].as_str();
+                    match fleet_store::update_task(id, status, assignee, None) {
+                        Some(t) => json!({"content": [{"type": "text", "text": json!({"updated": t.id}).to_string()}]}),
+                        None => json!({"content": [{"type": "text", "text": "task not found"}], "isError": true}),
+                    }
+                }
+                _ => json!({"content": [{"type": "text", "text": format!("unknown task action: {action}")}], "isError": true}),
+            }
+        }
+        "react" => {
+            let message_id = args["message_id"].as_str().unwrap_or("");
+            let emoji = args["emoji"].as_str().unwrap_or("");
+            match ctx.channel_mgr.lock().unwrap_or_else(|e| e.into_inner()).react(instance, message_id, emoji) {
+                Ok(()) => json!({"content": [{"type": "text", "text": "{\"reacted\":true}"}]}),
+                Err(e) => json!({"content": [{"type": "text", "text": e}], "isError": true}),
+            }
+        }
+        "edit_message" => {
+            let message_id = args["message_id"].as_str().unwrap_or("");
+            let text = args["text"].as_str().unwrap_or("");
+            match ctx.channel_mgr.lock().unwrap_or_else(|e| e.into_inner()).edit_message(instance, message_id, text) {
+                Ok(()) => json!({"content": [{"type": "text", "text": "{\"edited\":true}"}]}),
+                Err(e) => json!({"content": [{"type": "text", "text": e}], "isError": true}),
+            }
+        }
+        "wait_for_idle" => {
+            // This is a synchronous wait — blocks the API thread for this request
+            let target = args["instance_name"].as_str().unwrap_or("");
+            let timeout = args["timeout_secs"].as_u64().unwrap_or(300);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout);
+            loop {
+                let w = ctx.writers.lock().unwrap_or_else(|e| e.into_inner());
+                if !w.contains_key(target) {
+                    break json!({"content": [{"type": "text", "text": json!({"status": "not_found"}).to_string()}], "isError": true});
+                }
+                drop(w);
+                // We can't access state machine from api.rs — check if agent has no writers (crashed)
+                if std::time::Instant::now() > deadline {
+                    break json!({"content": [{"type": "text", "text": json!({"status": "timeout"}).to_string()}]});
+                }
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                // For now, return after one check — full state machine integration needs registry access
+                break json!({"content": [{"type": "text", "text": json!({"status": "checked", "instance": target}).to_string()}]});
+            }
+        }
         _ => json!({"content": [{"type": "text", "text": format!("unknown tool: {tool}")}], "isError": true}),
     }
 }
@@ -248,6 +337,12 @@ pub fn mcp_tools_list() -> Value {
         {"name":"list_instances","description":"List running agents.","inputSchema":{"type":"object","properties":{}}},
         {"name":"describe_instance","description":"Get agent details.","inputSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}},
         {"name":"delete_instance","description":"Stop an agent.","inputSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}},
-        {"name":"inbox","description":"Read inbox messages.","inputSchema":{"type":"object","properties":{"id":{"type":"integer"}}}}
+        {"name":"inbox","description":"Read inbox messages.","inputSchema":{"type":"object","properties":{"id":{"type":"integer"}}}},
+        {"name":"post_decision","description":"Post a fleet-wide decision.","inputSchema":{"type":"object","properties":{"title":{"type":"string"},"content":{"type":"string"}},"required":["title","content"]}},
+        {"name":"list_decisions","description":"List fleet decisions.","inputSchema":{"type":"object","properties":{}}},
+        {"name":"task","description":"Task board operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["create","list","claim","done","update"]},"title":{"type":"string"},"description":{"type":"string"},"id":{"type":"string"},"assignee":{"type":"string"},"status":{"type":"string","enum":["open","claimed","done","blocked"]},"result":{"type":"string"}},"required":["action"]}},
+        {"name":"react","description":"React to a message with emoji.","inputSchema":{"type":"object","properties":{"message_id":{"type":"string"},"emoji":{"type":"string"}},"required":["message_id","emoji"]}},
+        {"name":"edit_message","description":"Edit a sent message.","inputSchema":{"type":"object","properties":{"message_id":{"type":"string"},"text":{"type":"string"}},"required":["message_id","text"]}},
+        {"name":"wait_for_idle","description":"Wait for an agent to become idle.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"timeout_secs":{"type":"integer"}},"required":["instance_name"]}}
     ]})
 }

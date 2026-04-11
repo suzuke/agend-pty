@@ -5,6 +5,7 @@ pub mod channel;
 pub mod config;
 pub mod doctor;
 pub mod features;
+pub mod fleet_store;
 pub mod health;
 pub mod inbox;
 pub mod instructions;
