@@ -221,6 +221,23 @@ instances:
         assert_eq!(store.list("test-clear").len(), 0);
     }
 
+    #[test]
+    fn inbox_drain_returns_and_clears() {
+        let store = inbox::InboxStore::new();
+        store.clear("test-drain");
+        store.store_or_inject("test-drain", "alice", &"X".repeat(600), "\r");
+        store.store_or_inject("test-drain", "bob", &"Y".repeat(600), "\r");
+        let msgs = store.drain("test-drain");
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].sender, "alice");
+        assert_eq!(msgs[1].sender, "bob");
+        // After drain, inbox is empty
+        assert_eq!(store.list("test-drain").len(), 0);
+        // Drain empty inbox returns empty
+        assert_eq!(store.drain("test-drain").len(), 0);
+        store.clear("test-drain");
+    }
+
     // ── MCP config merge ────────────────────────────────────────────────
 
     #[test]
