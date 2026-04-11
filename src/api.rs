@@ -317,7 +317,7 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
         }
         "merge_preview" => {
             let target = args["instance_name"].as_str().unwrap_or(instance);
-            let branch = format!("agent/{target}");
+            let branch = format!("agend/{target}");
             let cwd = std::env::current_dir().unwrap_or_default();
             match git::merge_preview(&cwd, &branch) {
                 Ok(p) => json!({"content": [{"type": "text", "text": json!({
@@ -330,7 +330,7 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
             let target = args["instance_name"].as_str().unwrap_or(instance);
             let default_msg = format!("merge agent/{target}");
             let message = args["message"].as_str().unwrap_or(&default_msg);
-            let branch = format!("agent/{target}");
+            let branch = format!("agend/{target}");
             let cwd = std::env::current_dir().unwrap_or_default();
             match git::squash_merge(&cwd, &branch, message) {
                 Ok(()) => json!({"content": [{"type": "text", "text": "{\"merged\":true}"}]}),

@@ -268,9 +268,8 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
         std::fs::create_dir_all(wd).ok();
         // Git worktree: redirect to isolated worktree directory
         let actual_wd = if git_worktree && git::is_git_repo(wd) {
-            let default_branch = format!("agent/{name}");
-            let branch = git_branch.as_deref().unwrap_or(&default_branch);
-            match git::create_worktree(wd, &name, branch) {
+            let custom_branch = git_branch.as_deref();
+            match git::create_worktree(wd, &name, custom_branch) {
                 Ok(wt) => { eprintln!("[{name}] git worktree: {}", wt.display()); wt }
                 Err(e) => { eprintln!("[{name}] git worktree failed: {e}, using original dir"); wd.clone() }
             }
@@ -567,6 +566,7 @@ fn main() {
         Err(e) => { eprintln!("[daemon] {e}"); std::process::exit(1); }
     };
     eprintln!("[daemon] lock acquired");
+    if !git::has_git() { eprintln!("[daemon] ⚠️  git not found — git_worktree features disabled"); }
 
     // Parse agents from CLI args or fleet.yaml
     let load_config = || -> Result<config::FleetConfig, String> {

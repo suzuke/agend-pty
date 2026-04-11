@@ -19,6 +19,8 @@ mod config;
 mod instructions;
 #[path = "features.rs"]
 mod features;
+#[path = "git.rs"]
+mod git;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -142,6 +144,13 @@ fn main() {
                 eprintln!("No running daemon found.");
             }
         }
+        "cleanup" => {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            if git::is_git_repo(&cwd) {
+                let n = git::cleanup_worktrees(&cwd);
+                println!("Cleaned up {n} worktree(s).");
+            } else { println!("Not a git repo."); }
+        }
         "help" | "--help" | "-h" => print_help(),
         _ => {
             eprintln!("Unknown command: {cmd}");
@@ -163,6 +172,7 @@ fn print_help() {
     println!("  inject <agent> <msg>   Inject message to agent");
     println!("  snapshot [-o file]     Save fleet state to JSON");
     println!("  restore [-i file]      Restore fleet.yaml from snapshot");
+    println!("  cleanup                Remove residual git worktrees");
     println!("  shutdown               Stop running daemon");
 }
 
