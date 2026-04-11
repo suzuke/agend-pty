@@ -212,7 +212,9 @@ while time.time() < deadline:
         chunk = b''
         while len(chunk) < length: chunk += s.recv(length - len(chunk))
         all_out += chunk
-        if passphrase.encode() in all_out:
+        import re as _re
+        clean = _re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', all_out.decode('utf-8', errors='replace'))
+        if passphrase in clean:
             print("ok"); s.close(); exit()
     except socket.timeout:
         break
@@ -399,7 +401,7 @@ test_opencode() {
     check_reconnect "oc-test"
     check_resize "oc-test"
     check_instructions "oc-test" "opencode" "$workdir"
-    check_passphrase "oc-test" "\r" "\r" "true"
+    check_passphrase "oc-test" "\r" "\r" "false"
     cleanup_daemon
     rm -rf "$workdir"
     pass "OpenCode: shutdown clean"

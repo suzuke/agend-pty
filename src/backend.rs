@@ -56,7 +56,7 @@ impl Backend {
                 ready_pattern: "opencode|>",
                 submit_key: "\r",
                 inject_prefix: "\r",
-                typed_inject: true,
+                typed_inject: false,
             },
             Backend::Gemini => BackendPreset {
                 command: "gemini",
