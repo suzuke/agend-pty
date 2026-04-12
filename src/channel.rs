@@ -105,6 +105,9 @@ impl ChannelManager {
         }
     }
 
+    /// Poll all adapters for incoming messages.
+    /// Polls sequentially — each adapter should return within its timeout.
+    /// Caller should not hold the Mutex lock longer than necessary.
     pub fn poll_all(&self) -> Vec<IncomingMessage> {
         self.adapters.iter().flat_map(|a| a.poll()).collect()
     }
