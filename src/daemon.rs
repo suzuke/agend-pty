@@ -1033,15 +1033,19 @@ fn main() {
     // Spawn request channel (create_instance sends here, daemon thread spawns)
     let (spawn_tx, spawn_rx) = crossbeam::channel::unbounded::<api::SpawnConfigInfo>();
 
+    let ci_watches: api::CiWatches = Arc::new(Mutex::new(Vec::new()));
+
     // Start API socket
-    api::start(Arc::new(api::DaemonCtx {
+    let api_ctx = Arc::new(api::DaemonCtx {
         writers: Arc::clone(&agent_writers),
         states: Arc::clone(&agent_states),
         spawn_configs: Arc::clone(&api_spawn_configs),
         inbox: Arc::clone(&inbox_store),
         channel_mgr: Arc::clone(&channel_mgr),
         spawn_tx,
-    }));
+        ci_watches: Arc::clone(&ci_watches),
+    });
+    api::start(Arc::clone(&api_ctx));
 
     // Spawn request handler thread
     {
@@ -1137,6 +1141,7 @@ fn main() {
             spawn_configs: Arc::clone(&spawn_configs),
         };
         let aw = Arc::clone(&agent_writers);
+        let api_ctx_tick = Arc::clone(&api_ctx);
         std::thread::Builder::new()
             .name("health_tick".into())
             .spawn(move || {
@@ -1197,6 +1202,9 @@ fn main() {
                             }
                         }
                     }
+
+                    // Check CI watches
+                    api::tick_ci_watches(&api_ctx_tick);
 
                     // Check cron schedules
                     let epoch = std::time::SystemTime::now()

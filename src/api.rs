@@ -99,6 +99,17 @@ pub fn load_dynamic_instances() -> Vec<DynamicInstance> {
     map.into_values().filter(|d| !d.deleted).collect()
 }
 
+/// Active CI watch entry.
+#[derive(Clone)]
+pub struct CiWatch {
+    pub repo: String,
+    pub pr: u64,
+    pub on_failure: String,
+    pub interval_secs: u64,
+    pub last_check: u64,
+}
+pub type CiWatches = Arc<Mutex<Vec<CiWatch>>>;
+
 pub struct DaemonCtx {
     pub writers: AgentWriters,
     pub states: AgentStateMap,
@@ -107,6 +118,7 @@ pub struct DaemonCtx {
     pub channel_mgr: Arc<Mutex<channel::ChannelManager>>,
     /// Channel to request agent spawning from the daemon thread.
     pub spawn_tx: crossbeam::channel::Sender<SpawnConfigInfo>,
+    pub ci_watches: CiWatches,
 }
 
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -1008,43 +1020,31 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
             if !repo.contains('/') || repo.contains(' ') || repo.starts_with('-') {
                 return json!({"content": [{"type": "text", "text": "invalid repo format, expected: owner/repo"}], "isError": true});
             }
-            let output = std::process::Command::new("gh")
-                .args([
-                    "pr",
-                    "checks",
-                    &pr.to_string(),
-                    "--repo",
-                    repo,
-                    "--json",
-                    "name,status,conclusion",
-                ])
-                .output();
-            match output {
-                Ok(o) if o.status.success() => {
-                    let body = String::from_utf8_lossy(&o.stdout);
-                    let checks: Value = serde_json::from_str(body.trim()).unwrap_or(json!([]));
-                    let empty = vec![];
-                    let check_arr = checks.as_array().unwrap_or(&empty);
-                    let failed: Vec<&Value> = check_arr
-                        .iter()
-                        .filter(|c| c["conclusion"].as_str() == Some("failure"))
-                        .collect();
-                    if !failed.is_empty() {
-                        if let Some(notify) = args["on_failure"].as_str() {
-                            let msg = format!("[CI] {} failed checks on {repo}#{pr}", failed.len());
-                            inject_message(ctx, "ci-watch", notify, &msg);
-                        }
-                    }
-                    json!({"content": [{"type": "text", "text": json!({"repo": repo, "pr": pr, "checks": checks, "failures": failed.len()}).to_string()}]})
-                }
-                Ok(o) => {
-                    let stderr = String::from_utf8_lossy(&o.stderr);
-                    json!({"content": [{"type": "text", "text": format!("gh error: {stderr}")}], "isError": true})
-                }
-                Err(e) => {
-                    json!({"content": [{"type": "text", "text": format!("gh not found: {e}. Install: https://cli.github.com")}], "isError": true})
-                }
-            }
+            let on_failure = args["on_failure"].as_str().unwrap_or(instance).to_owned();
+            let interval = args["interval_secs"].as_u64().unwrap_or(60).max(30);
+            // Do an immediate check first
+            let status = check_ci_status(repo, pr);
+            // Register persistent watch
+            ctx.ci_watches
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(CiWatch {
+                    repo: repo.to_owned(),
+                    pr,
+                    on_failure,
+                    interval_secs: interval,
+                    last_check: crate::util::now_secs(),
+                });
+            json!({"content": [{"type": "text", "text": json!({"watching": true, "repo": repo, "pr": pr, "interval": interval, "current_status": status}).to_string()}]})
+        }
+        "unwatch_ci" => {
+            let repo = args["repo"].as_str().unwrap_or("");
+            let pr = args["pr"].as_u64().unwrap_or(0);
+            let mut watches = ctx.ci_watches.lock().unwrap_or_else(|e| e.into_inner());
+            let before = watches.len();
+            watches.retain(|w| !(w.repo == repo && w.pr == pr));
+            let removed = before - watches.len();
+            json!({"content": [{"type": "text", "text": json!({"unwatched": removed > 0, "repo": repo, "pr": pr}).to_string()}]})
         }
         _ => {
             json!({"content": [{"type": "text", "text": format!("unknown tool: {tool}")}], "isError": true})
@@ -1186,8 +1186,72 @@ fn mcp_tools_list_all() -> Value {
         {"name":"team","description":"Team operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["create","list","delete","update"]},"name":{"type":"string"},"members":{"type":"array","items":{"type":"string"}}},"required":["action"]}},
         {"name":"list_events","description":"List event log.","inputSchema":{"type":"object","properties":{"agent":{"type":"string"},"type":{"type":"string"}}}},
         {"name":"schedule","description":"Cron schedule operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["create","list","delete","update"]},"cron":{"type":"string"},"target":{"type":"string"},"message":{"type":"string"},"id":{"type":"string"},"enabled":{"type":"boolean"}},"required":["action"]}},
-        {"name":"watch_ci","description":"Check GitHub PR CI status via gh CLI.","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"owner/repo"},"pr":{"type":"integer","description":"PR number"},"on_failure":{"type":"string","description":"Agent to notify on failure"}},"required":["repo","pr"]}}
+        {"name":"watch_ci","description":"Start continuous CI monitoring for a PR.","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"owner/repo"},"pr":{"type":"integer","description":"PR number"},"on_failure":{"type":"string","description":"Agent to notify on failure"},"interval_secs":{"type":"integer","description":"Poll interval (default 60, min 30)"}},"required":["repo","pr"]}},
+        {"name":"unwatch_ci","description":"Stop CI monitoring for a PR.","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"owner/repo"},"pr":{"type":"integer","description":"PR number"}},"required":["repo","pr"]}}
     ]})
+}
+
+/// Check CI status for a PR via `gh` CLI. Returns a summary Value.
+pub fn check_ci_status(repo: &str, pr: u64) -> Value {
+    let output = std::process::Command::new("gh")
+        .args([
+            "pr",
+            "checks",
+            &pr.to_string(),
+            "--repo",
+            repo,
+            "--json",
+            "name,status,conclusion",
+        ])
+        .output();
+    match output {
+        Ok(o) if o.status.success() => {
+            let body = String::from_utf8_lossy(&o.stdout);
+            let checks: Value = serde_json::from_str(body.trim()).unwrap_or(json!([]));
+            let empty = vec![];
+            let arr = checks.as_array().unwrap_or(&empty);
+            let failures: Vec<&str> = arr
+                .iter()
+                .filter(|c| c["conclusion"].as_str() == Some("failure"))
+                .filter_map(|c| c["name"].as_str())
+                .collect();
+            json!({"checks": arr.len(), "failures": failures})
+        }
+        Ok(o) => json!({"error": String::from_utf8_lossy(&o.stderr).trim().to_string()}),
+        Err(e) => json!({"error": format!("gh not found: {e}")}),
+    }
+}
+
+/// Called from daemon tick thread — poll all active CI watches.
+pub fn tick_ci_watches(ctx: &DaemonCtx) {
+    let now = crate::util::now_secs();
+    // Collect due watches (short lock)
+    let due: Vec<(String, u64, String)> = {
+        let mut watches = ctx.ci_watches.lock().unwrap_or_else(|e| e.into_inner());
+        let mut result = Vec::new();
+        for watch in watches.iter_mut() {
+            if now.saturating_sub(watch.last_check) >= watch.interval_secs {
+                watch.last_check = now;
+                result.push((watch.repo.clone(), watch.pr, watch.on_failure.clone()));
+            }
+        }
+        result
+    }; // lock released
+       // Check each (no lock held)
+    for (repo, pr, on_failure) in &due {
+        let status = check_ci_status(repo, *pr);
+        if let Some(failures) = status["failures"].as_array() {
+            if !failures.is_empty() {
+                let names: Vec<&str> = failures.iter().filter_map(|f| f.as_str()).collect();
+                let msg = format!(
+                    "[CI] {repo}#{pr}: {} failed: {}",
+                    names.len(),
+                    names.join(", ")
+                );
+                inject_message(ctx, "ci-watch", on_failure, &msg);
+            }
+        }
+    }
 }
 
 /// Handle MCP JSON-RPC directly on the API socket (no proxy process needed).
