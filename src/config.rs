@@ -154,16 +154,44 @@ impl FleetConfig {
 
     /// Add or update an instance in the config and save to disk.
     pub fn add_instance(path: &Path, name: &str, instance: InstanceConfig) -> Result<(), String> {
-        let mut cfg = Self::load(path)?;
-        cfg.instances.insert(name.to_owned(), instance);
-        cfg.save(path)
+        // Append to sidecar JSONL to avoid destroying fleet.yaml formatting
+        let sidecar = path.with_extension("dynamic.jsonl");
+        let entry = serde_json::json!({"action": "add", "name": name, "instance": instance});
+        crate::util::append_jsonl(&sidecar, &entry);
+        Ok(())
     }
 
     /// Remove an instance from the config and save to disk.
     pub fn remove_instance(path: &Path, name: &str) -> Result<(), String> {
+        let sidecar = path.with_extension("dynamic.jsonl");
+        let entry = serde_json::json!({"action": "remove", "name": name});
+        crate::util::append_jsonl(&sidecar, &entry);
+        Ok(())
+    }
+
+    /// Load fleet.yaml + merge dynamic instances from sidecar JSONL.
+    pub fn load_with_dynamic(path: &Path) -> Result<Self, String> {
         let mut cfg = Self::load(path)?;
-        cfg.instances.remove(name);
-        cfg.save(path)
+        let sidecar = path.with_extension("dynamic.jsonl");
+        if sidecar.exists() {
+            let entries: Vec<serde_json::Value> = crate::util::read_jsonl(&sidecar);
+            for entry in entries {
+                let action = entry["action"].as_str().unwrap_or("");
+                let name = entry["name"].as_str().unwrap_or("");
+                match action {
+                    "add" => {
+                        if let Ok(ic) = serde_json::from_value(entry["instance"].clone()) {
+                            cfg.instances.insert(name.to_owned(), ic);
+                        }
+                    }
+                    "remove" => {
+                        cfg.instances.remove(name);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(cfg)
     }
 
     pub fn telegram_config(&self) -> Option<(String, i64)> {
