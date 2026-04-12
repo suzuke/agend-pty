@@ -1,0 +1,9 @@
+# Single agent — simplest setup
+# Usage: agend-pty daemon --config examples/basic.yaml
+defaults:
+  backend: claude
+
+instances:
+  dev:
+    working_directory: ~/projects/myapp
+    skip_permissions: true

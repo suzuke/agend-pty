@@ -1,0 +1,19 @@
+# Full setup with Telegram integration
+# Each agent gets a forum topic in the Telegram group.
+# Set TELEGRAM_BOT_TOKEN env var before starting.
+# Usage: agend-pty daemon --config examples/telegram.yaml
+defaults:
+  backend: claude
+  worktree: true
+
+channel:
+  bot_token_env: TELEGRAM_BOT_TOKEN
+  group_id: -1001234567890
+
+instances:
+  alice:
+    working_directory: ~/projects/myapp
+    skip_permissions: true
+  bob:
+    working_directory: ~/projects/myapp
+    skip_permissions: true

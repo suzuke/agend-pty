@@ -1,0 +1,15 @@
+# Dev + Reviewer pipeline with dependency ordering
+# The reviewer waits for the developer to reach Ready before starting.
+# Usage: agend-pty daemon --config examples/code-review-pipeline.yaml
+defaults:
+  backend: claude
+  worktree: true
+
+instances:
+  developer:
+    working_directory: ~/projects/myapp
+    skip_permissions: true
+  reviewer:
+    working_directory: ~/projects/myapp
+    skip_permissions: true
+    depends_on: [developer]
