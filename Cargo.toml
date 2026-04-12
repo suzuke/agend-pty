@@ -2,6 +2,7 @@
 name = "agend-pty"
 version = "0.5.0"
 edition = "2021"
+license = "MIT"
 
 [lints.clippy]
 unwrap_used = "warn"
