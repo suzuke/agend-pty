@@ -32,13 +32,8 @@ impl Backend {
                 inject_prefix: "",
                 typed_inject: false,
                 dismiss_patterns: &[
-                    // TS: pattern: /[❯›]\s*\d+\.\s*No/m → Down+Enter
-                    ("No, exit", b"\x1b[B\r"),
-                    // TS: pattern: /I accept|I trust/i → Enter
-                    ("I accept", b"\r"),
+                    // Trust dialog: cursor starts on "Yes, I trust" → just Enter
                     ("I trust", b"\r"),
-                    ("Yes, I trust", b"\x1b[A\x1b[A\r"),
-                    ("Yes, proceed", b"\x1b[A\x1b[A\r"),
                 ],
             },
             Backend::KiroCli => BackendPreset {
