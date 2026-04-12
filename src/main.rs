@@ -175,6 +175,15 @@ fn main() {
                 eprintln!("No running daemon found. Start with: agend-pty daemon");
             }
         }
+        "logs" | "log" => {
+            let agent = sub_args.first().map(|s| s.as_str()).unwrap_or("");
+            if agent.is_empty() {
+                eprintln!("Usage: agend-pty logs <agent> [--follow]");
+                std::process::exit(1);
+            }
+            let follow = sub_args.iter().any(|s| s == "--follow" || s == "-f");
+            logs_stream(agent, follow);
+        }
         "cleanup" => {
             let cwd = std::env::current_dir().unwrap_or_default();
             if git::is_git_repo(&cwd) {
@@ -206,6 +215,7 @@ fn print_help() {
     println!("    status [--live]         Show fleet status (--live for dashboard)");
     println!("    list                   List agents in current fleet");
     println!("    inject <agent> <msg>   Send a message to an agent");
+    println!("    logs <agent> [-f]      Stream agent output (read-only)");
     println!("    dry-run                Validate fleet.yaml without starting agents");
     println!("    snapshot [-o file]     Save fleet state to JSON");
     println!("    restore [-i file]      Restore fleet from snapshot");
@@ -216,6 +226,47 @@ fn print_help() {
     println!("OPTIONS:");
     println!("    -h, --help             Print help");
     println!("    -V, --version          Print version");
+}
+
+fn logs_stream(agent: &str, follow: bool) {
+    let sock = match paths::find_agent_tui_socket(agent) {
+        Some(s) => s,
+        None => {
+            eprintln!("Agent '{agent}' not found. Start with: agend-pty daemon");
+            std::process::exit(1);
+        }
+    };
+    let mut stream = match std::os::unix::net::UnixStream::connect(&sock) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Cannot connect to {agent}: {e}");
+            std::process::exit(1);
+        }
+    };
+    use std::io::{Read, Write};
+    // Read frames: tag(1) + len(4 BE) + payload
+    let read_frame = |r: &mut std::os::unix::net::UnixStream| -> std::io::Result<Vec<u8>> {
+        let mut hdr = [0u8; 5];
+        r.read_exact(&mut hdr)?;
+        let len = u32::from_be_bytes([hdr[1], hdr[2], hdr[3], hdr[4]]) as usize;
+        let mut buf = vec![0u8; len];
+        r.read_exact(&mut buf)?;
+        Ok(buf)
+    };
+    // First frame = screen dump (current state)
+    if let Ok(data) = read_frame(&mut stream) {
+        std::io::stdout().write_all(&data).ok();
+        std::io::stdout().flush().ok();
+    }
+    if !follow {
+        println!();
+        return;
+    }
+    // Stream subsequent frames
+    while let Ok(data) = read_frame(&mut stream) {
+        std::io::stdout().write_all(&data).ok();
+        std::io::stdout().flush().ok();
+    }
 }
 
 fn exe_dir() -> std::path::PathBuf {
