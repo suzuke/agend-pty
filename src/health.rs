@@ -60,7 +60,9 @@ impl HealthMonitor {
     }
 
     pub fn set_max_session_hours(&mut self, hours: f64) {
-        self.max_session_secs = Some((hours * 3600.0) as u64);
+        if hours > 0.0 {
+            self.max_session_secs = Some((hours * 3600.0) as u64);
+        }
     }
 
     pub fn status(&self) -> HealthStatus {
