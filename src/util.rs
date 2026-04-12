@@ -4,6 +4,14 @@ use serde::Serialize;
 use std::io::{BufRead, Write};
 use std::path::Path;
 
+/// Lock a Mutex, logging a warning if poisoned.
+pub fn lock_or_warn<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| {
+        tracing::error!("mutex poisoned, recovering");
+        e.into_inner()
+    })
+}
+
 /// Sanitize an agent/instance name for safe use in file paths.
 /// Only allows alphanumeric, hyphen, underscore. Strips leading hyphens.
 pub fn sanitize_name(name: &str) -> String {
