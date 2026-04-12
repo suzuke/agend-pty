@@ -209,18 +209,18 @@ impl ChannelAdapter for TelegramAdapter {
 // ── Telegram Bot API ────────────────────────────────────────────────────
 
 struct BotApi {
-    base_url: String,
+    token: String,
 }
 
 impl BotApi {
     fn new(token: &str) -> Self {
         Self {
-            base_url: format!("https://api.telegram.org/bot{token}"),
+            token: token.to_owned(),
         }
     }
 
     fn call(&self, method: &str, body: &Value) -> Result<Value, String> {
-        let url = format!("{}/{method}", self.base_url);
+        let url = format!("https://api.telegram.org/bot{}/{method}", self.token);
         let is_poll = method == "getUpdates";
         let timeout = if is_poll {
             Duration::from_secs(POLL_TIMEOUT + 10)
