@@ -96,6 +96,103 @@ mod tests {
     }
 
     #[test]
+    fn test_read_jsonl_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("test.jsonl");
+        #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+        struct Item {
+            id: u64,
+            name: String,
+        }
+        append_jsonl(
+            &path,
+            &Item {
+                id: 1,
+                name: "alice".into(),
+            },
+        );
+        append_jsonl(
+            &path,
+            &Item {
+                id: 2,
+                name: "bob".into(),
+            },
+        );
+        let items: Vec<Item> = read_jsonl(&path);
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[0],
+            Item {
+                id: 1,
+                name: "alice".into()
+            }
+        );
+        assert_eq!(
+            items[1],
+            Item {
+                id: 2,
+                name: "bob".into()
+            }
+        );
+    }
+
+    #[test]
+    fn test_read_jsonl_nonexistent() {
+        let items: Vec<serde_json::Value> = read_jsonl(std::path::Path::new("/nonexistent.jsonl"));
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn test_read_jsonl_skips_bad_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("mixed.jsonl");
+        std::fs::write(&path, "{\"id\":1}\nnot json\n{\"id\":2}\n").unwrap();
+        let items: Vec<serde_json::Value> = read_jsonl(&path);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["id"], 1);
+        assert_eq!(items[1]["id"], 2);
+    }
+
+    #[test]
+    fn test_append_jsonl_creates_parent_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("deep").join("dir").join("data.jsonl");
+        append_jsonl(&path, &serde_json::json!({"key": "value"}));
+        assert!(path.exists());
+        let items: Vec<serde_json::Value> = read_jsonl(&path);
+        assert_eq!(items.len(), 1);
+    }
+
+    #[test]
+    fn test_atomic_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.json");
+        atomic_write(&path, r#"{"key":"value"}"#).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"key":"value"}"#
+        );
+        // Tmp file should be cleaned up
+        assert!(!tmp.path().join("config.tmp").exists());
+    }
+
+    #[test]
+    fn test_atomic_write_overwrites() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("data.txt");
+        std::fs::write(&path, "old").unwrap();
+        atomic_write(&path, "new").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+    }
+
+    #[test]
+    fn test_now_secs_reasonable() {
+        let ts = now_secs();
+        // Should be after 2024-01-01 (1704067200)
+        assert!(ts > 1704067200);
+    }
+
+    #[test]
     fn test_sanitize_name() {
         assert_eq!(sanitize_name("alice"), "alice");
         assert_eq!(sanitize_name("my-agent_1"), "my-agent_1");

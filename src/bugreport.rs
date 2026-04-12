@@ -234,3 +234,192 @@ pub fn run() {
         Err(e) => eprintln!("Error writing report: {e}"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── ENV VAR REDACTION ──────────────────────────────────────────────
+
+    #[test]
+    fn redact_env_api_key() {
+        assert_eq!(
+            redact_line("ANTHROPIC_API_KEY=sk-ant-abc123"),
+            "ANTHROPIC_API_KEY=***REDACTED***"
+        );
+    }
+
+    #[test]
+    fn redact_env_token() {
+        assert_eq!(
+            redact_line("TELEGRAM_BOT_TOKEN=123:abc"),
+            "TELEGRAM_BOT_TOKEN=***REDACTED***"
+        );
+    }
+
+    #[test]
+    fn redact_env_password() {
+        assert_eq!(
+            redact_line("  DB_PASSWORD=hunter2  "),
+            "DB_PASSWORD=***REDACTED***"
+        );
+    }
+
+    #[test]
+    fn redact_env_secret() {
+        assert_eq!(redact_line("MY_SECRET=someval"), "MY_SECRET=***REDACTED***");
+    }
+
+    #[test]
+    fn redact_env_credentials() {
+        assert_eq!(
+            redact_line("AWS_CREDENTIALS=abc"),
+            "AWS_CREDENTIALS=***REDACTED***"
+        );
+    }
+
+    #[test]
+    fn redact_env_private_key() {
+        assert_eq!(
+            redact_line("SSH_PRIVATE_KEY=-----BEGIN"),
+            "SSH_PRIVATE_KEY=***REDACTED***"
+        );
+    }
+
+    #[test]
+    fn no_redact_safe_env() {
+        assert_eq!(redact_line("PATH=/usr/bin"), "PATH=/usr/bin");
+        assert_eq!(redact_line("HOME=/home/user"), "HOME=/home/user");
+    }
+
+    // ── TELEGRAM BOT TOKEN ─────────────────────────────────────────────
+
+    #[test]
+    fn redact_telegram_bot_token() {
+        let token = "12345678:ABCDefghijklmnopqrstuvwxyz0123456789";
+        assert_eq!(redact_line(token), "***REDACTED***");
+    }
+
+    #[test]
+    fn no_redact_short_telegram_token() {
+        // After colon too short (< 30 chars)
+        let s = "12345678:shorttoken";
+        assert_eq!(redact_line(s), s);
+    }
+
+    #[test]
+    fn no_redact_non_digit_prefix() {
+        let s = "notdigits:ABCDefghijklmnopqrstuvwxyz0123456789";
+        assert_eq!(redact_line(s), s);
+    }
+
+    // ── PREFIXED API KEYS ──────────────────────────────────────────────
+
+    #[test]
+    fn redact_sk_key() {
+        assert_eq!(
+            redact_line("key: sk-ant-abcdefghij1234567890"),
+            "key: ***REDACTED***"
+        );
+    }
+
+    #[test]
+    fn redact_ghp_token() {
+        assert_eq!(
+            redact_line("github: ghp_abcdefghij1234567890"),
+            "github: ***REDACTED***"
+        );
+    }
+
+    #[test]
+    fn redact_gho_token() {
+        assert_eq!(
+            redact_line("token=gho_abcdefghij1234567890"),
+            // env-var redaction hits first because key matches TOKEN
+            "token=***REDACTED***"
+        );
+    }
+
+    #[test]
+    fn redact_xoxb_slack_token() {
+        assert_eq!(
+            redact_line("slack: xoxb-1234567890-abcdefghij"),
+            "slack: ***REDACTED***"
+        );
+    }
+
+    #[test]
+    fn redact_github_pat() {
+        assert_eq!(
+            redact_line("pat: github_pat_abcdefghij1234567890"),
+            "pat: ***REDACTED***"
+        );
+    }
+
+    #[test]
+    fn no_redact_short_sk() {
+        // Less than 10 chars after prefix
+        assert_eq!(redact_line("sk-short"), "sk-short");
+    }
+
+    #[test]
+    fn redact_multiple_keys_same_line() {
+        let line = "keys: sk-aaaaaaaaaa1234567890 and sk-bbbbbbbbbb1234567890";
+        let result = redact_line(line);
+        assert!(!result.contains("sk-"));
+        assert_eq!(
+            result.matches("***REDACTED***").count(),
+            2,
+            "should redact both keys: {result}"
+        );
+    }
+
+    // ── BEARER TOKENS ──────────────────────────────────────────────────
+
+    #[test]
+    fn redact_bearer_token() {
+        assert_eq!(
+            redact_line("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature"),
+            "Authorization: Bearer ***REDACTED***"
+        );
+    }
+
+    #[test]
+    fn no_redact_short_bearer() {
+        // Less than 20 chars after "Bearer "
+        assert_eq!(
+            redact_line("Authorization: Bearer short"),
+            "Authorization: Bearer short"
+        );
+    }
+
+    // ── MULTI-LINE ─────────────────────────────────────────────────────
+
+    #[test]
+    fn redact_multiline() {
+        let input = "safe line\nANTHROPIC_API_KEY=sk-abc\nanother safe line";
+        let result = redact(input);
+        assert!(result.contains("safe line\n"));
+        assert!(result.contains("ANTHROPIC_API_KEY=***REDACTED***\n"));
+        assert!(result.contains("another safe line\n"));
+    }
+
+    // ── PASSTHROUGH ────────────────────────────────────────────────────
+
+    #[test]
+    fn no_redact_normal_text() {
+        let s = "This is a normal log line with no secrets.";
+        assert_eq!(redact_line(s), s);
+    }
+
+    #[test]
+    fn no_redact_empty() {
+        assert_eq!(redact_line(""), "");
+    }
+
+    #[test]
+    fn no_redact_url_with_port() {
+        let s = "listening on http://localhost:8080";
+        assert_eq!(redact_line(s), s);
+    }
+}

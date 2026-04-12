@@ -174,3 +174,195 @@ fn generate_opencode(wd: &Path) -> std::io::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn instructions_content_default() {
+        std::env::remove_var("AGEND_TEST_PASSPHRASE");
+        let content = instructions_content();
+        assert!(content.contains("AgEnD Fleet Communication"));
+        assert!(content.contains(INSTRUCTIONS_VERSION));
+    }
+
+    #[test]
+    fn is_current_nonexistent() {
+        std::env::remove_var("AGEND_TEST_PASSPHRASE");
+        assert!(!is_current(Path::new("/nonexistent/path/file.md")));
+    }
+
+    #[test]
+    fn is_current_with_version() {
+        std::env::remove_var("AGEND_TEST_PASSPHRASE");
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("test.md");
+        std::fs::write(&path, format!("some content {INSTRUCTIONS_VERSION} here")).unwrap();
+        assert!(is_current(&path));
+    }
+
+    #[test]
+    fn is_current_without_version() {
+        std::env::remove_var("AGEND_TEST_PASSPHRASE");
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("test.md");
+        std::fs::write(&path, "old instructions without version").unwrap();
+        assert!(!is_current(&path));
+    }
+
+    #[test]
+    fn write_file_creates_parent_dirs() {
+        std::env::remove_var("AGEND_TEST_PASSPHRASE");
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("deep").join("nested").join("file.md");
+        write_file(&path, "hello").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello");
+    }
+
+    #[test]
+    fn write_file_skips_if_current() {
+        std::env::remove_var("AGEND_TEST_PASSPHRASE");
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("file.md");
+        let content = format!("existing {INSTRUCTIONS_VERSION}");
+        std::fs::write(&path, &content).unwrap();
+        write_file(&path, "new content").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+    }
+
+    #[test]
+    fn write_with_marker_new_file() {
+        std::env::remove_var("AGEND_TEST_PASSPHRASE");
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("AGENTS.md");
+        write_with_marker(&path, "agend instructions").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "agend instructions"
+        );
+    }
+
+    #[test]
+    fn write_with_marker_appends_to_existing() {
+        std::env::remove_var("AGEND_TEST_PASSPHRASE");
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("AGENTS.md");
+        std::fs::write(&path, "# My Project\nExisting content").unwrap();
+        write_with_marker(&path, "<!-- agend-pty instructions v1-agend-pty -->\nnew").unwrap();
+        let result = std::fs::read_to_string(&path).unwrap();
+        assert!(result.starts_with("# My Project\nExisting content"));
+        assert!(result.contains("<!-- agend-pty instructions"));
+    }
+
+    #[test]
+    fn write_with_marker_replaces_old_marker() {
+        std::env::remove_var("AGEND_TEST_PASSPHRASE");
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("AGENTS.md");
+        std::fs::write(
+            &path,
+            "# Header\n\n<!-- agend-pty instructions v0-old -->\nold content",
+        )
+        .unwrap();
+        write_with_marker(&path, "<!-- agend-pty instructions v1-agend-pty -->\nnew").unwrap();
+        let result = std::fs::read_to_string(&path).unwrap();
+        assert!(result.contains("# Header"));
+        assert!(!result.contains("v0-old"));
+        assert!(result.contains("v1-agend-pty"));
+    }
+
+    #[test]
+    fn generate_claude_creates_rules_file() {
+        std::env::remove_var("AGEND_TEST_PASSPHRASE");
+        let tmp = tempfile::tempdir().unwrap();
+        generate_claude(tmp.path()).unwrap();
+        let path = tmp.path().join(".claude").join("rules").join("agend.md");
+        assert!(path.exists());
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains(INSTRUCTIONS_VERSION));
+    }
+
+    #[test]
+    fn generate_kiro_creates_agents_and_steering() {
+        std::env::remove_var("AGEND_TEST_PASSPHRASE");
+        let tmp = tempfile::tempdir().unwrap();
+        generate_kiro(tmp.path(), "alice").unwrap();
+        assert!(tmp.path().join("AGENTS.md").exists());
+        assert!(tmp
+            .path()
+            .join(".kiro")
+            .join("steering")
+            .join("agend-alice.md")
+            .exists());
+    }
+
+    #[test]
+    fn generate_gemini_creates_gemini_md() {
+        std::env::remove_var("AGEND_TEST_PASSPHRASE");
+        let tmp = tempfile::tempdir().unwrap();
+        generate_gemini(tmp.path()).unwrap();
+        assert!(std::fs::read_to_string(tmp.path().join("GEMINI.md"))
+            .unwrap()
+            .contains(INSTRUCTIONS_VERSION));
+    }
+
+    #[test]
+    fn generate_opencode_creates_json_and_md() {
+        std::env::remove_var("AGEND_TEST_PASSPHRASE");
+        let tmp = tempfile::tempdir().unwrap();
+        generate_opencode(tmp.path()).unwrap();
+        assert!(tmp.path().join("fleet-instructions.md").exists());
+        let json: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(tmp.path().join("opencode.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(json["instructions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str() == Some("fleet-instructions.md")));
+    }
+
+    #[test]
+    fn generate_opencode_no_duplicate() {
+        std::env::remove_var("AGEND_TEST_PASSPHRASE");
+        let tmp = tempfile::tempdir().unwrap();
+        generate_opencode(tmp.path()).unwrap();
+        generate_opencode(tmp.path()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(tmp.path().join("opencode.json")).unwrap(),
+        )
+        .unwrap();
+        let count = json["instructions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|v| v.as_str() == Some("fleet-instructions.md"))
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn generate_dispatches_by_command() {
+        std::env::remove_var("AGEND_TEST_PASSPHRASE");
+        let tmp = tempfile::tempdir().unwrap();
+        generate(tmp.path(), "claude --model opus", "test");
+        assert!(tmp
+            .path()
+            .join(".claude")
+            .join("rules")
+            .join("agend.md")
+            .exists());
+
+        let tmp2 = tempfile::tempdir().unwrap();
+        generate(tmp2.path(), "gemini --yolo", "test");
+        assert!(tmp2.path().join("GEMINI.md").exists());
+
+        // Unknown backend — no files generated
+        let tmp3 = tempfile::tempdir().unwrap();
+        generate(tmp3.path(), "bash", "test");
+        assert!(std::fs::read_dir(tmp3.path()).unwrap().next().is_none());
+    }
+}

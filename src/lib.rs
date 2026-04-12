@@ -450,4 +450,299 @@ instances:
         // Just verify the function doesn't panic
         let _ = paths::list_daemons();
     }
+
+    // ── Backend preset coverage ────────────────────────────────────────
+
+    #[test]
+    fn backend_preset_all_variants() {
+        let variants = [
+            (backend::Backend::ClaudeCode, "claude"),
+            (backend::Backend::KiroCli, "kiro-cli"),
+            (backend::Backend::Codex, "codex"),
+            (backend::Backend::OpenCode, "opencode"),
+            (backend::Backend::Gemini, "gemini"),
+        ];
+        for (b, expected_cmd) in &variants {
+            let p = b.preset();
+            assert_eq!(p.command, *expected_cmd, "preset command for {:?}", b);
+            assert!(!p.submit_key.is_empty(), "submit_key for {:?}", b);
+            assert!(p.ready_timeout_secs > 0, "timeout for {:?}", b);
+        }
+    }
+
+    #[test]
+    fn backend_from_command_with_path() {
+        // Full path should extract basename
+        assert_eq!(
+            backend::Backend::from_command("/usr/local/bin/claude --model opus"),
+            Some(backend::Backend::ClaudeCode)
+        );
+        assert_eq!(
+            backend::Backend::from_command("/opt/bin/gemini --yolo"),
+            Some(backend::Backend::Gemini)
+        );
+    }
+
+    #[test]
+    fn backend_from_command_case_insensitive() {
+        assert_eq!(
+            backend::Backend::from_command("Claude"),
+            Some(backend::Backend::ClaudeCode)
+        );
+        assert_eq!(
+            backend::Backend::from_command("GEMINI"),
+            Some(backend::Backend::Gemini)
+        );
+    }
+
+    #[test]
+    fn backend_from_command_opencode() {
+        assert_eq!(
+            backend::Backend::from_command("opencode"),
+            Some(backend::Backend::OpenCode)
+        );
+    }
+
+    #[test]
+    fn backend_from_command_unknown() {
+        assert_eq!(backend::Backend::from_command("python"), None);
+        assert_eq!(backend::Backend::from_command(""), None);
+    }
+
+    // ── Config resolve_backend_binary ───────────────────────────────────
+
+    #[test]
+    fn resolve_backend_aliases() {
+        assert_eq!(config::resolve_backend_binary("claude"), "claude");
+        assert_eq!(config::resolve_backend_binary("claude-code"), "claude");
+        assert_eq!(config::resolve_backend_binary("kiro"), "kiro-cli");
+        assert_eq!(config::resolve_backend_binary("kiro-cli"), "kiro-cli");
+        assert_eq!(config::resolve_backend_binary("codex"), "codex");
+        assert_eq!(config::resolve_backend_binary("opencode"), "opencode");
+        assert_eq!(config::resolve_backend_binary("gemini"), "gemini");
+        assert_eq!(config::resolve_backend_binary("custom-tool"), "custom-tool");
+    }
+
+    // ── Config build_command edge cases ─────────────────────────────────
+
+    #[test]
+    fn config_build_command_custom() {
+        let yaml = "instances:\n  test:\n    command: \"my-tool --flag\"\n";
+        let cfg: config::FleetConfig = serde_yml::from_str(yaml).unwrap();
+        assert_eq!(
+            cfg.instances["test"].build_command(&cfg.defaults),
+            "my-tool --flag"
+        );
+    }
+
+    #[test]
+    fn config_build_command_no_model() {
+        let yaml = "instances:\n  test:\n    backend: gemini\n";
+        let cfg: config::FleetConfig = serde_yml::from_str(yaml).unwrap();
+        assert_eq!(cfg.instances["test"].build_command(&cfg.defaults), "gemini");
+    }
+
+    #[test]
+    fn config_build_command_instance_model_overrides_default() {
+        let yaml = r#"
+defaults:
+  model: opus
+instances:
+  test:
+    model: sonnet
+"#;
+        let cfg: config::FleetConfig = serde_yml::from_str(yaml).unwrap();
+        let cmd = cfg.instances["test"].build_command(&cfg.defaults);
+        assert!(cmd.contains("--model sonnet"));
+        assert!(!cmd.contains("opus"));
+    }
+
+    #[test]
+    fn config_skip_permissions_only_claude() {
+        // skip_permissions with non-claude backend should NOT add the flag
+        let yaml = r#"
+instances:
+  test:
+    backend: gemini
+    skip_permissions: true
+"#;
+        let cfg: config::FleetConfig = serde_yml::from_str(yaml).unwrap();
+        let cmd = cfg.instances["test"].build_command(&cfg.defaults);
+        assert!(!cmd.contains("--dangerously-skip-permissions"));
+    }
+
+    #[test]
+    fn config_worktree_defaults_true() {
+        let yaml = "instances:\n  test: {}\n";
+        let cfg: config::FleetConfig = serde_yml::from_str(yaml).unwrap();
+        assert!(cfg.instances["test"].worktree_enabled(&cfg.defaults));
+    }
+
+    #[test]
+    fn config_worktree_instance_override() {
+        let yaml = "instances:\n  test:\n    worktree: false\n";
+        let cfg: config::FleetConfig = serde_yml::from_str(yaml).unwrap();
+        assert!(!cfg.instances["test"].worktree_enabled(&cfg.defaults));
+    }
+
+    #[test]
+    fn config_effective_working_dir_instance() {
+        let yaml = "instances:\n  test:\n    working_directory: /tmp/mydir\n";
+        let cfg: config::FleetConfig = serde_yml::from_str(yaml).unwrap();
+        assert_eq!(
+            cfg.instances["test"].effective_working_dir(&cfg.defaults, "test"),
+            std::path::PathBuf::from("/tmp/mydir")
+        );
+    }
+
+    #[test]
+    fn config_effective_working_dir_defaults() {
+        let yaml = "defaults:\n  working_directory: /opt/work\ninstances:\n  test: {}\n";
+        let cfg: config::FleetConfig = serde_yml::from_str(yaml).unwrap();
+        assert_eq!(
+            cfg.instances["test"].effective_working_dir(&cfg.defaults, "test"),
+            std::path::PathBuf::from("/opt/work")
+        );
+    }
+
+    #[test]
+    fn config_depends_on_parsed() {
+        let yaml = "instances:\n  test:\n    depends_on:\n      - alice\n      - bob\n";
+        let cfg: config::FleetConfig = serde_yml::from_str(yaml).unwrap();
+        assert_eq!(cfg.instances["test"].depends_on, vec!["alice", "bob"]);
+    }
+
+    #[test]
+    fn config_role_parsed() {
+        let yaml = "instances:\n  test:\n    role: reviewer\n";
+        let cfg: config::FleetConfig = serde_yml::from_str(yaml).unwrap();
+        assert_eq!(cfg.instances["test"].role.as_deref(), Some("reviewer"));
+    }
+
+    // ── VTerm extended tests ───────────────────────────────────────────
+
+    #[test]
+    fn vterm_resize() {
+        let mut vt = vterm::VTerm::new(80, 24);
+        vt.process(b"hello");
+        vt.resize(40, 12);
+        let dump = vt.dump_screen();
+        let text = String::from_utf8_lossy(&dump);
+        assert!(text.contains("hello"));
+    }
+
+    #[test]
+    fn vterm_empty_screen() {
+        let vt = vterm::VTerm::new(80, 24);
+        let dump = vt.dump_screen();
+        // Should at least contain cursor positioning
+        let text = String::from_utf8_lossy(&dump);
+        assert!(text.contains("\x1b[1;1H"));
+    }
+
+    #[test]
+    fn vterm_colored_text() {
+        let mut vt = vterm::VTerm::new(80, 24);
+        // Red foreground
+        vt.process(b"\x1b[31mRed\x1b[0m Normal");
+        let dump = vt.dump_screen();
+        let text = String::from_utf8_lossy(&dump);
+        assert!(text.contains("Red"));
+        assert!(text.contains("Normal"));
+        // Should contain color code 31 (red fg)
+        assert!(text.contains(";31"));
+    }
+
+    #[test]
+    fn vterm_256_color() {
+        let mut vt = vterm::VTerm::new(80, 24);
+        // 256-color: fg index 196
+        vt.process(b"\x1b[38;5;196mIndexed\x1b[0m");
+        let dump = vt.dump_screen();
+        let text = String::from_utf8_lossy(&dump);
+        assert!(text.contains("Indexed"));
+        assert!(text.contains(";38;5;196"));
+    }
+
+    #[test]
+    fn vterm_rgb_color() {
+        let mut vt = vterm::VTerm::new(80, 24);
+        // True color: fg rgb(255,128,0)
+        vt.process(b"\x1b[38;2;255;128;0mTrueColor\x1b[0m");
+        let dump = vt.dump_screen();
+        let text = String::from_utf8_lossy(&dump);
+        assert!(text.contains("TrueColor"));
+        assert!(text.contains(";38;2;255;128;0"));
+    }
+
+    #[test]
+    fn vterm_bold_and_italic() {
+        let mut vt = vterm::VTerm::new(80, 24);
+        vt.process(b"\x1b[1;3mBoldItalic\x1b[0m");
+        let dump = vt.dump_screen();
+        let text = String::from_utf8_lossy(&dump);
+        assert!(text.contains("BoldItalic"));
+        // Should contain bold (;1) and italic (;3)
+        assert!(text.contains(";1"));
+        assert!(text.contains(";3"));
+    }
+
+    #[test]
+    fn vterm_multiline() {
+        let mut vt = vterm::VTerm::new(80, 24);
+        vt.process(b"Line1\r\nLine2\r\nLine3");
+        let dump = vt.dump_screen();
+        let text = String::from_utf8_lossy(&dump);
+        assert!(text.contains("Line1"));
+        assert!(text.contains("Line2"));
+        assert!(text.contains("Line3"));
+    }
+
+    #[test]
+    fn vterm_cursor_position_after_text() {
+        let mut vt = vterm::VTerm::new(80, 24);
+        vt.process(b"AB\r\nCD");
+        let dump = vt.dump_screen();
+        let text = String::from_utf8_lossy(&dump);
+        // Cursor should be at line 2, col 3
+        assert!(text.contains("\x1b[2;3H"));
+    }
+
+    // ── Paths construction ─────────────────────────────────────────────
+
+    #[test]
+    fn paths_agent_dir_sanitizes() {
+        let dir = paths::agent_dir("../../../etc");
+        assert!(!dir.to_str().unwrap().contains(".."));
+        assert!(dir.to_str().unwrap().contains("etc"));
+    }
+
+    #[test]
+    fn paths_tui_socket_ends_with_tui_sock() {
+        let sock = paths::tui_socket("alice");
+        assert!(sock.to_str().unwrap().ends_with("tui.sock"));
+        assert!(sock.to_str().unwrap().contains("alice"));
+    }
+
+    #[test]
+    fn paths_mcp_socket_ends_with_mcp_sock() {
+        let sock = paths::mcp_socket("bob");
+        assert!(sock.to_str().unwrap().ends_with("mcp.sock"));
+        assert!(sock.to_str().unwrap().contains("bob"));
+    }
+
+    #[test]
+    fn paths_which_finds_common_binary() {
+        // Should find at least one of these common binaries
+        assert!(
+            paths::which("sh").is_some()
+                || paths::which("ls").is_some()
+                || paths::which("echo").is_some()
+        );
+    }
+
+    #[test]
+    fn paths_which_returns_none_for_nonexistent() {
+        assert!(paths::which("definitely-nonexistent-binary-xyz").is_none());
+    }
 }
