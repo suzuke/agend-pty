@@ -48,7 +48,15 @@ fn redact_line(line: &str) -> String {
     }
     // Prefixed API keys / tokens (all occurrences)
     for prefix in &[
-        "sk-", "key-", "anthropic-", "xoxb-", "xoxp-", "xoxa-", "ghp_", "gho_", "ghs_",
+        "sk-",
+        "key-",
+        "anthropic-",
+        "xoxb-",
+        "xoxp-",
+        "xoxa-",
+        "ghp_",
+        "gho_",
+        "ghs_",
         "github_pat_",
     ] {
         while let Some(start) = s.find(prefix) {
