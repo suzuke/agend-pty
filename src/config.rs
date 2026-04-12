@@ -1,32 +1,38 @@
 //! Fleet configuration — reads fleet.yaml to define agents.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct FleetConfig {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Defaults::is_default")]
     pub defaults: Defaults,
     #[serde(default)]
     pub instances: HashMap<String, InstanceConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub channel: Option<ChannelConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ChannelConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bot_token_env: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub group_id: Option<i64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Defaults {
     #[serde(default = "default_backend")]
     pub backend: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub working_directory: Option<PathBuf>,
     #[serde(default = "default_true")]
     pub worktree: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_session_hours: Option<f64>,
 }
 
@@ -42,19 +48,27 @@ impl Default for Defaults {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct InstanceConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub working_directory: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub skip_permissions: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_session_hours: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
 }
 
@@ -63,6 +77,16 @@ fn default_backend() -> String {
 }
 fn default_true() -> bool {
     true
+}
+
+impl Defaults {
+    fn is_default(&self) -> bool {
+        self.backend == "claude"
+            && self.model.is_none()
+            && self.working_directory.is_none()
+            && self.worktree
+            && self.max_session_hours.is_none()
+    }
 }
 
 impl InstanceConfig {
@@ -123,6 +147,27 @@ impl FleetConfig {
             }
         }
         Err("fleet.yaml not found. Create one or use: agend-pty quickstart (checked ./fleet.yaml, ~/.agend/fleet.yaml)".into())
+    }
+
+    /// Save fleet config back to YAML (atomic write).
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        let yaml =
+            serde_yml::to_string(self).map_err(|e| format!("serialize fleet config: {e}"))?;
+        crate::util::atomic_write(path, &yaml).map_err(|e| format!("write {}: {e}", path.display()))
+    }
+
+    /// Add or update an instance in the config and save to disk.
+    pub fn add_instance(path: &Path, name: &str, instance: InstanceConfig) -> Result<(), String> {
+        let mut cfg = Self::load(path)?;
+        cfg.instances.insert(name.to_owned(), instance);
+        cfg.save(path)
+    }
+
+    /// Remove an instance from the config and save to disk.
+    pub fn remove_instance(path: &Path, name: &str) -> Result<(), String> {
+        let mut cfg = Self::load(path)?;
+        cfg.instances.remove(name);
+        cfg.save(path)
     }
 
     pub fn telegram_config(&self) -> Option<(String, i64)> {

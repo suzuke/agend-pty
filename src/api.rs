@@ -3,7 +3,7 @@
 //! Listens on ~/.agend/run/<pid>/api.sock
 //! Protocol: newline-delimited JSON (one request per line, one response per line)
 
-use crate::{channel, event_log, fleet_store, git, health, inbox, paths, scheduler, state, util};
+use crate::{channel, config, event_log, fleet_store, git, health, inbox, paths, scheduler, state};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -51,52 +51,34 @@ pub struct SpawnConfigInfo {
     pub branch: Option<String>,
 }
 
-/// Persistent record of dynamically created instances (JSONL).
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub struct DynamicInstance {
-    pub name: String,
-    pub command: String,
-    pub working_dir: Option<String>,
-    pub worktree: bool,
-    pub branch: Option<String>,
-    pub deleted: bool,
-}
-
-fn dynamic_instances_path() -> std::path::PathBuf {
-    paths::run_dir().join("dynamic-instances.jsonl")
-}
-
-pub fn persist_dynamic_instance(info: &SpawnConfigInfo) {
-    let entry = DynamicInstance {
-        name: info.name.clone(),
-        command: info.command.clone(),
-        working_dir: info.working_dir.as_ref().map(|p| p.display().to_string()),
-        worktree: info.worktree,
-        branch: info.branch.clone(),
-        deleted: false,
-    };
-    util::append_jsonl(&dynamic_instances_path(), &entry);
-}
-
-pub fn remove_dynamic_instance(name: &str) {
-    let entry = DynamicInstance {
-        name: name.to_owned(),
-        command: String::new(),
-        working_dir: None,
-        worktree: false,
-        branch: None,
-        deleted: true,
-    };
-    util::append_jsonl(&dynamic_instances_path(), &entry);
-}
-
-pub fn load_dynamic_instances() -> Vec<DynamicInstance> {
-    let all: Vec<DynamicInstance> = util::read_jsonl(&dynamic_instances_path());
-    let mut map = std::collections::HashMap::new();
-    for d in all {
-        map.insert(d.name.clone(), d);
+/// Persist a new/updated instance to fleet.yaml.
+fn persist_to_fleet(ctx: &DaemonCtx, name: &str, info: &SpawnConfigInfo) {
+    if let Some(ref path) = ctx.fleet_config_path {
+        let ic = config::InstanceConfig {
+            command: Some(info.command.clone()),
+            working_directory: info.working_dir.clone(),
+            worktree: Some(info.worktree),
+            branch: info.branch.clone(),
+            backend: None,
+            model: None,
+            skip_permissions: false,
+            depends_on: vec![],
+            max_session_hours: None,
+            role: None,
+        };
+        if let Err(e) = config::FleetConfig::add_instance(path, name, ic) {
+            tracing::warn!(name, error = %e, "failed to persist instance to fleet.yaml");
+        }
     }
-    map.into_values().filter(|d| !d.deleted).collect()
+}
+
+/// Remove an instance from fleet.yaml.
+fn remove_from_fleet(ctx: &DaemonCtx, name: &str) {
+    if let Some(ref path) = ctx.fleet_config_path {
+        if let Err(e) = config::FleetConfig::remove_instance(path, name) {
+            tracing::warn!(name, error = %e, "failed to remove instance from fleet.yaml");
+        }
+    }
 }
 
 /// Active CI watch entry.
@@ -119,6 +101,8 @@ pub struct DaemonCtx {
     /// Channel to request agent spawning from the daemon thread.
     pub spawn_tx: crossbeam::channel::Sender<SpawnConfigInfo>,
     pub ci_watches: CiWatches,
+    /// Path to fleet.yaml — used to persist create/delete/replace instance changes.
+    pub fleet_config_path: Option<std::path::PathBuf>,
 }
 
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -478,7 +462,7 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                     .unwrap_or_else(|e| e.into_inner())
                     .write_all(b"\x03\x04");
                 drop(w);
-                remove_dynamic_instance(name);
+                remove_from_fleet(ctx, name);
                 let mut resp = json!({"deleted": name});
                 if cleanup_wt {
                     // Check for uncommitted changes + remove worktree
@@ -923,8 +907,8 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                 worktree: true,
                 branch: branch.clone(),
             };
-            // Persist for daemon restart
-            persist_dynamic_instance(&info);
+            // Persist to fleet.yaml for daemon restart
+            persist_to_fleet(ctx, name, &info);
             // Send spawn request to daemon thread (which has access to registry)
             match ctx.spawn_tx.send(info) {
                 Ok(()) => {
@@ -974,7 +958,8 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                 worktree: old_config.as_ref().map(|c| c.worktree).unwrap_or(true),
                 branch: branch.clone(),
             };
-            // Store config for respawn after kill
+            // Store config for respawn after kill + persist to fleet.yaml
+            persist_to_fleet(ctx, name, &info);
             ctx.spawn_configs
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())

@@ -839,20 +839,6 @@ fn main() {
         vec![("shell".into(), "bash".into(), None, false, None)]
     };
 
-    // Merge dynamic instances from previous runs
-    let mut agents = agents;
-    for di in api::load_dynamic_instances() {
-        if !agents.iter().any(|(n, _, _, _, _)| n == &di.name) {
-            agents.push((
-                di.name,
-                di.command,
-                di.working_dir.map(std::path::PathBuf::from),
-                di.worktree,
-                di.branch,
-            ));
-        }
-    }
-
     let registry: AgentRegistry = Arc::new(Mutex::new(HashMap::new()));
     let agent_writers: api::AgentWriters = Arc::new(Mutex::new(HashMap::new()));
     let agent_states: api::AgentStateMap = Arc::new(Mutex::new(HashMap::new()));
@@ -1048,6 +1034,7 @@ fn main() {
         channel_mgr: Arc::clone(&channel_mgr),
         spawn_tx,
         ci_watches: Arc::clone(&ci_watches),
+        fleet_config_path: config_path.clone(),
     });
     api::start(Arc::clone(&api_ctx));
 

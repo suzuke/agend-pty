@@ -523,6 +523,60 @@ instances:
         assert_eq!(config::resolve_backend_binary("custom-tool"), "custom-tool");
     }
 
+    // ── Config save/add/remove roundtrip ─────────────────────────────
+
+    #[test]
+    fn config_save_and_reload() {
+        let yaml = "instances:\n  alice:\n    command: bash\n";
+        let cfg: config::FleetConfig = serde_yml::from_str(yaml).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("fleet.yaml");
+        cfg.save(&path).unwrap();
+        let reloaded = config::FleetConfig::load(&path).unwrap();
+        assert_eq!(reloaded.instances.len(), 1);
+        assert_eq!(reloaded.instances["alice"].command.as_deref(), Some("bash"));
+    }
+
+    #[test]
+    fn config_add_instance_persists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("fleet.yaml");
+        std::fs::write(&path, "instances:\n  alice:\n    command: bash\n").unwrap();
+        let ic = config::InstanceConfig {
+            command: Some("claude".into()),
+            working_directory: Some("/tmp/bob".into()),
+            worktree: Some(true),
+            branch: None,
+            backend: None,
+            model: None,
+            skip_permissions: false,
+            depends_on: vec![],
+            max_session_hours: None,
+            role: None,
+        };
+        config::FleetConfig::add_instance(&path, "bob", ic).unwrap();
+        let cfg = config::FleetConfig::load(&path).unwrap();
+        assert_eq!(cfg.instances.len(), 2);
+        assert!(cfg.instances.contains_key("bob"));
+        assert_eq!(cfg.instances["bob"].command.as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn config_remove_instance_persists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("fleet.yaml");
+        std::fs::write(
+            &path,
+            "instances:\n  alice:\n    command: bash\n  bob:\n    command: bash\n",
+        )
+        .unwrap();
+        config::FleetConfig::remove_instance(&path, "bob").unwrap();
+        let cfg = config::FleetConfig::load(&path).unwrap();
+        assert_eq!(cfg.instances.len(), 1);
+        assert!(cfg.instances.contains_key("alice"));
+        assert!(!cfg.instances.contains_key("bob"));
+    }
+
     // ── Config build_command edge cases ─────────────────────────────────
 
     #[test]
