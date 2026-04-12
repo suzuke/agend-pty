@@ -107,16 +107,22 @@ impl Backend {
     }
 
     pub fn from_command(command: &str) -> Option<Backend> {
-        let cmd = command.to_lowercase();
-        if cmd.contains("claude") {
+        // Extract binary basename (last path segment, first whitespace-delimited token)
+        let first_token = command.split_whitespace().next().unwrap_or(command);
+        let basename = first_token
+            .rsplit('/')
+            .next()
+            .unwrap_or(first_token)
+            .to_lowercase();
+        if basename.starts_with("claude") {
             Some(Backend::ClaudeCode)
-        } else if cmd.contains("kiro") {
+        } else if basename.starts_with("kiro") {
             Some(Backend::KiroCli)
-        } else if cmd.contains("codex") {
+        } else if basename.starts_with("codex") {
             Some(Backend::Codex)
-        } else if cmd.contains("opencode") {
+        } else if basename.starts_with("opencode") {
             Some(Backend::OpenCode)
-        } else if cmd.contains("gemini") {
+        } else if basename.starts_with("gemini") {
             Some(Backend::Gemini)
         } else {
             None
