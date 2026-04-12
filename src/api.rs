@@ -814,6 +814,50 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                 "working_directory": wd.map(|p| p.display().to_string())
             }).to_string()}]})
         }
+        "watch_ci" => {
+            let repo = args["repo"].as_str().unwrap_or("");
+            let pr = args["pr"].as_u64().unwrap_or(0);
+            if repo.is_empty() || pr == 0 {
+                return json!({"content": [{"type": "text", "text": "repo and pr required"}], "isError": true});
+            }
+            let output = std::process::Command::new("gh")
+                .args([
+                    "pr",
+                    "checks",
+                    &pr.to_string(),
+                    "--repo",
+                    repo,
+                    "--json",
+                    "name,status,conclusion",
+                ])
+                .output();
+            match output {
+                Ok(o) if o.status.success() => {
+                    let body = String::from_utf8_lossy(&o.stdout);
+                    let checks: Value = serde_json::from_str(body.trim()).unwrap_or(json!([]));
+                    let empty = vec![];
+                    let check_arr = checks.as_array().unwrap_or(&empty);
+                    let failed: Vec<&Value> = check_arr
+                        .iter()
+                        .filter(|c| c["conclusion"].as_str() == Some("failure"))
+                        .collect();
+                    if !failed.is_empty() {
+                        if let Some(notify) = args["on_failure"].as_str() {
+                            let msg = format!("[CI] {} failed checks on {repo}#{pr}", failed.len());
+                            inject_message(ctx, "ci-watch", notify, &msg);
+                        }
+                    }
+                    json!({"content": [{"type": "text", "text": json!({"repo": repo, "pr": pr, "checks": checks, "failures": failed.len()}).to_string()}]})
+                }
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    json!({"content": [{"type": "text", "text": format!("gh error: {stderr}")}], "isError": true})
+                }
+                Err(e) => {
+                    json!({"content": [{"type": "text", "text": format!("gh not found: {e}. Install: https://cli.github.com")}], "isError": true})
+                }
+            }
+        }
         _ => {
             json!({"content": [{"type": "text", "text": format!("unknown tool: {tool}")}], "isError": true})
         }
@@ -876,7 +920,8 @@ pub fn mcp_tools_list() -> Value {
         {"name":"update_decision","description":"Update a decision.","inputSchema":{"type":"object","properties":{"id":{"type":"integer"},"title":{"type":"string"},"content":{"type":"string"}},"required":["id"]}},
         {"name":"team","description":"Team operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["create","list","delete","update"]},"name":{"type":"string"},"members":{"type":"array","items":{"type":"string"}}},"required":["action"]}},
         {"name":"list_events","description":"List event log.","inputSchema":{"type":"object","properties":{"agent":{"type":"string"},"type":{"type":"string"}}}},
-        {"name":"schedule","description":"Cron schedule operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["create","list","delete","update"]},"cron":{"type":"string"},"target":{"type":"string"},"message":{"type":"string"},"id":{"type":"string"},"enabled":{"type":"boolean"}},"required":["action"]}}
+        {"name":"schedule","description":"Cron schedule operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["create","list","delete","update"]},"cron":{"type":"string"},"target":{"type":"string"},"message":{"type":"string"},"id":{"type":"string"},"enabled":{"type":"boolean"}},"required":["action"]}},
+        {"name":"watch_ci","description":"Check GitHub PR CI status via gh CLI.","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"owner/repo"},"pr":{"type":"integer","description":"PR number"},"on_failure":{"type":"string","description":"Agent to notify on failure"}},"required":["repo","pr"]}}
     ]})
 }
 
