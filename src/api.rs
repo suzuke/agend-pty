@@ -125,6 +125,12 @@ pub fn start(ctx: Arc<DaemonCtx>) {
             return;
         }
     };
+    // Restrict socket to owner only (0600)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600)).ok();
+    }
     tracing::info!(path = %sock.display(), "API listening");
 
     std::thread::Builder::new()
