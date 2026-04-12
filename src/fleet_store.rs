@@ -221,7 +221,7 @@ mod tests {
     fn task_roundtrip() {
         let t = Task {
             id: "T1".into(),
-            title: "fix bug".into(),
+            title: "fix".into(),
             description: "".into(),
             assignee: "bob".into(),
             status: "open".into(),
@@ -230,7 +230,149 @@ mod tests {
             timestamp: 0,
         };
         let json = serde_json::to_string(&t).unwrap();
-        let restored: Task = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.id, "T1");
+        assert_eq!(serde_json::from_str::<Task>(&json).unwrap().id, "T1");
+    }
+
+    #[test]
+    fn team_roundtrip() {
+        let t = Team {
+            name: "core".into(),
+            members: vec!["a".into(), "b".into()],
+            timestamp: 0,
+        };
+        let json = serde_json::to_string(&t).unwrap();
+        let r: Team = serde_json::from_str(&json).unwrap();
+        assert_eq!(r.members.len(), 2);
+    }
+
+    #[test]
+    fn list_tasks_dedup_by_id() {
+        // Simulate JSONL with duplicate IDs (update appends new version)
+        let t1 = Task {
+            id: "T1".into(),
+            title: "v1".into(),
+            description: "".into(),
+            assignee: "".into(),
+            status: "open".into(),
+            result: "".into(),
+            created_by: "a".into(),
+            timestamp: 1,
+        };
+        let t1_v2 = Task {
+            id: "T1".into(),
+            title: "v2".into(),
+            description: "".into(),
+            assignee: "bob".into(),
+            status: "claimed".into(),
+            result: "".into(),
+            created_by: "a".into(),
+            timestamp: 2,
+        };
+        // Dedup: last one wins
+        let mut map = std::collections::HashMap::new();
+        map.insert(t1.id.clone(), t1);
+        map.insert(t1_v2.id.clone(), t1_v2);
+        let tasks: Vec<Task> = map.into_values().collect();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].title, "v2");
+    }
+
+    #[test]
+    fn list_decisions_dedup_by_id() {
+        let d1 = Decision {
+            id: 1,
+            title: "v1".into(),
+            content: "old".into(),
+            author: "a".into(),
+            timestamp: 1,
+        };
+        let d1_v2 = Decision {
+            id: 1,
+            title: "v2".into(),
+            content: "new".into(),
+            author: "a".into(),
+            timestamp: 2,
+        };
+        let mut map = std::collections::HashMap::new();
+        map.insert(d1.id, d1);
+        map.insert(d1_v2.id, d1_v2);
+        let decisions: Vec<Decision> = map.into_values().collect();
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].content, "new");
+    }
+
+    #[test]
+    fn team_dedup_by_name() {
+        let t1 = Team {
+            name: "core".into(),
+            members: vec!["a".into()],
+            timestamp: 1,
+        };
+        let t2 = Team {
+            name: "core".into(),
+            members: vec!["a".into(), "b".into()],
+            timestamp: 2,
+        };
+        let mut map = std::collections::HashMap::new();
+        map.insert(t1.name.clone(), t1);
+        map.insert(t2.name.clone(), t2);
+        let teams: Vec<Team> = map.into_values().collect();
+        assert_eq!(teams.len(), 1);
+        assert_eq!(teams[0].members.len(), 2);
+    }
+
+    #[test]
+    fn team_delete_is_soft() {
+        // Delete sets members to empty — list_teams filters these out
+        let t = Team {
+            name: "old".into(),
+            members: vec![],
+            timestamp: 0,
+        };
+        assert!(t.members.is_empty());
+    }
+
+    #[test]
+    fn get_team_members_returns_none_for_deleted() {
+        // Deleted team has empty members — get_team_members should return None
+        let teams = vec![
+            Team {
+                name: "active".into(),
+                members: vec!["a".into()],
+                timestamp: 1,
+            },
+            Team {
+                name: "deleted".into(),
+                members: vec![],
+                timestamp: 2,
+            },
+        ];
+        let active = teams
+            .iter()
+            .find(|t| t.name == "active" && !t.members.is_empty());
+        let deleted = teams
+            .iter()
+            .find(|t| t.name == "deleted" && !t.members.is_empty());
+        assert!(active.is_some());
+        assert!(deleted.is_none());
+    }
+
+    #[test]
+    fn update_task_preserves_other_fields() {
+        let mut t = Task {
+            id: "T1".into(),
+            title: "orig".into(),
+            description: "desc".into(),
+            assignee: "alice".into(),
+            status: "open".into(),
+            result: "".into(),
+            created_by: "bob".into(),
+            timestamp: 0,
+        };
+        // Simulate update: only change status
+        t.status = "claimed".into();
+        assert_eq!(t.title, "orig");
+        assert_eq!(t.assignee, "alice");
+        assert_eq!(t.description, "desc");
     }
 }

@@ -228,3 +228,98 @@ pub fn append_jsonl<T: Serialize>(path: &Path, item: &T) {
         }
     }
 }
+
+// ── Binary framing (shared between daemon and TUI) ──────────────────────
+
+pub const TAG_DATA: u8 = 0;
+pub const TAG_RESIZE: u8 = 1;
+pub const MAX_FRAME_SIZE: usize = 1_000_000;
+
+pub fn write_frame(w: &mut impl std::io::Write, data: &[u8]) -> std::io::Result<()> {
+    w.write_all(&[TAG_DATA])?;
+    w.write_all(&(data.len() as u32).to_be_bytes())?;
+    w.write_all(data)?;
+    w.flush()
+}
+
+pub fn read_tagged_frame(r: &mut impl std::io::Read) -> std::io::Result<(u8, Vec<u8>)> {
+    let mut tag = [0u8; 1];
+    r.read_exact(&mut tag)?;
+    let mut len_buf = [0u8; 4];
+    r.read_exact(&mut len_buf)?;
+    let len = u32::from_be_bytes(len_buf) as usize;
+    if len > MAX_FRAME_SIZE {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "frame too large",
+        ));
+    }
+    let mut buf = vec![0u8; len];
+    r.read_exact(&mut buf)?;
+    Ok((tag[0], buf))
+}
+
+#[cfg(test)]
+mod framing_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn frame_roundtrip() {
+        let mut buf = Vec::new();
+        write_frame(&mut buf, b"hello world").unwrap();
+        let mut cursor = Cursor::new(&buf);
+        let (tag, data) = read_tagged_frame(&mut cursor).unwrap();
+        assert_eq!(tag, TAG_DATA);
+        assert_eq!(data, b"hello world");
+    }
+
+    #[test]
+    fn frame_empty_data() {
+        let mut buf = Vec::new();
+        write_frame(&mut buf, b"").unwrap();
+        let (tag, data) = read_tagged_frame(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(tag, TAG_DATA);
+        assert!(data.is_empty());
+    }
+
+    #[test]
+    fn frame_large_data() {
+        let payload = vec![0x42u8; 65536];
+        let mut buf = Vec::new();
+        write_frame(&mut buf, &payload).unwrap();
+        let (_, data) = read_tagged_frame(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(data.len(), 65536);
+    }
+
+    #[test]
+    fn frame_oversized_rejected() {
+        // Craft a frame header claiming > MAX_FRAME_SIZE
+        let mut buf = vec![TAG_DATA];
+        buf.extend_from_slice(&(2_000_000u32).to_be_bytes());
+        let result = read_tagged_frame(&mut Cursor::new(&buf));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn frame_truncated_rejected() {
+        // Only tag + partial length
+        let buf = vec![TAG_DATA, 0, 0];
+        let result = read_tagged_frame(&mut Cursor::new(&buf));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resize_frame_roundtrip() {
+        let mut buf = Vec::new();
+        // Write resize frame manually
+        buf.push(TAG_RESIZE);
+        let data = [0u8, 120, 0, 40]; // 120x40
+        buf.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        buf.extend_from_slice(&data);
+        let (tag, payload) = read_tagged_frame(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(tag, TAG_RESIZE);
+        assert_eq!(u16::from_be_bytes([payload[0], payload[1]]), 120);
+        assert_eq!(u16::from_be_bytes([payload[2], payload[3]]), 40);
+    }
+}

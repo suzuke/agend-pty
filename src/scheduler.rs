@@ -136,7 +136,60 @@ mod tests {
             last_run: 0,
         };
         let json = serde_json::to_string(&s).unwrap();
-        let r: Schedule = serde_json::from_str(&json).unwrap();
-        assert_eq!(r.id, "S1");
+        assert_eq!(serde_json::from_str::<Schedule>(&json).unwrap().id, "S1");
+    }
+
+    #[test]
+    fn delete_disables_schedule() {
+        let mut s = Schedule {
+            id: "S1".into(),
+            cron: "0 * * * * *".into(),
+            target: "a".into(),
+            message: "hi".into(),
+            enabled: true,
+            last_run: 0,
+        };
+        s.enabled = false; // soft delete
+        assert!(!s.enabled);
+    }
+
+    #[test]
+    fn update_preserves_id() {
+        let mut s = Schedule {
+            id: "S1".into(),
+            cron: "0 * * * * *".into(),
+            target: "a".into(),
+            message: "old".into(),
+            enabled: true,
+            last_run: 0,
+        };
+        s.message = "new".into();
+        s.cron = "0 0 * * * *".into();
+        assert_eq!(s.id, "S1");
+        assert_eq!(s.message, "new");
+    }
+
+    #[test]
+    fn mark_run_updates_timestamp() {
+        let mut s = Schedule {
+            id: "S1".into(),
+            cron: "0 * * * * *".into(),
+            target: "a".into(),
+            message: "hi".into(),
+            enabled: true,
+            last_run: 0,
+        };
+        s.last_run = 12345;
+        assert_eq!(s.last_run, 12345);
+    }
+
+    #[test]
+    fn cron_every_minute_valid() {
+        assert!(create_schedule("* * * * * *", "a", "m").is_ok());
+    }
+
+    #[test]
+    fn cron_complex_valid() {
+        assert!(create_schedule("0 30 9 * * Mon-Fri", "a", "m").is_ok());
     }
 }

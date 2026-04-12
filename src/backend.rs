@@ -135,3 +135,55 @@ impl Backend {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_backends_have_valid_presets() {
+        for b in [
+            Backend::ClaudeCode,
+            Backend::KiroCli,
+            Backend::Codex,
+            Backend::OpenCode,
+            Backend::Gemini,
+        ] {
+            let p = b.preset();
+            assert!(!p.command.is_empty(), "{:?} command empty", b);
+            assert!(!p.ready_pattern.is_empty(), "{:?} ready_pattern empty", b);
+            assert!(!p.submit_key.is_empty(), "{:?} submit_key empty", b);
+            assert!(!p.quit_command.is_empty(), "{:?} quit_command empty", b);
+            assert!(!p.resume_flag.is_empty(), "{:?} resume_flag empty", b);
+            assert!(p.ready_timeout_secs > 0, "{:?} timeout zero", b);
+        }
+    }
+
+    #[test]
+    fn from_command_case_insensitive() {
+        assert_eq!(Backend::from_command("Claude"), Some(Backend::ClaudeCode));
+        assert_eq!(Backend::from_command("GEMINI"), Some(Backend::Gemini));
+        assert_eq!(
+            Backend::from_command("/usr/bin/claude --flag"),
+            Some(Backend::ClaudeCode)
+        );
+    }
+
+    #[test]
+    fn from_command_unknown_returns_none() {
+        assert_eq!(Backend::from_command("bash"), None);
+        assert_eq!(Backend::from_command("python3"), None);
+    }
+
+    #[test]
+    fn claude_has_skip_permissions() {
+        let p = Backend::ClaudeCode.preset();
+        assert!(p.args.contains(&"--dangerously-skip-permissions"));
+    }
+
+    #[test]
+    fn claude_has_mcp_inject_flag() {
+        let p = Backend::ClaudeCode.preset();
+        assert_eq!(p.mcp_inject_flag, "--mcp-config");
+    }
+}
