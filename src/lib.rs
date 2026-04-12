@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 pub mod api;
 pub mod backend;
+pub mod bugreport;
 pub mod channel;
 pub mod config;
 pub mod demo;

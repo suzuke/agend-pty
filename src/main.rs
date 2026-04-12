@@ -9,6 +9,8 @@
 //!   agend-pty inject <agent> <message>    Inject message to agent
 //!   agend-pty shutdown                    Stop running daemon
 
+#[path = "bugreport.rs"]
+mod bugreport;
 #[path = "config.rs"]
 mod config;
 #[path = "demo.rs"]
@@ -61,6 +63,9 @@ fn main() {
         }
         "demo" => {
             demo::run();
+        }
+        "bugreport" | "bug" => {
+            bugreport::run();
         }
         "doctor" | "doc" => {
             doctor::run();
@@ -200,6 +205,7 @@ fn print_help() {
     println!("    snapshot [-o file]     Save fleet state to JSON");
     println!("    restore [-i file]      Restore fleet from snapshot");
     println!("    cleanup                Remove leftover git worktrees");
+    println!("    bugreport              Export diagnostic info to file");
     println!("    doctor                 Check system health");
     println!("    shutdown               Stop a running daemon\n");
     println!("OPTIONS:");
