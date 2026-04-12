@@ -11,6 +11,8 @@
 
 #[path = "config.rs"]
 mod config;
+#[path = "demo.rs"]
+mod demo;
 #[path = "doctor.rs"]
 mod doctor;
 #[path = "features.rs"]
@@ -56,6 +58,9 @@ fn main() {
         }
         "quickstart" | "init" | "setup" => {
             quickstart::run();
+        }
+        "demo" => {
+            demo::run();
         }
         "doctor" | "doc" => {
             doctor::run();
@@ -185,6 +190,7 @@ fn print_help() {
     println!("    agend-pty <COMMAND>\n");
     println!("COMMANDS:");
     println!("    quickstart             Interactive setup wizard");
+    println!("    demo                   Run demo with mock agents (no API key)");
     println!("    daemon [name:cmd ...]  Start the daemon (manages agents)");
     println!("    attach [agent]         Connect TUI to a running agent");
     println!("    status                 Show running daemons and agents");

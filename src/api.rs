@@ -691,6 +691,75 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                 .insert(name.to_owned(), info);
             json!({"content": [{"type": "text", "text": json!({"created": name, "command": command, "branch": branch}).to_string()}]})
         }
+        "replace_instance" => {
+            let name = args["instance_name"]
+                .as_str()
+                .or_else(|| args["name"].as_str())
+                .unwrap_or("");
+            if name.is_empty() {
+                return json!({"content": [{"type": "text", "text": "instance_name required"}], "isError": true});
+            }
+            // Check old instance exists
+            let exists = ctx
+                .writers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(name);
+            if !exists {
+                return json!({"content": [{"type": "text", "text": format!("instance '{name}' not found")}], "isError": true});
+            }
+            // Build new config (use provided or fall back to existing)
+            let old_config = ctx
+                .spawn_configs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(name)
+                .cloned();
+            let backend = args["backend"].as_str().unwrap_or("claude");
+            let model = args["model"].as_str();
+            let wd = args["working_directory"]
+                .as_str()
+                .map(std::path::PathBuf::from)
+                .or_else(|| old_config.as_ref().and_then(|c| c.working_dir.clone()));
+            let branch = args["branch"]
+                .as_str()
+                .map(String::from)
+                .or_else(|| old_config.as_ref().and_then(|c| c.branch.clone()));
+            let mut cmd_parts = vec![backend.to_owned()];
+            if let Some(m) = model {
+                cmd_parts.push("--model".into());
+                cmd_parts.push(m.into());
+            }
+            let command = cmd_parts.join(" ");
+            // Register new spawn config (create new)
+            let info = SpawnConfigInfo {
+                command: command.clone(),
+                working_dir: wd.clone(),
+                worktree: old_config.as_ref().map(|c| c.worktree).unwrap_or(true),
+                branch: branch.clone(),
+            };
+            ctx.spawn_configs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(name.to_owned(), info);
+            // Kill old instance (Ctrl+C + EOF)
+            if let Some(pw) = ctx
+                .writers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(name)
+            {
+                let _ = pw
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .write_all(b"\x03\x04");
+            }
+            // The daemon's health monitor will auto-respawn with the new config
+            json!({"content": [{"type": "text", "text": json!({
+                "replaced": name, "command": command, "branch": branch,
+                "working_directory": wd.map(|p| p.display().to_string())
+            }).to_string()}]})
+        }
         _ => {
             json!({"content": [{"type": "text", "text": format!("unknown tool: {tool}")}], "isError": true})
         }
@@ -746,6 +815,7 @@ pub fn mcp_tools_list() -> Value {
         {"name":"merge_preview","description":"Preview merge of agent branch.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"}},"required":["instance_name"]}},
         {"name":"merge_agent","description":"Squash merge agent branch.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"message":{"type":"string"}},"required":["instance_name"]}},
         {"name":"create_instance","description":"Create a new agent instance.","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"working_directory":{"type":"string"},"backend":{"type":"string"},"model":{"type":"string"},"branch":{"type":"string"}},"required":["name"]}},
+        {"name":"replace_instance","description":"Replace an agent with new settings (atomic swap).","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string","description":"Agent to replace"},"backend":{"type":"string"},"model":{"type":"string"},"working_directory":{"type":"string"},"branch":{"type":"string"}},"required":["instance_name"]}},
         {"name":"update_decision","description":"Update a decision.","inputSchema":{"type":"object","properties":{"id":{"type":"integer"},"title":{"type":"string"},"content":{"type":"string"}},"required":["id"]}},
         {"name":"team","description":"Team operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["create","list","delete","update"]},"name":{"type":"string"},"members":{"type":"array","items":{"type":"string"}}},"required":["action"]}},
         {"name":"list_events","description":"List event log.","inputSchema":{"type":"object","properties":{"agent":{"type":"string"},"type":{"type":"string"}}}},

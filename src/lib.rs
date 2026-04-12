@@ -3,6 +3,7 @@ pub mod api;
 pub mod backend;
 pub mod channel;
 pub mod config;
+pub mod demo;
 pub mod doctor;
 pub mod event_log;
 pub mod features;

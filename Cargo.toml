@@ -1,6 +1,6 @@
 [package]
 name = "agend-pty"
-version = "0.1.0"
+version = "0.5.0"
 edition = "2021"
 
 [lints.clippy]
@@ -37,6 +37,8 @@ serde_json = "1"
 serde_yaml = "0.9"
 alacritty_terminal = "0.26"
 ctrlc = "3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 libc = "0.2"
 isahc = "1"
 

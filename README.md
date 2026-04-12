@@ -129,6 +129,7 @@ The daemon exposes these tools to agents via the MCP protocol:
 | `describe_instance` | Get agent details |
 | `delete_instance` | Stop an agent (optionally cleanup worktree) |
 | `create_instance` | Create a new agent instance at runtime |
+| `replace_instance` | Replace an agent with new settings (atomic swap) |
 | `inbox` | Read inbox messages |
 | `post_decision` | Post a fleet-wide decision |
 | `list_decisions` | List fleet decisions |
