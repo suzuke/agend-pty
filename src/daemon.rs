@@ -10,7 +10,10 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
 const TAG_DATA: u8 = 0;
 const TAG_RESIZE: u8 = 1;
@@ -114,6 +117,9 @@ struct SpawnContext {
 /// Handle a HealthAction — called from both PTY read loop and tick thread.
 #[allow(clippy::too_many_arguments)]
 fn handle_health_action(action: &health::HealthAction, name: &str, sctx: &SpawnContext) {
+    if SHUTTING_DOWN.load(Ordering::Relaxed) {
+        return;
+    }
     match action {
         health::HealthAction::Restart => {
             tracing::warn!(agent = %name, "scheduling respawn");
@@ -1233,6 +1239,7 @@ fn main() {
     let ctrl_sock = paths::ctrl_socket();
     let ctrl_sock2 = ctrl_sock.clone();
     ctrlc::set_handler(move || {
+        SHUTTING_DOWN.store(true, Ordering::Relaxed);
         tracing::info!("shutting down...");
         if let Ok(mut s) = UnixStream::connect(&ctrl_sock2) {
             let _ = s.write_all(b"shutdown");

@@ -54,7 +54,11 @@ pub fn create_worktree(
     let wt_path = worktree_dir(repo_dir, agent_name);
     if wt_path.exists() {
         return Ok(wt_path);
-    } // reuse on respawn
+    }
+    // Empty repo (no commits) can't create worktrees
+    if git(repo_dir, &["rev-parse", "HEAD"]).is_err() {
+        return Err("git repo has no commits — commit first before using worktrees".into());
+    }
     let branch = custom_branch
         .map(String::from)
         .unwrap_or_else(|| branch_name(agent_name));

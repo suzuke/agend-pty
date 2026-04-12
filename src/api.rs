@@ -888,13 +888,20 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
             if name.is_empty() {
                 return json!({"content": [{"type": "text", "text": "name required (alphanumeric, hyphens, underscores only)"}], "isError": true});
             }
-            let backend = args["backend"].as_str().unwrap_or("claude");
+            let backend_str = args["backend"].as_str().unwrap_or("claude");
+            let resolved = crate::config::resolve_backend_binary(backend_str);
             let model = args["model"].as_str();
             let wd = args["working_directory"]
                 .as_str()
                 .map(std::path::PathBuf::from);
             let branch = args["branch"].as_str().map(String::from);
-            let mut cmd_parts = vec![backend.to_owned()];
+            // Build command with preset args (e.g. --dangerously-skip-permissions)
+            let mut cmd_parts = vec![resolved.clone()];
+            if let Some(b) = crate::backend::Backend::from_command(&resolved) {
+                for arg in b.preset().args {
+                    cmd_parts.push(arg.to_string());
+                }
+            }
             if let Some(m) = model {
                 cmd_parts.push("--model".into());
                 cmd_parts.push(m.into());
