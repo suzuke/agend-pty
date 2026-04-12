@@ -147,7 +147,7 @@ fn handle_health_action(
 ) {
     match action {
         health::HealthAction::Restart => {
-            eprintln!("[health] {name}: scheduling respawn");
+            tracing::warn!(agent = %name, "scheduling respawn");
             do_respawn(
                 name,
                 registry,
@@ -159,7 +159,7 @@ fn handle_health_action(
             );
         }
         health::HealthAction::KillAndRestart => {
-            eprintln!("[health] {name}: hang detected — killing and respawning");
+            tracing::warn!(agent = %name, "hang detected — killing and respawning");
             // Send Ctrl+C + EOF to kill the process
             if let Some(pw) = agent_writers
                 .lock()
@@ -174,7 +174,7 @@ fn handle_health_action(
             // Respawn will happen on next tick after process exits
         }
         health::HealthAction::MarkFailed => {
-            eprintln!("[health] {name}: marked FAILED — no more restarts");
+            tracing::warn!(agent = %name, "marked FAILED — no more restarts");
         }
         health::HealthAction::None => {}
     }
@@ -197,7 +197,7 @@ fn do_respawn(
     {
         Some(c) => c,
         None => {
-            eprintln!("[health] {name}: no spawn config for respawn");
+            tracing::warn!(agent = %name, "no spawn config for respawn");
             return;
         }
     };
@@ -220,7 +220,7 @@ fn do_respawn(
     std::thread::Builder::new()
         .name(format!("respawn_{}", name))
         .spawn(move || {
-            eprintln!("[health] {}: respawning", cfg.name);
+            tracing::warn!(agent = %cfg.name, "respawning");
             spawn_agent(
                 cfg.name,
                 cfg.command,
@@ -341,7 +341,7 @@ fn spawn_agent(
     }) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("[{name}] failed to open pty: {e}");
+            tracing::error!(agent = %name, error = %e, "failed to open PTY");
             return;
         }
     };
@@ -376,11 +376,11 @@ fn spawn_agent(
             let custom_branch = branch_name.as_deref();
             match git::create_worktree(wd, &name, custom_branch) {
                 Ok(wt) => {
-                    eprintln!("[{name}] git worktree: {}", wt.display());
+                    tracing::info!(agent = %name, path = %wt.display(), "git worktree");
                     wt
                 }
                 Err(e) => {
-                    eprintln!("[{name}] git worktree failed: {e}, using original dir");
+                    tracing::error!(agent = %name, error = %e, "git worktree failed, using original dir");
                     wd.clone()
                 }
             }
@@ -399,7 +399,7 @@ fn spawn_agent(
     let _child = match pair.slave.spawn_command(cmd) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[{name}] failed to spawn '{command}': {e}");
+            tracing::error!(agent = %name, command = %command, error = %e, "failed to spawn");
             return;
         }
     };
@@ -408,14 +408,14 @@ fn spawn_agent(
     let pty_writer: PtyWriter = Arc::new(Mutex::new(match pair.master.take_writer() {
         Ok(w) => w,
         Err(e) => {
-            eprintln!("[{name}] take_writer failed: {e}");
+            tracing::error!(agent = %name, error = %e, "take_writer failed");
             return;
         }
     }));
     let mut pty_reader = match pair.master.try_clone_reader() {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[{name}] clone_reader failed: {e}");
+            tracing::error!(agent = %name, error = %e, "clone_reader failed");
             return;
         }
     };
@@ -528,13 +528,13 @@ fn spawn_agent(
             loop {
                 match pty_reader.read(&mut buf) {
                     Ok(0) => {
-                        eprintln!("[{n}] PTY closed — reaping session");
+                        tracing::warn!(agent = %n, "PTY closed — reaping session");
                         event_log::log_event("pty_closed", &n, "");
                         // 1. Update state machine, record health action (but don't execute yet)
                         let now = std::time::Instant::now();
                         let action = if let Ok(mut s) = sm.lock() {
                             if let Some(new_state) = s.on_exit(now) {
-                                eprintln!("[{n}] state: {:?}", new_state);
+                                tracing::info!(agent = %n, state = ?new_state, "state changed");
                                 event_log::log_event("state_change", &n, &format!("{new_state:?}"));
                                 if let Ok(mut h) = hm.lock() {
                                     let a = h.on_state_change(
@@ -543,7 +543,7 @@ fn spawn_agent(
                                         s.last_error_kind(),
                                         now,
                                     );
-                                    eprintln!("[{n}] health action: {:?}", a);
+                                    tracing::warn!(agent = %n, action = ?a, "health action");
                                     a
                                 } else {
                                     health::HealthAction::None
@@ -596,7 +596,7 @@ fn spawn_agent(
                             let clean = state::strip_ansi(&String::from_utf8_lossy(&detect_buf));
                             for (pattern, key_seq) in &dismiss_patterns {
                                 if clean.contains(pattern.as_str()) {
-                                    eprintln!("[{n}] auto-dismissing dialog (matched: {pattern})");
+                                    tracing::debug!(agent = %n, pattern = %pattern, "auto-dismissing dialog");
                                     let _ = pw
                                         .lock()
                                         .unwrap_or_else(|e| e.into_inner())
@@ -615,7 +615,7 @@ fn spawn_agent(
                                 if let Some(new_state) =
                                     s.process_output(&clean, std::time::Instant::now())
                                 {
-                                    eprintln!("[{n}] state: {:?}", new_state);
+                                    tracing::info!(agent = %n, state = ?new_state, "state changed");
                                     event_log::log_event(
                                         "state_change",
                                         &n,
@@ -629,7 +629,7 @@ fn spawn_agent(
                                             std::time::Instant::now(),
                                         );
                                         if action != health::HealthAction::None {
-                                            eprintln!("[{n}] health action: {:?}", action);
+                                            tracing::warn!(agent = %n, action = ?action, "health action");
                                             event_log::log_event(
                                                 "health_action",
                                                 &n,
@@ -668,11 +668,11 @@ fn spawn_agent(
     let listener = match UnixListener::bind(&sock) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("[{name}] failed to bind {}: {e}", sock.display());
+            tracing::error!(agent = %name, path = %sock.display(), error = %e, "failed to bind TUI socket");
             return;
         }
     };
-    eprintln!("[{name}] TUI socket on {} (cmd: {command})", sock.display());
+    tracing::info!(agent = %name, path = %sock.display(), command = %command, "TUI socket ready");
 
     channel_mgr
         .lock()
@@ -685,7 +685,7 @@ fn spawn_agent(
             Ok(s) => s,
             Err(_) => continue,
         };
-        eprintln!("[{name}] TUI client connected");
+        tracing::debug!(agent = %name, "TUI client connected");
 
         // Atomic subscribe + screen dump (under core lock — no output gap)
         let rx = {
@@ -709,7 +709,7 @@ fn spawn_agent(
         let mut write_stream = match stream.try_clone() {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("[{name}] TUI clone failed: {e}");
+                tracing::error!(agent = %name, error = %e, "TUI clone failed");
                 continue;
             }
         };
@@ -722,7 +722,7 @@ fn spawn_agent(
                         break;
                     }
                 }
-                eprintln!("[{n4}] TUI output thread ended");
+                tracing::debug!(agent = %n4, "TUI output thread ended");
             })
             .ok();
 
@@ -751,7 +751,7 @@ fn spawn_agent(
                         Ok((TAG_RESIZE, data)) if data.len() == 4 => {
                             let cols = u16::from_be_bytes([data[0], data[1]]);
                             let rows = u16::from_be_bytes([data[2], data[3]]);
-                            eprintln!("[{n5}] resize: {cols}x{rows}");
+                            tracing::debug!(agent = %n5, cols, rows, "resize");
                             let _ =
                                 pty_m
                                     .lock()
@@ -769,7 +769,7 @@ fn spawn_agent(
                         _ => break,
                     }
                 }
-                eprintln!("[{n5}] TUI client disconnected");
+                tracing::debug!(agent = %n5, "TUI client disconnected");
             })
             .ok();
     }
@@ -801,6 +801,13 @@ fn main() {
     }
     let args = filtered_args;
 
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_env("AGEND_LOG")
+                .unwrap_or_else(|_| "agend=info".parse().expect("valid filter")),
+        )
+        .init();
+
     if dry_run {
         let cfg = if let Some(ref p) = config_path {
             config::FleetConfig::load(p).unwrap_or_else(|e| {
@@ -824,32 +831,34 @@ fn main() {
             match UnixStream::connect(&ctrl) {
                 Ok(mut s) => {
                     let _ = s.write_all(b"shutdown");
-                    eprintln!("[daemon] shutdown signal sent");
+                    tracing::info!("shutdown signal sent");
                 }
-                Err(e) => eprintln!("[daemon] cannot connect to {}: {e}", ctrl.display()),
+                Err(e) => {
+                    tracing::error!(path = %ctrl.display(), error = %e, "cannot connect to ctrl socket")
+                }
             }
         } else {
-            eprintln!("[daemon] no active daemon found");
+            tracing::error!("no active daemon found");
         }
         return;
     }
 
     // Initialize run directory
     paths::init();
-    eprintln!("[daemon] run dir: {}", paths::run_dir().display());
+    tracing::info!(path = %paths::run_dir().display(), "run dir");
 
     // Acquire daemon lock (prevents duplicate fleet daemons)
     let fleet_id = config_path.as_ref().map(|p| p.display().to_string());
     let _lock_file = match paths::acquire_lock(fleet_id.as_deref()) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("[daemon] {e}");
+            tracing::error!(error = %e, "failed to acquire lock");
             std::process::exit(1);
         }
     };
-    eprintln!("[daemon] lock acquired");
+    tracing::info!("lock acquired");
     if !git::has_git() {
-        eprintln!("[daemon] ⚠️  git not found — worktree disabled. Install: brew install git");
+        tracing::warn!("git not found — worktree disabled. Install: brew install git");
     }
 
     // Parse agents from CLI args or fleet.yaml
@@ -916,21 +925,20 @@ fn main() {
         }
         for (dir, names) in &seen {
             if names.len() > 1 && !dir.is_empty() {
-                eprintln!("[daemon] ⚠️  {:?} share working_directory {}", names, dir);
+                tracing::warn!(agents = ?names, dir = %dir, "agents share working_directory");
             }
         }
     }
     let inbox_store = inbox::InboxStore::new();
     let channel_mgr = channel::ChannelManager::new();
-    eprintln!("[daemon] starting {} agent(s)", agents.len());
+    tracing::info!(count = agents.len(), "starting agents");
 
     for (name, command, wd, _, _) in &agents {
-        eprintln!(
-            "[daemon]   {name}: {command}{}",
-            wd.as_ref()
-                .map(|p| format!(" (cwd: {})", p.display()))
-                .unwrap_or_default()
-        );
+        let wd_str = wd
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        tracing::info!(agent = %name, command = %command, cwd = %wd_str, "agent configured");
     }
 
     // Setup channel adapters BEFORE spawning agents (so on_agent_created works)
@@ -950,7 +958,7 @@ fn main() {
     // Spawn agents with dependency ordering
     let dep_layers = if let Ok(cfg) = load_config() {
         features::dependency_layers(&cfg).unwrap_or_else(|e| {
-            eprintln!("[daemon] ⚠️  dependency error: {e}, spawning all at once");
+            tracing::warn!(error = %e, "dependency error, spawning all at once");
             vec![agents.iter().map(|(n, _, _, _, _)| n.clone()).collect()]
         })
     } else {
@@ -965,16 +973,16 @@ fn main() {
 
     for (layer_idx, layer) in dep_layers.iter().enumerate() {
         if layer_idx > 0 {
-            eprintln!(
-                "[daemon] waiting for layer {} agents to be ready...",
-                layer_idx - 1
+            tracing::info!(
+                layer = layer_idx - 1,
+                "waiting for layer agents to be ready"
             );
             // Wait up to 60s for previous layer agents to reach Ready
             let deadline = std::time::Instant::now()
                 + std::time::Duration::from_secs(DEPENDENCY_READY_TIMEOUT_SECS);
             'wait: loop {
                 if std::time::Instant::now() > deadline {
-                    eprintln!("[daemon] ⚠️  timeout waiting for dependencies, proceeding");
+                    tracing::warn!("timeout waiting for dependencies, proceeding");
                     break;
                 }
                 let reg = registry.lock().unwrap_or_else(|e| e.into_inner());
@@ -999,7 +1007,7 @@ fn main() {
             }
         }
 
-        eprintln!("[daemon] spawning layer {layer_idx}: {:?}", layer);
+        tracing::info!(layer = layer_idx, agents = ?layer, "spawning layer");
         for name in layer {
             let (command, wd, gw, gb) = match agent_map.get(name) {
                 Some(v) => v.clone(),
@@ -1056,11 +1064,11 @@ fn main() {
                             let formatted =
                                 format!("[user:{} via telegram] {}", msg.sender, msg.text);
                             inject_to_pty(pw, &formatted, &submit_key);
-                            eprintln!(
-                                "[channel] {} → {}: {}",
-                                msg.sender,
-                                msg.agent_target,
-                                msg.text.chars().take(60).collect::<String>()
+                            tracing::debug!(
+                                sender = %msg.sender,
+                                target = %msg.agent_target,
+                                preview = %msg.text.chars().take(60).collect::<String>(),
+                                "channel message routed"
                             );
                         }
                     }
@@ -1103,7 +1111,7 @@ fn main() {
                         // Tick state machine (idle detection, error hysteresis confirmation)
                         if let Ok(mut s) = sm.lock() {
                             if let Some(new_state) = s.tick(now) {
-                                eprintln!("[tick] {name} state: {:?}", new_state);
+                                tracing::debug!(agent = %name, state = ?new_state, "tick state changed");
                                 event_log::log_event(
                                     "state_change",
                                     name,
@@ -1117,7 +1125,7 @@ fn main() {
                                         now,
                                     );
                                     if action != health::HealthAction::None {
-                                        eprintln!("[tick] {name} health action: {:?}", action);
+                                        tracing::debug!(agent = %name, action = ?action, "tick health action");
                                         handle_health_action(
                                             &action, name, &reg, &aw, &as2, &sc, &ib, &cm,
                                         );
@@ -1130,7 +1138,7 @@ fn main() {
                         if let (Ok(s), Ok(mut h)) = (sm.lock(), hm.lock()) {
                             let action = h.tick(s.state(), now);
                             if action != health::HealthAction::None {
-                                eprintln!("[tick] {name} health tick action: {:?}", action);
+                                tracing::debug!(agent = %name, action = ?action, "health tick action");
                                 handle_health_action(&action, name, &reg, &aw, &as2, &sc, &ib, &cm);
                             }
                         }
@@ -1146,7 +1154,7 @@ fn main() {
                         if let Some(pw) = w.get(&target) {
                             let formatted = format!("[scheduled] {message}");
                             inject_to_pty(pw, &formatted, "\r");
-                            eprintln!("[scheduler] {id} → {target}");
+                            tracing::info!(schedule_id = %id, target = %target, "scheduled message sent");
                             scheduler::mark_run(&id);
                         }
                     }
@@ -1159,7 +1167,7 @@ fn main() {
     let ctrl_sock = paths::ctrl_socket();
     let ctrl_sock2 = ctrl_sock.clone();
     ctrlc::set_handler(move || {
-        eprintln!("\n[daemon] shutting down...");
+        tracing::info!("shutting down...");
         if let Ok(mut s) = UnixStream::connect(&ctrl_sock2) {
             let _ = s.write_all(b"shutdown");
         }
@@ -1169,14 +1177,14 @@ fn main() {
     // Control socket for shutdown
     let _ = std::fs::remove_file(&ctrl_sock);
     if let Ok(listener) = UnixListener::bind(&ctrl_sock) {
-        eprintln!("[daemon] use `agend-daemon --shutdown` or Ctrl+C to stop");
+        tracing::info!("use `agend-daemon --shutdown` or Ctrl+C to stop");
         if let Ok((mut stream, _)) = listener.accept() {
             let mut buf = [0u8; 64];
             let _ = stream.read(&mut buf);
         }
     }
 
-    eprintln!("[daemon] cleaning up...");
+    tracing::info!("cleaning up...");
     paths::cleanup();
     std::process::exit(0);
 }

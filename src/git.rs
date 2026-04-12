@@ -71,7 +71,7 @@ pub fn create_worktree(
     )?;
     // Warn if .agend/ not in .gitignore
     check_gitignore(repo_dir);
-    eprintln!("[git] created worktree for '{agent_name}' on branch '{branch}'");
+    tracing::info!(agent = %agent_name, branch = %branch, "created worktree");
     Ok(wt_path)
 }
 
@@ -79,9 +79,7 @@ fn check_gitignore(repo_dir: &Path) {
     let gi = repo_dir.join(".gitignore");
     let content = std::fs::read_to_string(&gi).unwrap_or_default();
     if !content.contains(".agend") {
-        eprintln!(
-            "[git] ⚠️  add '.agend/' to .gitignore to exclude worktrees from version control"
-        );
+        tracing::warn!("add '.agend/' to .gitignore to exclude worktrees from version control");
     }
 }
 
@@ -133,12 +131,12 @@ pub fn list_worktrees(repo_dir: &Path) -> Vec<WorktreeInfo> {
 pub fn warn_residual_worktrees(repo_dir: &Path) {
     let wts = list_worktrees(repo_dir);
     if !wts.is_empty() {
-        eprintln!(
-            "[git] ⚠️  {} residual worktree(s) — run `agend-pty cleanup` to remove:",
-            wts.len()
+        tracing::warn!(
+            count = wts.len(),
+            "residual worktree(s) — run `agend-pty cleanup` to remove"
         );
         for wt in &wts {
-            eprintln!("[git]   {} ({})", wt.agent_name, wt.branch);
+            tracing::warn!(agent = %wt.agent_name, branch = %wt.branch, "residual worktree");
         }
     }
 }
@@ -178,7 +176,7 @@ pub fn squash_merge(repo_dir: &Path, branch: &str, message: &str) -> Result<(), 
         return Err(format!("merge conflicts:\n{conflicts}"));
     }
     git(repo_dir, &["commit", "-m", message])?;
-    eprintln!("[git] squash-merged '{branch}'");
+    tracing::info!(branch = %branch, "squash-merged");
     Ok(())
 }
 

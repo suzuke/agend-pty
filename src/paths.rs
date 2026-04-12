@@ -72,7 +72,7 @@ pub fn acquire_lock(fleet_config_path: Option<&str>) -> Result<std::fs::File, St
 
     // FD_CLOEXEC — prevent child processes (PTY spawns) from inheriting the lock
     if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
-        eprintln!("[paths] warning: failed to set FD_CLOEXEC on lock fd");
+        tracing::warn!("failed to set FD_CLOEXEC on lock fd");
     }
 
     // Write lock content

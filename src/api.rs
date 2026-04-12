@@ -64,11 +64,11 @@ pub fn start(ctx: Arc<DaemonCtx>) {
     let listener = match UnixListener::bind(&sock) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("[api] bind error: {e}");
+            tracing::error!(error = %e, "API bind error");
             return;
         }
     };
-    eprintln!("[api] listening on {}", sock.display());
+    tracing::info!(path = %sock.display(), "API listening");
 
     std::thread::Builder::new()
         .name("api_server".into())
@@ -79,7 +79,7 @@ pub fn start(ctx: Arc<DaemonCtx>) {
                     let cloned = match stream.try_clone() {
                         Ok(s) => s,
                         Err(e) => {
-                            eprintln!("[api] stream clone failed: {e}");
+                            tracing::error!(error = %e, "API stream clone failed");
                             return;
                         }
                     };
@@ -792,9 +792,11 @@ fn inject_message(ctx: &DaemonCtx, sender: &str, target: &str, message: &str) ->
             .write_all(text.as_bytes())
         {
             Ok(_) => {
-                eprintln!(
-                    "[api] {sender} → {target}: {}",
-                    message.chars().take(80).collect::<String>()
+                tracing::info!(
+                    sender = %sender,
+                    target = %target,
+                    preview = %message.chars().take(80).collect::<String>(),
+                    "message injected"
                 );
                 ok(json!({"sent": true}))
             }

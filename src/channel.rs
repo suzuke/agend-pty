@@ -59,7 +59,7 @@ impl ChannelManager {
     }
 
     pub fn add_adapter(&mut self, adapter: Box<dyn ChannelAdapter>) {
-        eprintln!("[channel] registered adapter: {}", adapter.name());
+        tracing::debug!(adapter = %adapter.name(), "registered adapter");
         self.adapters.push(adapter);
     }
 

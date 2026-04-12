@@ -46,7 +46,7 @@ pub fn write_mcp_config(
     };
 
     if let Err(e) = result {
-        eprintln!("[mcp_config] warning: {e}");
+        tracing::debug!(error = %e, "MCP config warning");
     }
 }
 
@@ -82,7 +82,7 @@ fn merge_json_key(path: &Path, section: &str, key: &str, value: &Value) -> Resul
 
     std::fs::write(path, serde_json::to_string_pretty(&doc).unwrap_or_default())
         .map_err(|e| format!("write {}: {e}", path.display()))?;
-    eprintln!("[mcp_config] wrote {key} to {}", path.display());
+    tracing::debug!(key = %key, path = %path.display(), "wrote MCP config");
     Ok(())
 }
 
@@ -112,6 +112,6 @@ fn write_codex_mcp(name: &str, mcp_bin_path: &str, mcp_bin_args: &[&str]) -> Res
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("codex mcp add failed: {stderr}"));
     }
-    eprintln!("[mcp_config] registered {key} with codex");
+    tracing::debug!(key = %key, "registered with codex");
     Ok(())
 }

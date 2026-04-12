@@ -42,7 +42,7 @@ pub fn generate(working_dir: &Path, command: &str, instance_name: &str) {
     };
 
     if let Err(e) = result {
-        eprintln!("[instructions] failed to generate: {e}");
+        tracing::debug!(error = %e, "failed to generate instructions");
     }
 }
 
@@ -64,7 +64,7 @@ fn write_file(path: &Path, content: &str) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(path, content)?;
-    eprintln!("[instructions] wrote {}", path.display());
+    tracing::debug!(path = %path.display(), "wrote instructions");
     Ok(())
 }
 
@@ -91,7 +91,7 @@ fn write_with_marker(path: &Path, content: &str) -> std::io::Result<()> {
         format!("{existing}\n\n{content}")
     };
     std::fs::write(path, new)?;
-    eprintln!("[instructions] wrote {}", path.display());
+    tracing::debug!(path = %path.display(), "wrote instructions");
     Ok(())
 }
 
@@ -144,7 +144,7 @@ fn generate_opencode(wd: &Path) -> std::io::Result<()> {
             Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
                 Ok(v) => v,
                 Err(e) => {
-                    eprintln!("[instructions] opencode.json parse error: {e}, skipping");
+                    tracing::debug!(error = %e, "opencode.json parse error, skipping");
                     return Ok(());
                 }
             },
@@ -167,7 +167,7 @@ fn generate_opencode(wd: &Path) -> std::io::Result<()> {
             &config_path,
             serde_json::to_string_pretty(&doc).unwrap_or_default(),
         )?;
-        eprintln!("[instructions] added {} to opencode.json", instr_rel);
+        tracing::debug!(file = %instr_rel, "added to opencode.json");
     }
     Ok(())
 }

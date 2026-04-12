@@ -63,7 +63,7 @@ impl TelegramAdapter {
                     t.by_name.insert(name.clone(), *tid);
                     t.by_id.insert(*tid, name.clone());
                 }
-                eprintln!("[telegram] loaded {} persisted topics", map.len());
+                tracing::info!(count = map.len(), "loaded persisted topics");
             }
         }
     }
@@ -78,7 +78,7 @@ impl ChannelAdapter for TelegramAdapter {
         let t = self.topics.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(&tid) = t.by_name.get(name) {
             drop(t);
-            eprintln!("[telegram] reusing existing topic '{name}' (thread_id: {tid})");
+            tracing::info!(agent = %name, thread_id = tid, "reusing existing topic");
             self.bot
                 .send_message(
                     self.group_id,
@@ -92,7 +92,7 @@ impl ChannelAdapter for TelegramAdapter {
         match self.bot.create_forum_topic(self.group_id, name) {
             Ok(thread_id) => {
                 self.register_topic(name, thread_id);
-                eprintln!("[telegram] created topic '{name}' (thread_id: {thread_id})");
+                tracing::info!(agent = %name, thread_id = thread_id, "created topic");
                 self.bot
                     .send_message(
                         self.group_id,
@@ -101,7 +101,7 @@ impl ChannelAdapter for TelegramAdapter {
                     )
                     .ok();
             }
-            Err(e) => eprintln!("[telegram] failed to create topic for '{name}': {e}"),
+            Err(e) => tracing::error!(agent = %name, error = %e, "failed to create topic"),
         }
     }
 
@@ -150,7 +150,7 @@ impl ChannelAdapter for TelegramAdapter {
         {
             Ok(val) => val["message_id"].as_i64().map(|id| id.to_string()),
             Err(e) => {
-                eprintln!("[telegram] send to '{agent}' failed: {e}");
+                tracing::error!(agent = %agent, error = %e, "send failed");
                 None
             }
         }
@@ -266,7 +266,7 @@ impl BotApi {
             let desc = parsed["description"].as_str().unwrap_or("unknown");
             if parsed["error_code"].as_i64() == Some(429) {
                 let retry_after = parsed["parameters"]["retry_after"].as_u64().unwrap_or(2);
-                eprintln!("[telegram] rate limited, waiting {retry_after}s");
+                tracing::warn!(retry_after_secs = retry_after, "rate limited");
                 std::thread::sleep(Duration::from_secs(retry_after));
                 last_err = format!("rate limited: {desc}");
                 continue;
