@@ -592,8 +592,9 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
             }
         }
         "wait_for_idle" => {
+            // Note: blocks this API handler thread (each connection has its own thread)
             let target = args["instance_name"].as_str().unwrap_or("");
-            let timeout = args["timeout_secs"].as_u64().unwrap_or(120).min(300);
+            let timeout = args["timeout_secs"].as_u64().unwrap_or(60).min(120);
             let deadline = Instant::now() + Duration::from_secs(timeout);
             loop {
                 let agent_state = ctx
