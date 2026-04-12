@@ -813,6 +813,8 @@ fn main() {
 
     // Initialize run directory
     paths::init();
+    fleet_store::init_counters();
+    scheduler::init_counter();
     tracing::info!(path = %paths::run_dir().display(), "run dir");
 
     // Acquire daemon lock (prevents duplicate fleet daemons)

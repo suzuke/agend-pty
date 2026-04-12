@@ -21,6 +21,17 @@ fn schedules_path() -> std::path::PathBuf {
     paths::run_dir().join("schedules.jsonl")
 }
 
+/// Initialize counter from persisted data (call on daemon startup).
+pub fn init_counter() {
+    let all: Vec<Schedule> = util::read_jsonl(&schedules_path());
+    let max_id = all
+        .iter()
+        .filter_map(|s| s.id.trim_start_matches('S').parse::<u64>().ok())
+        .max()
+        .unwrap_or(0);
+    NEXT_ID.store(max_id + 1, Ordering::Relaxed);
+}
+
 pub fn create_schedule(cron_expr: &str, target: &str, message: &str) -> Result<Schedule, String> {
     // Validate cron expression
     cron::Schedule::from_str(cron_expr).map_err(|e| format!("invalid cron: {e}"))?;
