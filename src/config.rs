@@ -105,11 +105,7 @@ impl InstanceConfig {
             .clone()
             .or_else(|| defaults.working_directory.clone())
             .unwrap_or_else(|| {
-                let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-                PathBuf::from(home)
-                    .join(".agend")
-                    .join("workspaces")
-                    .join(name)
+                crate::paths::home().join("workspaces").join(name)
             })
     }
 
@@ -182,8 +178,7 @@ impl FleetConfig {
 }
 
 fn dirs() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".agend").join("fleet.yaml")
+    crate::paths::home().join("fleet.yaml")
 }
 
 /// Resolve backend name to actual binary command.

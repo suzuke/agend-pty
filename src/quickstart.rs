@@ -88,7 +88,7 @@ fn looks_like_bot_token(s: &str) -> bool {
 /// Scan .env files for a bot-token-shaped value. Returns the token if found.
 fn find_env_token() -> Option<(PathBuf, String)> {
     let candidates = [
-        PathBuf::from(home_dir()).join(".agend").join(".env"),
+        crate::paths::home().join(".env"),
         PathBuf::from(".env"),
     ];
     for path in &candidates {
@@ -114,7 +114,7 @@ fn find_env_token() -> Option<(PathBuf, String)> {
 fn find_existing_fleet() -> Option<(PathBuf, usize)> {
     let candidates = [
         PathBuf::from("fleet.yaml"),
-        PathBuf::from(home_dir()).join(".agend").join("fleet.yaml"),
+        crate::paths::home().join("fleet.yaml"),
     ];
     for path in &candidates {
         if let Ok(content) = std::fs::read_to_string(path) {
@@ -289,7 +289,7 @@ pub fn run() {
     fleet["instances"] = serde_json::Value::Object(instances);
     let yaml = serde_yml::to_string(&fleet).unwrap_or_default();
 
-    let out_path = PathBuf::from(home_dir()).join(".agend").join("fleet.yaml");
+    let out_path = crate::paths::home().join("fleet.yaml");
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
