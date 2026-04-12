@@ -526,11 +526,13 @@ fn spawn_agent(
                 match pty_reader.read(&mut buf) {
                     Ok(0) => {
                         eprintln!("[{n}] PTY closed — reaping session");
+                        event_log::log_event("pty_closed", &n, "");
                         // 1. Update state machine, record health action (but don't execute yet)
                         let now = std::time::Instant::now();
                         let action = if let Ok(mut s) = sm.lock() {
                             if let Some(new_state) = s.on_exit(now) {
                                 eprintln!("[{n}] state: {:?}", new_state);
+                                event_log::log_event("state_change", &n, &format!("{new_state:?}"));
                                 if let Ok(mut h) = hm.lock() {
                                     let a = h.on_state_change(
                                         new_state,
@@ -611,6 +613,7 @@ fn spawn_agent(
                                     s.process_output(&clean, std::time::Instant::now())
                                 {
                                     eprintln!("[{n}] state: {:?}", new_state);
+                                    event_log::log_event("state_change", &n, &format!("{new_state:?}"));
                                     if let Ok(mut h) = hm.lock() {
                                         let action = h.on_state_change(
                                             new_state,
@@ -620,6 +623,7 @@ fn spawn_agent(
                                         );
                                         if action != health::HealthAction::None {
                                             eprintln!("[{n}] health action: {:?}", action);
+                                            event_log::log_event("health_action", &n, &format!("{action:?}"));
                                             handle_health_action(
                                                 &action,
                                                 &n,
@@ -1089,6 +1093,7 @@ fn main() {
                         if let Ok(mut s) = sm.lock() {
                             if let Some(new_state) = s.tick(now) {
                                 eprintln!("[tick] {name} state: {:?}", new_state);
+                                event_log::log_event("state_change", name, &format!("{new_state:?}"));
                                 if let Ok(mut h) = hm.lock() {
                                     let action = h.on_state_change(
                                         new_state,
