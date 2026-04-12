@@ -44,6 +44,7 @@ pub type AgentStateMap = Arc<Mutex<HashMap<String, AgentStateHandle>>>;
 /// Minimal spawn info for create_instance.
 #[derive(Clone)]
 pub struct SpawnConfigInfo {
+    pub name: String,
     pub command: String,
     pub working_dir: Option<std::path::PathBuf>,
     pub worktree: bool,
@@ -56,6 +57,8 @@ pub struct DaemonCtx {
     pub spawn_configs: Arc<Mutex<HashMap<String, SpawnConfigInfo>>>,
     pub inbox: Arc<inbox::InboxStore>,
     pub channel_mgr: Arc<Mutex<channel::ChannelManager>>,
+    /// Channel to request agent spawning from the daemon thread.
+    pub spawn_tx: crossbeam::channel::Sender<SpawnConfigInfo>,
 }
 
 /// Start the API socket server in a new thread.
@@ -793,16 +796,21 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
             }
             let command = cmd_parts.join(" ");
             let info = SpawnConfigInfo {
+                name: name.to_owned(),
                 command: command.clone(),
                 working_dir: wd.clone(),
                 worktree: true,
                 branch: branch.clone(),
             };
-            ctx.spawn_configs
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(name.to_owned(), info);
-            json!({"content": [{"type": "text", "text": json!({"created": name, "command": command, "branch": branch}).to_string()}]})
+            // Send spawn request to daemon thread (which has access to registry)
+            match ctx.spawn_tx.send(info) {
+                Ok(()) => {
+                    json!({"content": [{"type": "text", "text": json!({"created": name, "command": command, "branch": branch}).to_string()}]})
+                }
+                Err(e) => {
+                    json!({"content": [{"type": "text", "text": format!("spawn failed: {e}")}], "isError": true})
+                }
+            }
         }
         "replace_instance" => {
             let name = args["instance_name"]
@@ -844,13 +852,14 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                 cmd_parts.push(m.into());
             }
             let command = cmd_parts.join(" ");
-            // Register new spawn config (create new)
             let info = SpawnConfigInfo {
+                name: name.to_owned(),
                 command: command.clone(),
                 working_dir: wd.clone(),
                 worktree: old_config.as_ref().map(|c| c.worktree).unwrap_or(true),
                 branch: branch.clone(),
             };
+            // Store config for respawn after kill
             ctx.spawn_configs
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())

@@ -368,6 +368,130 @@ fn e2e_cross_agent_messaging() {
 }
 
 #[test]
+fn e2e_create_instance_actually_spawns() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
+    wait_for_agents(&sock, 2, 15);
+    // Create a new bash agent via MCP tool
+    let r = mcp_call(
+        &sock,
+        "alice",
+        "create_instance",
+        &serde_json::json!({"name": "charlie", "backend": "bash", "working_directory": "/tmp/agend-e2e-charlie"}),
+    );
+    assert_eq!(r["ok"].as_bool(), Some(true), "create failed: {r}");
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("charlie"), "expected charlie: {text}");
+    // Wait for charlie to actually appear in the agent list
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let resp = api_call(&sock, "list", &serde_json::json!({}));
+        let instances = resp["result"]["instances"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        if instances.contains(&"charlie") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "charlie didn't appear in agent list within 10s"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    // Inject a message to charlie to verify it's functional
+    let r = api_call(
+        &sock,
+        "inject",
+        &serde_json::json!({"instance": "charlie", "message": "hello charlie", "sender": "test"}),
+    );
+    assert_eq!(
+        r["ok"].as_bool(),
+        Some(true),
+        "inject to charlie failed: {r}"
+    );
+    drop(guard);
+}
+
+#[test]
+fn e2e_all_tools_respond() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
+    wait_for_agents(&sock, 2, 15);
+
+    // Test every MCP tool returns ok=true (not error, not silent failure)
+    let tools: Vec<(&str, serde_json::Value)> = vec![
+        ("list_instances", serde_json::json!({})),
+        (
+            "describe_instance",
+            serde_json::json!({"instance_name": "alice"}),
+        ),
+        (
+            "send_to_instance",
+            serde_json::json!({"instance_name": "bob", "message": "test"}),
+        ),
+        ("broadcast", serde_json::json!({"message": "hello all"})),
+        (
+            "request_information",
+            serde_json::json!({"instance_name": "bob", "question": "status?"}),
+        ),
+        (
+            "delegate_task",
+            serde_json::json!({"instance_name": "bob", "task": "do something"}),
+        ),
+        (
+            "report_result",
+            serde_json::json!({"instance_name": "bob", "summary": "done"}),
+        ),
+        ("reply", serde_json::json!({"text": "test reply"})),
+        ("inbox", serde_json::json!({})),
+        (
+            "decision",
+            serde_json::json!({"action": "post", "title": "test", "content": "body"}),
+        ),
+        ("decision", serde_json::json!({"action": "list"})),
+        (
+            "task",
+            serde_json::json!({"action": "create", "title": "test task"}),
+        ),
+        ("task", serde_json::json!({"action": "list"})),
+        (
+            "team",
+            serde_json::json!({"action": "create", "name": "devs", "members": ["alice"]}),
+        ),
+        ("team", serde_json::json!({"action": "list"})),
+        (
+            "schedule",
+            serde_json::json!({"action": "create", "cron": "0 * * * * *", "target": "alice", "message": "ping"}),
+        ),
+        ("schedule", serde_json::json!({"action": "list"})),
+        ("list_events", serde_json::json!({})),
+        (
+            "merge",
+            serde_json::json!({"action": "preview", "instance_name": "alice"}),
+        ),
+        (
+            "wait_for_idle",
+            serde_json::json!({"instance_name": "alice", "timeout_secs": 2}),
+        ),
+        (
+            "edit_message",
+            serde_json::json!({"message_id": "0", "text": "edited"}),
+        ),
+        (
+            "react",
+            serde_json::json!({"message_id": "0", "emoji": "👍"}),
+        ),
+    ];
+
+    for (tool, args) in &tools {
+        let r = mcp_call(&sock, "alice", tool, args);
+        assert_eq!(r["ok"].as_bool(), Some(true), "tool '{tool}' failed: {r}");
+    }
+    drop(guard);
+}
+
+#[test]
 fn e2e_demo_binary_exists() {
     // Verify the demo subcommand is wired up (--help should list it)
     let output = Command::new(env!("CARGO_BIN_EXE_agend-pty"))

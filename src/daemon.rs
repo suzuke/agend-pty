@@ -1063,6 +1063,9 @@ fn main() {
         }
     }
 
+    // Spawn request channel (create_instance sends here, daemon thread spawns)
+    let (spawn_tx, spawn_rx) = crossbeam::channel::unbounded::<api::SpawnConfigInfo>();
+
     // Start API socket
     api::start(Arc::new(api::DaemonCtx {
         writers: Arc::clone(&agent_writers),
@@ -1070,7 +1073,51 @@ fn main() {
         spawn_configs: Arc::new(Mutex::new(HashMap::new())),
         inbox: Arc::clone(&inbox_store),
         channel_mgr: Arc::clone(&channel_mgr),
+        spawn_tx,
     }));
+
+    // Spawn request handler thread
+    {
+        let reg = Arc::clone(&registry);
+        let aw = Arc::clone(&agent_writers);
+        let as_ = Arc::clone(&agent_states);
+        let ib = Arc::clone(&inbox_store);
+        let cm = Arc::clone(&channel_mgr);
+        let sc = Arc::clone(&spawn_configs);
+        std::thread::Builder::new()
+            .name("spawn_handler".into())
+            .spawn(move || {
+                while let Ok(info) = spawn_rx.recv() {
+                    let name = info.name.clone();
+                    std::fs::create_dir_all(paths::agent_dir(&name)).ok();
+                    let reg2 = Arc::clone(&reg);
+                    let aw2 = Arc::clone(&aw);
+                    let as2 = Arc::clone(&as_);
+                    let ib2 = Arc::clone(&ib);
+                    let cm2 = Arc::clone(&cm);
+                    let sc2 = Arc::clone(&sc);
+                    std::thread::Builder::new()
+                        .name(format!("agent_{name}"))
+                        .spawn(move || {
+                            spawn_agent(
+                                info.name,
+                                info.command,
+                                info.working_dir,
+                                info.worktree,
+                                info.branch,
+                                reg2,
+                                aw2,
+                                as2,
+                                ib2,
+                                cm2,
+                                sc2,
+                            );
+                        })
+                        .ok();
+                }
+            })
+            .ok();
+    }
 
     // Channel poll thread — routes incoming messages to agents
     {
