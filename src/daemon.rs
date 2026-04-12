@@ -853,7 +853,7 @@ fn main() {
     let _lock_file = match paths::acquire_lock(fleet_id.as_deref()) {
         Ok(f) => f,
         Err(e) => {
-            tracing::error!(error = %e, "failed to acquire lock");
+            eprintln!("{e}");
             std::process::exit(1);
         }
     };

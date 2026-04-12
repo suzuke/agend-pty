@@ -193,24 +193,46 @@ fn e2e_pid_isolation() {
     let cfg = tmp.path().join("fleet.yaml");
     std::fs::write(&cfg, MOCK_FLEET).unwrap();
     let agend_home = tmp.path().join(".agend");
-    let mut d1 = Command::new(env!("CARGO_BIN_EXE_agend-daemon"))
-        .args(["--config", cfg.to_str().unwrap()])
-        .env("AGEND_HOME", &agend_home)
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    std::thread::sleep(Duration::from_secs(3));
+    // Start first daemon and wait for it to be fully running (poll-based)
+    let (_guard, _sock) = {
+        let child = Command::new(env!("CARGO_BIN_EXE_agend-daemon"))
+            .args(["--config", cfg.to_str().unwrap()])
+            .env("AGEND_HOME", &agend_home)
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn d1");
+        let run_base = agend_home.join("run");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(sock) = find_api_socket(&run_base) {
+                break (
+                    DaemonGuard {
+                        child,
+                        run_dir: run_base,
+                    },
+                    sock,
+                );
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "d1 API socket didn't appear"
+            );
+            std::thread::sleep(Duration::from_millis(300));
+        }
+    };
+    // Try starting second daemon with same fleet — should fail
     let d2 = Command::new(env!("CARGO_BIN_EXE_agend-daemon"))
         .args(["--config", cfg.to_str().unwrap()])
         .env("AGEND_HOME", &agend_home)
         .stderr(std::process::Stdio::piped())
         .output()
         .unwrap();
-    assert!(!d2.status.success());
+    assert!(!d2.status.success(), "d2 should fail");
     let stderr = String::from_utf8_lossy(&d2.stderr);
-    assert!(stderr.contains("already running"));
-    let _ = d1.kill();
-    let _ = d1.wait();
+    assert!(
+        stderr.contains("already running"),
+        "expected 'already running' in stderr: {stderr}"
+    );
 }
 
 #[test]
