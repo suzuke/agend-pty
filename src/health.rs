@@ -35,6 +35,9 @@ pub struct HealthMonitor {
     crash_times: Vec<Instant>,
     last_restart: Option<Instant>,
     busy_since: Option<Instant>,
+    session_start: Instant,
+    max_session_secs: Option<u64>,
+    session_warned: bool,
 }
 
 impl Default for HealthMonitor {
@@ -44,6 +47,9 @@ impl Default for HealthMonitor {
             crash_times: Vec::new(),
             last_restart: None,
             busy_since: None,
+            session_start: Instant::now(),
+            max_session_secs: None,
+            session_warned: false,
         }
     }
 }
@@ -51,6 +57,10 @@ impl Default for HealthMonitor {
 impl HealthMonitor {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn set_max_session_hours(&mut self, hours: f64) {
+        self.max_session_secs = Some((hours * 3600.0) as u64);
     }
 
     pub fn status(&self) -> HealthStatus {
@@ -136,7 +146,30 @@ impl HealthMonitor {
             self.status = HealthStatus::Healthy;
         }
 
+        // Session timer: warn at 80%, mark failed at 100%
+        if let Some(max) = self.max_session_secs {
+            let elapsed = now.duration_since(self.session_start).as_secs();
+            if elapsed >= max {
+                self.status = HealthStatus::Failed;
+                return HealthAction::MarkFailed;
+            }
+            if !self.session_warned && elapsed >= max * 4 / 5 {
+                self.session_warned = true;
+                // Caller should log warning; we return None but set the flag
+            }
+        }
+
         HealthAction::None
+    }
+
+    /// Returns true once when session reaches 80% of max (for caller to warn).
+    pub fn check_session_warning(&self, now: Instant) -> bool {
+        if let Some(max) = self.max_session_secs {
+            let elapsed = now.duration_since(self.session_start).as_secs();
+            self.session_warned && elapsed >= max * 4 / 5 && elapsed < max
+        } else {
+            false
+        }
     }
 
     pub fn on_restart(&mut self, now: Instant) {
@@ -149,6 +182,8 @@ impl HealthMonitor {
         self.crash_times.clear();
         self.last_restart = None;
         self.busy_since = None;
+        self.session_start = Instant::now();
+        self.session_warned = false;
     }
 
     fn crashes_in_window(&self, now: Instant) -> u32 {

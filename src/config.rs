@@ -27,6 +27,7 @@ pub struct Defaults {
     pub working_directory: Option<PathBuf>,
     #[serde(default = "default_true")]
     pub worktree: bool,
+    pub max_session_hours: Option<f64>,
 }
 
 impl Default for Defaults {
@@ -36,6 +37,7 @@ impl Default for Defaults {
             model: None,
             working_directory: None,
             worktree: true,
+            max_session_hours: None,
         }
     }
 }
@@ -52,6 +54,7 @@ pub struct InstanceConfig {
     pub depends_on: Vec<String>,
     pub worktree: Option<bool>,
     pub branch: Option<String>,
+    pub max_session_hours: Option<f64>,
 }
 
 fn default_backend() -> String {

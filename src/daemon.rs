@@ -1033,6 +1033,25 @@ fn main() {
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
 
+    // Configure session timers from fleet config
+    if let Ok(cfg) = load_config() {
+        let default_hours = cfg.defaults.max_session_hours;
+        for (name, ic) in &cfg.instances {
+            let hours = ic.max_session_hours.or(default_hours);
+            if let Some(h) = hours {
+                if let Some(sc) = spawn_configs
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(name)
+                {
+                    if let Ok(mut hm) = sc.health.lock() {
+                        hm.set_max_session_hours(h);
+                    }
+                }
+            }
+        }
+    }
+
     // Start API socket
     api::start(Arc::new(api::DaemonCtx {
         writers: Arc::clone(&agent_writers),
@@ -1135,8 +1154,11 @@ fn main() {
                             }
                         }
 
-                        // Tick health monitor (hang detection, backoff-gated restart)
+                        // Tick health monitor (hang detection, backoff-gated restart, session timer)
                         if let (Ok(s), Ok(mut h)) = (sm.lock(), hm.lock()) {
+                            if h.check_session_warning(now) {
+                                tracing::warn!(agent = %name, "session nearing max duration (80%)");
+                            }
                             let action = h.tick(s.state(), now);
                             if action != health::HealthAction::None {
                                 tracing::debug!(agent = %name, action = ?action, "health tick action");
