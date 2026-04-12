@@ -17,8 +17,8 @@ pub struct BackendPreset {
     pub submit_key: &'static str,
     /// Prefix sent before inject text to activate input field.
     pub inject_prefix: &'static str,
-    /// Whether inject should use per-byte typed write (for bubbletea/ink TUIs).
     pub typed_inject: bool,
+    pub dismiss_patterns: &'static [(&'static str, &'static [u8])],
 }
 
 impl Backend {
@@ -31,6 +31,10 @@ impl Backend {
                 submit_key: "\r",
                 inject_prefix: "",
                 typed_inject: false,
+                dismiss_patterns: &[
+                    ("Yes, I trust", b"\x1b[A\x1b[A\r"),
+                    ("Yes, proceed", b"\x1b[A\x1b[A\r"),
+                ],
             },
             Backend::KiroCli => BackendPreset {
                 command: "kiro-cli",
@@ -39,6 +43,7 @@ impl Backend {
                 submit_key: "\r",
                 inject_prefix: "",
                 typed_inject: false,
+                dismiss_patterns: &[],
             },
             Backend::Codex => BackendPreset {
                 command: "codex",
@@ -47,6 +52,7 @@ impl Backend {
                 submit_key: "\r",
                 inject_prefix: "",
                 typed_inject: false,
+                dismiss_patterns: &[],
             },
             Backend::OpenCode => BackendPreset {
                 command: "opencode",
@@ -55,6 +61,7 @@ impl Backend {
                 submit_key: "\r",
                 inject_prefix: "\r",
                 typed_inject: false,
+                dismiss_patterns: &[],
             },
             Backend::Gemini => BackendPreset {
                 command: "gemini",
@@ -63,6 +70,7 @@ impl Backend {
                 submit_key: "\n\r",
                 inject_prefix: "\r",
                 typed_inject: true,
+                dismiss_patterns: &[],
             },
         }
     }

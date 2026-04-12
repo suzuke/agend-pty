@@ -495,6 +495,15 @@ fn spawn_agent(
     let ib_reaper = Arc::clone(&inbox_store);
     let sc_reaper = Arc::clone(&spawn_configs);
     let as_reaper = Arc::clone(&agent_states);
+    let dismiss_patterns: Vec<(String, Vec<u8>)> = preset
+        .as_ref()
+        .map(|p| {
+            p.dismiss_patterns
+                .iter()
+                .map(|(s, k)| (s.to_string(), k.to_vec()))
+                .collect()
+        })
+        .unwrap_or_default();
     let n = name.clone();
     std::thread::Builder::new()
         .name(format!("{n}_pty_read"))
@@ -562,21 +571,24 @@ fn spawn_agent(
                         let data = &buf[..n_bytes];
 
                         // Auto-dismiss trust dialog
-                        if !dialog_dismissed {
+                        if !dialog_dismissed && !dismiss_patterns.is_empty() {
                             detect_buf.extend_from_slice(data);
                             if detect_buf.len() > PTY_BUF_SIZE {
                                 let d = detect_buf.len() - PTY_BUF_SIZE;
                                 detect_buf.drain(..d);
                             }
                             let clean = state::strip_ansi(&String::from_utf8_lossy(&detect_buf));
-                            if clean.contains("Yes, I trust") || clean.contains("Yes, proceed") {
-                                eprintln!("[{n}] auto-dismissing trust dialog");
-                                let _ = pw
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner())
-                                    .write_all(b"\x1b[A\x1b[A\r");
-                                dialog_dismissed = true;
-                                detect_buf.clear();
+                            for (pattern, key_seq) in &dismiss_patterns {
+                                if clean.contains(pattern.as_str()) {
+                                    eprintln!("[{n}] auto-dismissing dialog (matched: {pattern})");
+                                    let _ = pw
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .write_all(key_seq);
+                                    dialog_dismissed = true;
+                                    detect_buf.clear();
+                                    break;
+                                }
                             }
                         }
 

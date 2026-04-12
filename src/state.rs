@@ -321,7 +321,9 @@ pub fn strip_ansi(s: &str) -> String {
                     // CSI C = cursor forward → replace with space
                     if final_char == 'C' {
                         let n = params.parse::<usize>().unwrap_or(1);
-                        for _ in 0..n { out.push(' '); }
+                        for _ in 0..n {
+                            out.push(' ');
+                        }
                     }
                 }
                 Some(']') => {
