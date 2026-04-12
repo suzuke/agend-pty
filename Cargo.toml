@@ -44,4 +44,5 @@ libc = "0.2"
 isahc = "1"
 
 [dev-dependencies]
+yaml-edit = "0.2"
 tempfile = "3"

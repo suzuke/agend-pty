@@ -810,7 +810,7 @@ fn main() {
     // Parse agents from CLI args or fleet.yaml
     let load_config = || -> Result<config::FleetConfig, String> {
         if let Some(ref p) = config_path {
-            config::FleetConfig::load_with_dynamic(p)
+            config::FleetConfig::load(p)
         } else {
             config::FleetConfig::find_and_load()
         }

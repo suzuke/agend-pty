@@ -152,46 +152,31 @@ impl FleetConfig {
         crate::util::atomic_write(path, &yaml).map_err(|e| format!("write {}: {e}", path.display()))
     }
 
-    /// Add or update an instance in the config and save to disk.
+    /// Add or update an instance in fleet.yaml via Value-level mutation.
     pub fn add_instance(path: &Path, name: &str, instance: InstanceConfig) -> Result<(), String> {
-        // Append to sidecar JSONL to avoid destroying fleet.yaml formatting
-        let sidecar = path.with_extension("dynamic.jsonl");
-        let entry = serde_json::json!({"action": "add", "name": name, "instance": instance});
-        crate::util::append_jsonl(&sidecar, &entry);
-        Ok(())
-    }
-
-    /// Remove an instance from the config and save to disk.
-    pub fn remove_instance(path: &Path, name: &str) -> Result<(), String> {
-        let sidecar = path.with_extension("dynamic.jsonl");
-        let entry = serde_json::json!({"action": "remove", "name": name});
-        crate::util::append_jsonl(&sidecar, &entry);
-        Ok(())
-    }
-
-    /// Load fleet.yaml + merge dynamic instances from sidecar JSONL.
-    pub fn load_with_dynamic(path: &Path) -> Result<Self, String> {
-        let mut cfg = Self::load(path)?;
-        let sidecar = path.with_extension("dynamic.jsonl");
-        if sidecar.exists() {
-            let entries: Vec<serde_json::Value> = crate::util::read_jsonl(&sidecar);
-            for entry in entries {
-                let action = entry["action"].as_str().unwrap_or("");
-                let name = entry["name"].as_str().unwrap_or("");
-                match action {
-                    "add" => {
-                        if let Ok(ic) = serde_json::from_value(entry["instance"].clone()) {
-                            cfg.instances.insert(name.to_owned(), ic);
-                        }
-                    }
-                    "remove" => {
-                        cfg.instances.remove(name);
-                    }
-                    _ => {}
-                }
+        mutate_fleet_yaml(path, |doc| {
+            if doc.get("instances").is_none() {
+                doc["instances"] = serde_yml::Value::Mapping(serde_yml::Mapping::new());
             }
-        }
-        Ok(cfg)
+            let instances = doc
+                .get_mut("instances")
+                .and_then(|v| v.as_mapping_mut())
+                .ok_or("instances is not a mapping")?;
+            let inst_value =
+                serde_yml::to_value(&instance).map_err(|e| format!("serialize: {e}"))?;
+            instances.insert(serde_yml::Value::String(name.to_owned()), inst_value);
+            Ok(())
+        })
+    }
+
+    /// Remove an instance from fleet.yaml via Value-level mutation.
+    pub fn remove_instance(path: &Path, name: &str) -> Result<(), String> {
+        mutate_fleet_yaml(path, |doc| {
+            if let Some(instances) = doc.get_mut("instances").and_then(|v| v.as_mapping_mut()) {
+                instances.remove(serde_yml::Value::String(name.to_owned()));
+            }
+            Ok(())
+        })
     }
 
     pub fn telegram_config(&self) -> Option<(String, i64)> {
@@ -201,6 +186,26 @@ impl FleetConfig {
         let group_id = ch.extra.get("group_id").and_then(|v| v.as_i64())?;
         Some((token, group_id))
     }
+}
+
+/// Lock fleet.yaml, parse as Value, apply mutation, atomic write back.
+fn mutate_fleet_yaml(
+    path: &Path,
+    mutate: impl FnOnce(&mut serde_yml::Value) -> Result<(), String>,
+) -> Result<(), String> {
+    // flock for concurrent access safety
+    let lock_path = path.with_extension("lock");
+    let lock_file = std::fs::File::create(&lock_path).map_err(|e| format!("lock: {e}"))?;
+    use std::os::unix::io::AsRawFd;
+    if unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err("failed to acquire fleet.yaml lock".into());
+    }
+    let content = std::fs::read_to_string(path).map_err(|e| format!("read: {e}"))?;
+    let mut doc: serde_yml::Value =
+        serde_yml::from_str(&content).map_err(|e| format!("parse: {e}"))?;
+    mutate(&mut doc)?;
+    let yaml = serde_yml::to_string(&doc).map_err(|e| format!("serialize: {e}"))?;
+    crate::util::atomic_write(path, &yaml).map_err(|e| format!("write: {e}"))
 }
 
 fn dirs() -> PathBuf {

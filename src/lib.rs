@@ -563,12 +563,10 @@ instances:
             role: None,
         };
         config::FleetConfig::add_instance(&path, "bob", ic).unwrap();
-        let cfg = config::FleetConfig::load_with_dynamic(&path).unwrap();
+        let cfg = config::FleetConfig::load(&path).unwrap();
         assert_eq!(cfg.instances.len(), 2);
         assert!(cfg.instances.contains_key("bob"));
-        // Original fleet.yaml is untouched
-        let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(!raw.contains("bob"), "fleet.yaml should not be modified");
+        assert!(cfg.instances.contains_key("alice"), "alice preserved");
     }
 
     #[test]
@@ -581,12 +579,10 @@ instances:
         )
         .unwrap();
         config::FleetConfig::remove_instance(&path, "bob").unwrap();
-        let cfg = config::FleetConfig::load_with_dynamic(&path).unwrap();
+        let cfg = config::FleetConfig::load(&path).unwrap();
         assert_eq!(cfg.instances.len(), 1);
-        assert!(!cfg.instances.contains_key("bob"));
-        // Original fleet.yaml still has bob (not modified)
-        let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(raw.contains("bob"), "fleet.yaml should not be modified");
+        assert!(cfg.instances.contains_key("alice"), "alice preserved");
+        assert!(!cfg.instances.contains_key("bob"), "bob removed");
     }
 
     // ── Config build_command edge cases ─────────────────────────────────
