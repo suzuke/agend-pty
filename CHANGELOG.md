@@ -3,7 +3,7 @@
 ## [0.5.0] - 2026-04-12
 
 ### Added
-- 26 MCP tools (communication, fleet discovery, coordination, git, CI)
+- 23 MCP tools (communication, fleet discovery, coordination, git, CI)
 - Git worktree isolation (per-agent branches, merge_preview, merge_agent, merge_all)
 - Dependency graph with Kahn's algorithm (layered startup, depends_on)
 - 8-state lifecycle machine with directional hysteresis and ErrorKind classification

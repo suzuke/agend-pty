@@ -55,6 +55,7 @@ pub struct InstanceConfig {
     pub worktree: Option<bool>,
     pub branch: Option<String>,
     pub max_session_hours: Option<f64>,
+    pub role: Option<String>,
 }
 
 fn default_backend() -> String {

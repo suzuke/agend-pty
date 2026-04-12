@@ -376,7 +376,7 @@ shared functions used by every store:
 
 ## MCP Tools
 
-26 tools exposed to agents via the MCP server:
+23 tools exposed to agents via the MCP server:
 
 ### Communication
 | Tool                 | Description                                    |

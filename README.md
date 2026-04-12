@@ -87,7 +87,7 @@ See [docs/architecture.md](docs/architecture.md) for the full system design (sta
 - **MCP socket pooling** — daemon handles MCP protocol natively
 - **CI automation** — `watch_ci` checks GitHub PR status via gh CLI
 
-### MCP Tools (26)
+### MCP Tools (23)
 
 | Tool | Description |
 |------|-------------|
@@ -103,16 +103,13 @@ See [docs/architecture.md](docs/architecture.md) for the full system design (sta
 | `create_instance` | Create a new agent instance at runtime |
 | `replace_instance` | Replace an agent with new settings (atomic swap) |
 | `inbox` | Read inbox messages |
-| `post_decision` | Post a fleet-wide decision |
-| `list_decisions` | List fleet decisions |
-| `update_decision` | Update a decision |
+| `start_instance` | Restart a stopped/failed agent |
+| `decision` | Decision operations (post/list/update) |
 | `task` | Task board operations (create/list/claim/done/update) |
 | `react` | React to a message with emoji |
 | `edit_message` | Edit a sent message |
 | `wait_for_idle` | Wait for an agent to become idle |
-| `merge_preview` | Preview merge of agent branch |
-| `merge_agent` | Squash merge agent branch |
-| `merge_all` | Squash merge all agent worktree branches |
+| `merge` | Git merge operations (preview/squash/all) |
 | `team` | Team operations (create/list/delete/update) |
 | `list_events` | List event log |
 | `schedule` | Cron schedule operations (create/list/delete/update) |
@@ -139,6 +136,7 @@ instances:
     worktree: true
     branch: feature-branch
     max_session_hours: 4       # Per-instance override
+    role: worker               # Tool filtering (worker/coordinator/reviewer)
 
 channel:                       # Optional Telegram integration
   bot_token_env: TELEGRAM_BOT_TOKEN

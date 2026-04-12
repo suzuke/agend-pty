@@ -36,6 +36,7 @@ pub struct AgentStateHandle {
     pub state_machine: Arc<Mutex<state::StateMachine>>,
     pub health: Arc<Mutex<health::HealthMonitor>>,
     pub working_dir: Option<std::path::PathBuf>,
+    pub role: Option<String>,
 }
 pub type AgentStateMap = Arc<Mutex<HashMap<String, AgentStateHandle>>>;
 
@@ -208,7 +209,16 @@ fn handle_request(req: &ApiRequest, ctx: &DaemonCtx) -> ApiResponse {
             let result = handle_mcp_tool(ctx, instance, tool, args);
             ok(result)
         }
-        "mcp_tools_list" => ok(mcp_tools_list()),
+        "mcp_tools_list" => {
+            let instance = req.params["instance"].as_str().unwrap_or("");
+            let role = ctx
+                .states
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(instance)
+                .and_then(|h| h.role.clone());
+            ok(mcp_tools_list_filtered(role.as_deref()))
+        }
 
         _ => err(format!("unknown method: {}", req.method)),
     }
@@ -956,7 +966,87 @@ fn inject_message(ctx: &DaemonCtx, sender: &str, target: &str, message: &str) ->
     }
 }
 
-pub fn mcp_tools_list() -> Value {
+/// Role-based tool categories. Tools not in any category are always included.
+const ROLE_TOOL_MAP: &[(&str, &[&str])] = &[
+    (
+        "worker",
+        &[
+            "reply",
+            "send_to_instance",
+            "report_result",
+            "list_instances",
+            "describe_instance",
+            "inbox",
+            "task",
+            "list_events",
+            "merge",
+        ],
+    ),
+    (
+        "coordinator",
+        &[
+            "reply",
+            "send_to_instance",
+            "broadcast",
+            "request_information",
+            "delegate_task",
+            "report_result",
+            "list_instances",
+            "describe_instance",
+            "create_instance",
+            "delete_instance",
+            "replace_instance",
+            "start_instance",
+            "wait_for_idle",
+            "inbox",
+            "decision",
+            "task",
+            "team",
+            "list_events",
+            "schedule",
+            "merge",
+            "watch_ci",
+        ],
+    ),
+    (
+        "reviewer",
+        &[
+            "reply",
+            "send_to_instance",
+            "report_result",
+            "list_instances",
+            "describe_instance",
+            "inbox",
+            "decision",
+            "task",
+            "list_events",
+            "merge",
+        ],
+    ),
+];
+
+pub fn mcp_tools_list_filtered(role: Option<&str>) -> Value {
+    let all = mcp_tools_list_all();
+    let empty = vec![];
+    let tools = all["tools"].as_array().unwrap_or(&empty);
+    if let Some(role) = role {
+        if let Some((_, allowed)) = ROLE_TOOL_MAP.iter().find(|(r, _)| *r == role) {
+            let filtered: Vec<&Value> = tools
+                .iter()
+                .filter(|t| {
+                    t["name"]
+                        .as_str()
+                        .map(|n| allowed.contains(&n))
+                        .unwrap_or(false)
+                })
+                .collect();
+            return json!({"tools": filtered});
+        }
+    }
+    all
+}
+
+fn mcp_tools_list_all() -> Value {
     json!({"tools": [
         {"name":"reply","description":"Reply to a Telegram user.","inputSchema":{"type":"object","properties":{"text":{"type":"string"},"format":{"type":"string","enum":["text","markdown","html"]},"reply_to":{"type":"string"}},"required":["text"]}},
         {"name":"send_to_instance","description":"Send a message to another agent instance.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"message":{"type":"string"},"request_kind":{"type":"string","enum":["query","task","report","update"]},"requires_reply":{"type":"boolean"},"correlation_id":{"type":"string"}},"required":["instance_name","message"]}},
@@ -1000,7 +1090,15 @@ fn handle_mcp_jsonrpc(req: &Value, ctx: &DaemonCtx) -> Option<String> {
             "capabilities": { "tools": { "listChanged": false } },
             "serverInfo": { "name": "agend", "version": env!("CARGO_PKG_VERSION") }
         }),
-        "tools/list" => mcp_tools_list(),
+        "tools/list" => {
+            let role = ctx
+                .states
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(instance)
+                .and_then(|h| h.role.clone());
+            mcp_tools_list_filtered(role.as_deref())
+        }
         "tools/call" => {
             let tool = req["params"]["name"].as_str().unwrap_or("");
             let args = &req["params"]["arguments"];

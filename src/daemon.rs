@@ -495,6 +495,7 @@ fn spawn_agent(
                 state_machine: Arc::clone(&state_machine),
                 health: Arc::clone(&health_monitor),
                 working_dir: working_dir.clone(),
+                role: None, // Set from fleet config after spawn
             },
         );
 
@@ -1033,7 +1034,7 @@ fn main() {
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
 
-    // Configure session timers from fleet config
+    // Configure session timers and roles from fleet config
     if let Ok(cfg) = load_config() {
         let default_hours = cfg.defaults.max_session_hours;
         for (name, ic) in &cfg.instances {
@@ -1047,6 +1048,16 @@ fn main() {
                     if let Ok(mut hm) = sc.health.lock() {
                         hm.set_max_session_hours(h);
                     }
+                }
+            }
+            // Set role on agent state handle
+            if let Some(ref role) = ic.role {
+                if let Some(handle) = agent_states
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get_mut(name)
+                {
+                    handle.role = Some(role.clone());
                 }
             }
         }
