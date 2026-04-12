@@ -109,7 +109,7 @@ impl FleetConfig {
     pub fn load(path: &Path) -> Result<Self, String> {
         let content =
             std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-        serde_yaml::from_str(&content).map_err(|e| format!("parse {}: {e}", path.display()))
+        serde_yml::from_str(&content).map_err(|e| format!("parse {}: {e}", path.display()))
     }
 
     pub fn find_and_load() -> Result<Self, String> {

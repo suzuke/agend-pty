@@ -30,7 +30,7 @@ mod tests {
     #[test]
     fn config_parse_minimal() {
         let yaml = "instances:\n  shell:\n    command: bash\n";
-        let cfg: config::FleetConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: config::FleetConfig = serde_yml::from_str(yaml).unwrap();
         assert_eq!(cfg.instances.len(), 1);
         assert_eq!(cfg.instances["shell"].build_command(&cfg.defaults), "bash");
     }
@@ -50,7 +50,7 @@ instances:
     backend: gemini
     model: pro
 "#;
-        let cfg: config::FleetConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: config::FleetConfig = serde_yml::from_str(yaml).unwrap();
         assert_eq!(cfg.defaults.backend, "claude");
         assert!(cfg.instances["alice"]
             .build_command(&cfg.defaults)
@@ -69,7 +69,7 @@ instances:
     #[test]
     fn config_default_backend() {
         let yaml = "instances:\n  test: {}\n";
-        let cfg: config::FleetConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: config::FleetConfig = serde_yml::from_str(yaml).unwrap();
         assert_eq!(cfg.defaults.backend, "claude");
         assert_eq!(cfg.instances["test"].backend_or(&cfg.defaults), "claude");
     }
@@ -78,7 +78,7 @@ instances:
     fn config_telegram() {
         let yaml =
             "channel:\n  bot_token_env: MY_TOKEN\n  group_id: -100123\ninstances:\n  test: {}\n";
-        let cfg: config::FleetConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: config::FleetConfig = serde_yml::from_str(yaml).unwrap();
         assert!(cfg.channel.is_some());
         assert_eq!(cfg.channel.unwrap().group_id, Some(-100123));
     }

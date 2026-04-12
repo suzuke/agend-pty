@@ -122,7 +122,7 @@ fn find_existing_fleet() -> Option<(PathBuf, usize)> {
     ];
     for path in &candidates {
         if let Ok(content) = std::fs::read_to_string(path) {
-            if let Ok(cfg) = serde_yaml::from_str::<serde_json::Value>(&content) {
+            if let Ok(cfg) = serde_yml::from_str::<serde_json::Value>(&content) {
                 let count = cfg
                     .get("instances")
                     .and_then(|v| v.as_object())
@@ -291,7 +291,7 @@ pub fn run() {
         instances.insert(name.clone(), inst);
     }
     fleet["instances"] = serde_json::Value::Object(instances);
-    let yaml = serde_yaml::to_string(&fleet).unwrap_or_default();
+    let yaml = serde_yml::to_string(&fleet).unwrap_or_default();
 
     let out_path = PathBuf::from(home_dir()).join(".agend").join("fleet.yaml");
     if let Some(parent) = out_path.parent() {

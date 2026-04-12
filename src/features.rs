@@ -99,7 +99,7 @@ pub fn snapshot(config_path: Option<&Path>, output: &Path) -> Result<(), String>
         .ok_or("fleet.yaml not found")?;
     let fleet_yaml = std::fs::read_to_string(&cfg_path).map_err(|e| format!("read: {e}"))?;
     let cfg: config::FleetConfig =
-        serde_yaml::from_str(&fleet_yaml).map_err(|e| format!("parse: {e}"))?;
+        serde_yml::from_str(&fleet_yaml).map_err(|e| format!("parse: {e}"))?;
     let agents = cfg
         .instances
         .iter()
@@ -249,7 +249,7 @@ mod tests {
     use super::*;
 
     fn parse_cfg(yaml: &str) -> config::FleetConfig {
-        serde_yaml::from_str(yaml).unwrap()
+        serde_yml::from_str(yaml).unwrap()
     }
 
     #[test]
