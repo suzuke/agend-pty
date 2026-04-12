@@ -295,16 +295,19 @@ fn setup_prompt(name: &str, registry: &AgentRegistry) -> (std::path::PathBuf, St
 
 fn inject_mcp_for_backend(
     command: &str,
-    _name: &str,
+    mcp_inject_flag: &str,
     mcp_config_path: &str,
     prompt_path: &str,
 ) -> String {
-    match command.split_whitespace().next().unwrap_or(command) {
-        "claude" => format!(
+    if mcp_inject_flag.is_empty() {
+        return command.to_owned();
+    }
+    if mcp_inject_flag == "--mcp-config" {
+        format!(
             "{command} --mcp-config {mcp_config_path} --append-system-prompt-file {prompt_path}"
-        ),
-        "kiro-cli" => command.to_owned(),
-        _ => command.to_owned(),
+        )
+    } else {
+        format!("{command} {mcp_inject_flag} {mcp_config_path}")
     }
 }
 
@@ -342,10 +345,15 @@ fn spawn_agent(
     };
 
     let (_, mcp_config_path_str) = setup_mcp_config(&name);
+    let preset = backend::Backend::from_command(&command).map(|b| b.preset());
     let (_, prompt_path_str) = setup_prompt(&name, &registry);
 
-    let final_command =
-        inject_mcp_for_backend(&command, &name, &mcp_config_path_str, &prompt_path_str);
+    let final_command = inject_mcp_for_backend(
+        &command,
+        preset.as_ref().map(|p| p.mcp_inject_flag).unwrap_or(""),
+        &mcp_config_path_str,
+        &prompt_path_str,
+    );
     let final_command = if command.starts_with("gemini") && !final_command.contains("--resume") {
         format!("{final_command} --resume latest")
     } else {
@@ -417,7 +425,6 @@ fn spawn_agent(
         subscribers: Vec::new(),
     }));
 
-    let preset = backend::Backend::from_command(&command).map(|b| b.preset());
     let submit_key = preset
         .as_ref()
         .map(|p| p.submit_key.to_owned())
@@ -1106,6 +1113,21 @@ fn main() {
                                 eprintln!("[tick] {name} health tick action: {:?}", action);
                                 handle_health_action(&action, name, &reg, &aw, &as2, &sc, &ib, &cm);
                             }
+                        }
+                    }
+
+                    // Check cron schedules
+                    let epoch = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    for (id, target, message) in scheduler::check_due(epoch) {
+                        let w = aw.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Some(pw) = w.get(&target) {
+                            let formatted = format!("[scheduled] {message}");
+                            inject_to_pty(pw, &formatted, "\r");
+                            eprintln!("[scheduler] {id} → {target}");
+                            scheduler::mark_run(&id);
                         }
                     }
                 }

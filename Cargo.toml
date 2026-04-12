@@ -31,6 +31,8 @@ name = "agend-mcp"
 path = "src/mcp.rs"
 
 [dependencies]
+chrono = "0.4"
+cron = "0.15"
 portable-pty = "0.9"
 crossterm = "0.28"
 crossbeam = "0.8"

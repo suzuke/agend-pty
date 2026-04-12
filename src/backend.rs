@@ -22,6 +22,7 @@ pub struct BackendPreset {
     pub quit_command: &'static str,
     pub instructions_path: &'static str,
     pub mcp_config_path: &'static str,
+    pub mcp_inject_flag: &'static str,
     pub ready_timeout_secs: u64,
 }
 
@@ -45,6 +46,7 @@ impl Backend {
                 quit_command: "/exit",
                 instructions_path: ".claude/rules/agend.md",
                 mcp_config_path: "",
+                mcp_inject_flag: "--mcp-config",
                 ready_timeout_secs: 30,
             },
             Backend::KiroCli => BackendPreset {
@@ -58,6 +60,7 @@ impl Backend {
                 quit_command: "/quit",
                 instructions_path: "AGENTS.md",
                 mcp_config_path: ".kiro/settings/mcp.json",
+                mcp_inject_flag: "",
                 ready_timeout_secs: 30,
             },
             Backend::Codex => BackendPreset {
@@ -77,6 +80,7 @@ impl Backend {
                 quit_command: "/quit",
                 instructions_path: "AGENTS.md",
                 mcp_config_path: "",
+                mcp_inject_flag: "",
                 ready_timeout_secs: 30,
             },
             Backend::OpenCode => BackendPreset {
@@ -90,6 +94,7 @@ impl Backend {
                 quit_command: "exit",
                 instructions_path: "fleet-instructions.md",
                 mcp_config_path: "opencode.json",
+                mcp_inject_flag: "",
                 ready_timeout_secs: 30,
             },
             Backend::Gemini => BackendPreset {
@@ -107,6 +112,7 @@ impl Backend {
                 quit_command: "/quit",
                 instructions_path: "GEMINI.md",
                 mcp_config_path: ".gemini/settings.json",
+                mcp_inject_flag: "",
                 ready_timeout_secs: 30,
             },
         }

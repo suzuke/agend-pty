@@ -219,7 +219,16 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
             for target in &names {
                 inject_message(ctx, instance, target, message);
             }
-            json!({"content": [{"type": "text", "text": format!("{{\"broadcast\":true,\"sent_to\":{}}}", json!(names))}]})
+            let skipped: Vec<String> = team_members
+                .as_ref()
+                .map(|m| {
+                    m.iter()
+                        .filter(|k| !names.contains(k) && k.as_str() != instance)
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+            json!({"content": [{"type": "text", "text": json!({"broadcast": true, "sent_to": names, "skipped": skipped}).to_string()}]})
         }
         "list_instances" => {
             let names: Vec<String> = ctx
@@ -612,8 +621,14 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                     let cron = args["cron"].as_str().unwrap_or("* * * * *");
                     let target = args["target"].as_str().unwrap_or("");
                     let message = args["message"].as_str().unwrap_or("");
-                    let s = scheduler::create_schedule(cron, target, message);
-                    json!({"content": [{"type": "text", "text": json!({"created": s.id}).to_string()}]})
+                    match scheduler::create_schedule(cron, target, message) {
+                        Ok(s) => {
+                            json!({"content": [{"type": "text", "text": json!({"created": s.id}).to_string()}]})
+                        }
+                        Err(e) => {
+                            json!({"content": [{"type": "text", "text": e}], "isError": true})
+                        }
+                    }
                 }
                 "list" => {
                     let schedules = scheduler::list_schedules();
