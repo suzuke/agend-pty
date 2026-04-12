@@ -87,7 +87,12 @@ pub fn post_decision(author: &str, title: &str, content: &str) -> Decision {
 }
 
 pub fn list_decisions() -> Vec<Decision> {
-    read_jsonl(&decisions_path())
+    let all: Vec<Decision> = read_jsonl(&decisions_path());
+    let mut map = std::collections::HashMap::new();
+    for d in all {
+        map.insert(d.id, d);
+    }
+    map.into_values().collect()
 }
 
 pub fn update_decision(id: u64, title: Option<&str>, content: Option<&str>) -> Option<Decision> {
