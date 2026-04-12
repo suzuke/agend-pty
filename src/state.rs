@@ -49,12 +49,21 @@ impl ErrorKind {
 
     fn detect(text: &str, state: AgentState) -> Option<ErrorKind> {
         let lower = text.to_lowercase();
-        if lower.contains("rate limit") || lower.contains("429") {
+        if lower.contains("rate limit")
+            || lower.contains("rate limited")
+            || lower.contains("request rejected (429)")
+            || lower.contains("status 429")
+            || lower.contains("http 429")
+            || lower.contains("429 ")
+            || (lower.contains("api error") && lower.contains("429"))
+        {
             return Some(ErrorKind::RateLimit);
         }
         if lower.contains("unauthorized")
             || lower.contains("invalid api key")
-            || lower.contains("401")
+            || lower.contains("status 401")
+            || lower.contains("http 401")
+            || lower.contains("401 ")
         {
             return Some(ErrorKind::AuthError);
         }
