@@ -229,8 +229,10 @@ fn logs_stream(agent: &str, follow: bool) {
     };
     // First frame = screen dump (current state)
     if let Ok(data) = read_frame(&mut stream) {
-        std::io::stdout().write_all(&data).ok();
-        std::io::stdout().flush().ok();
+        if std::io::stdout().write_all(&data).is_err() {
+            return;
+        }
+        let _ = std::io::stdout().flush();
     }
     if !follow {
         println!();
@@ -238,8 +240,10 @@ fn logs_stream(agent: &str, follow: bool) {
     }
     // Stream subsequent frames
     while let Ok(data) = read_frame(&mut stream) {
-        std::io::stdout().write_all(&data).ok();
-        std::io::stdout().flush().ok();
+        if std::io::stdout().write_all(&data).is_err() {
+            break;
+        }
+        let _ = std::io::stdout().flush();
     }
 }
 
