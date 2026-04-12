@@ -400,19 +400,40 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                 json!({"content": [{"type": "text", "text": format!("instance '{name}' not found")}], "isError": true})
             }
         }
-        "post_decision" => {
-            let title = args["title"].as_str().unwrap_or("");
-            let content = args["content"].as_str().unwrap_or("");
-            let d = fleet_store::post_decision(instance, title, content);
-            json!({"content": [{"type": "text", "text": json!({"posted": true, "id": d.id}).to_string()}]})
-        }
-        "list_decisions" => {
-            let decisions = fleet_store::list_decisions();
-            let list: Vec<Value> = decisions
-                .iter()
-                .map(|d| json!({"id": d.id, "title": d.title, "author": d.author}))
-                .collect();
-            json!({"content": [{"type": "text", "text": json!({"decisions": list}).to_string()}]})
+        "decision" => {
+            let action = args["action"].as_str().unwrap_or("");
+            match action {
+                "post" => {
+                    let title = args["title"].as_str().unwrap_or("");
+                    let content = args["content"].as_str().unwrap_or("");
+                    let d = fleet_store::post_decision(instance, title, content);
+                    json!({"content": [{"type": "text", "text": json!({"posted": true, "id": d.id}).to_string()}]})
+                }
+                "list" => {
+                    let decisions = fleet_store::list_decisions();
+                    let list: Vec<Value> = decisions
+                        .iter()
+                        .map(|d| json!({"id": d.id, "title": d.title, "author": d.author}))
+                        .collect();
+                    json!({"content": [{"type": "text", "text": json!({"decisions": list}).to_string()}]})
+                }
+                "update" => {
+                    let id = args["id"].as_u64().unwrap_or(0);
+                    let title = args["title"].as_str();
+                    let content = args["content"].as_str();
+                    match fleet_store::update_decision(id, title, content) {
+                        Some(d) => {
+                            json!({"content": [{"type": "text", "text": json!({"updated": d.id}).to_string()}]})
+                        }
+                        None => {
+                            json!({"content": [{"type": "text", "text": "decision not found"}], "isError": true})
+                        }
+                    }
+                }
+                _ => {
+                    json!({"content": [{"type": "text", "text": format!("unknown decision action: {action}")}], "isError": true})
+                }
+            }
         }
         "task" => {
             let action = args["action"].as_str().unwrap_or("");
@@ -525,78 +546,82 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                 std::thread::sleep(Duration::from_secs(2));
             }
         }
-        "merge_preview" => {
-            let target = args["instance_name"].as_str().unwrap_or(instance);
-            let branch = format!("agend/{target}");
-            let repo = ctx
-                .states
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(target)
-                .and_then(|h| h.working_dir.clone());
-            let repo = match repo {
-                Some(p) => p,
-                None => {
-                    return json!({"content": [{"type": "text", "text": format!("instance '{target}' not found")}], "isError": true})
-                }
-            };
-            match git::merge_preview(&repo, &branch) {
-                Ok(p) => json!({"content": [{"type": "text", "text": json!({
-                    "diff_stat": p.diff_stat, "files_changed": p.files_changed, "has_conflicts": p.has_conflicts
-                }).to_string()}]}),
-                Err(e) => json!({"content": [{"type": "text", "text": e}], "isError": true}),
-            }
-        }
-        "merge_agent" => {
-            let target = args["instance_name"].as_str().unwrap_or(instance);
-            let default_msg = format!("merge agent/{target}");
-            let message = args["message"].as_str().unwrap_or(&default_msg);
-            let branch = format!("agend/{target}");
-            let repo = ctx
-                .states
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(target)
-                .and_then(|h| h.working_dir.clone());
-            let repo = match repo {
-                Some(p) => p,
-                None => {
-                    return json!({"content": [{"type": "text", "text": format!("instance '{target}' not found")}], "isError": true})
-                }
-            };
-            match git::squash_merge(&repo, &branch, message) {
-                Ok(()) => json!({"content": [{"type": "text", "text": "{\"merged\":true}"}]}),
-                Err(e) => json!({"content": [{"type": "text", "text": e}], "isError": true}),
-            }
-        }
-        "merge_all" => {
-            let prefix = args["message"].as_str().unwrap_or("merge");
-            let states = ctx.states.lock().unwrap_or_else(|e| e.into_inner());
-            let mut results: Vec<Value> = Vec::new();
-            for (name, handle) in states.iter() {
-                if let Some(ref wd) = handle.working_dir {
-                    let branch = format!("agend/{name}");
-                    let msg = format!("{prefix} {name}");
-                    match git::squash_merge(wd, &branch, &msg) {
-                        Ok(()) => results.push(json!({"agent": name, "merged": true})),
-                        Err(e) => results.push(json!({"agent": name, "error": e})),
+        "merge" => {
+            let action = args["action"].as_str().unwrap_or("");
+            match action {
+                "preview" => {
+                    let target = args["instance_name"].as_str().unwrap_or(instance);
+                    let branch = format!("agend/{target}");
+                    let repo = ctx
+                        .states
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get(target)
+                        .and_then(|h| h.working_dir.clone());
+                    match repo {
+                        Some(p) => match git::merge_preview(&p, &branch) {
+                            Ok(p) => {
+                                json!({"content": [{"type": "text", "text": json!({"diff_stat": p.diff_stat, "files_changed": p.files_changed, "has_conflicts": p.has_conflicts}).to_string()}]})
+                            }
+                            Err(e) => {
+                                json!({"content": [{"type": "text", "text": e}], "isError": true})
+                            }
+                        },
+                        None => {
+                            json!({"content": [{"type": "text", "text": format!("instance '{target}' not found")}], "isError": true})
+                        }
                     }
                 }
+                "squash" => {
+                    let target = args["instance_name"].as_str().unwrap_or(instance);
+                    let default_msg = format!("merge agent/{target}");
+                    let message = args["message"].as_str().unwrap_or(&default_msg);
+                    let branch = format!("agend/{target}");
+                    let repo = ctx
+                        .states
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get(target)
+                        .and_then(|h| h.working_dir.clone());
+                    match repo {
+                        Some(p) => match git::squash_merge(&p, &branch, message) {
+                            Ok(()) => {
+                                json!({"content": [{"type": "text", "text": "{\"merged\":true}"}]})
+                            }
+                            Err(e) => {
+                                json!({"content": [{"type": "text", "text": e}], "isError": true})
+                            }
+                        },
+                        None => {
+                            json!({"content": [{"type": "text", "text": format!("instance '{target}' not found")}], "isError": true})
+                        }
+                    }
+                }
+                "all" => {
+                    let prefix = args["message"].as_str().unwrap_or("merge");
+                    let states = ctx.states.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut results: Vec<Value> = Vec::new();
+                    for (name, handle) in states.iter() {
+                        if let Some(ref wd) = handle.working_dir {
+                            let branch = format!("agend/{name}");
+                            let msg = format!("{prefix} {name}");
+                            match git::squash_merge(wd, &branch, &msg) {
+                                Ok(()) => results.push(json!({"agent": name, "merged": true})),
+                                Err(e) => results.push(json!({"agent": name, "error": e})),
+                            }
+                        }
+                    }
+                    json!({"content": [{"type": "text", "text": json!({"results": results}).to_string()}]})
+                }
+                _ => {
+                    json!({"content": [{"type": "text", "text": format!("unknown merge action: {action}")}], "isError": true})
+                }
             }
-            json!({"content": [{"type": "text", "text": json!({"results": results}).to_string()}]})
         }
-        "update_decision" => {
-            let id = args["id"].as_u64().unwrap_or(0);
-            let title = args["title"].as_str();
-            let content = args["content"].as_str();
-            match fleet_store::update_decision(id, title, content) {
-                Some(d) => {
-                    json!({"content": [{"type": "text", "text": json!({"updated": d.id}).to_string()}]})
-                }
-                None => {
-                    json!({"content": [{"type": "text", "text": "decision not found"}], "isError": true})
-                }
-            }
+        // Legacy aliases for backward compat
+        "post_decision" | "list_decisions" | "update_decision" | "merge_preview"
+        | "merge_agent" | "merge_all" => {
+            json!({"content": [{"type": "text", "text": format!("'{tool}' is deprecated. Use 'decision' or 'merge' with action parameter.")}], "isError": true})
         }
         "team" => {
             let action = args["action"].as_str().unwrap_or("");
@@ -909,18 +934,14 @@ pub fn mcp_tools_list() -> Value {
         {"name":"describe_instance","description":"Get agent details.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"}},"required":["instance_name"]}},
         {"name":"delete_instance","description":"Stop an agent.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"cleanup_worktree":{"type":"boolean"}},"required":["instance_name"]}},
         {"name":"inbox","description":"Read inbox messages.","inputSchema":{"type":"object","properties":{"id":{"type":"integer"}}}},
-        {"name":"post_decision","description":"Post a fleet-wide decision.","inputSchema":{"type":"object","properties":{"title":{"type":"string"},"content":{"type":"string"}},"required":["title","content"]}},
-        {"name":"list_decisions","description":"List fleet decisions.","inputSchema":{"type":"object","properties":{}}},
+        {"name":"decision","description":"Decision operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["post","list","update"]},"title":{"type":"string"},"content":{"type":"string"},"id":{"type":"integer"}},"required":["action"]}},
         {"name":"task","description":"Task board operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["create","list","claim","done","update"]},"title":{"type":"string"},"description":{"type":"string"},"id":{"type":"string"},"assignee":{"type":"string"},"status":{"type":"string","enum":["open","claimed","done","blocked"]},"result":{"type":"string"}},"required":["action"]}},
         {"name":"react","description":"React to a message with emoji.","inputSchema":{"type":"object","properties":{"message_id":{"type":"string"},"emoji":{"type":"string"}},"required":["message_id","emoji"]}},
         {"name":"edit_message","description":"Edit a sent message.","inputSchema":{"type":"object","properties":{"message_id":{"type":"string"},"text":{"type":"string"}},"required":["message_id","text"]}},
         {"name":"wait_for_idle","description":"Wait for an agent to become idle.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"timeout_secs":{"type":"integer"}},"required":["instance_name"]}},
-        {"name":"merge_preview","description":"Preview merge of agent branch.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"}},"required":["instance_name"]}},
-        {"name":"merge_agent","description":"Squash merge agent branch.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"message":{"type":"string"}},"required":["instance_name"]}},
-        {"name":"merge_all","description":"Squash merge all agent worktree branches.","inputSchema":{"type":"object","properties":{"message":{"type":"string","description":"Commit message prefix"}}}},
+        {"name":"merge","description":"Git merge operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["preview","squash","all"]},"instance_name":{"type":"string"},"message":{"type":"string"}},"required":["action"]}},
         {"name":"create_instance","description":"Create a new agent instance.","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"working_directory":{"type":"string"},"backend":{"type":"string"},"model":{"type":"string"},"branch":{"type":"string"}},"required":["name"]}},
         {"name":"replace_instance","description":"Replace an agent with new settings (atomic swap).","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string","description":"Agent to replace"},"backend":{"type":"string"},"model":{"type":"string"},"working_directory":{"type":"string"},"branch":{"type":"string"}},"required":["instance_name"]}},
-        {"name":"update_decision","description":"Update a decision.","inputSchema":{"type":"object","properties":{"id":{"type":"integer"},"title":{"type":"string"},"content":{"type":"string"}},"required":["id"]}},
         {"name":"team","description":"Team operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["create","list","delete","update"]},"name":{"type":"string"},"members":{"type":"array","items":{"type":"string"}}},"required":["action"]}},
         {"name":"list_events","description":"List event log.","inputSchema":{"type":"object","properties":{"agent":{"type":"string"},"type":{"type":"string"}}}},
         {"name":"schedule","description":"Cron schedule operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["create","list","delete","update"]},"cron":{"type":"string"},"target":{"type":"string"},"message":{"type":"string"},"id":{"type":"string"},"enabled":{"type":"boolean"}},"required":["action"]}},

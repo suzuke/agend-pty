@@ -162,11 +162,16 @@ fn e2e_decisions_and_tasks() {
     let r = mcp_call(
         &sock,
         "alice",
-        "post_decision",
-        &serde_json::json!({"title": "test", "content": "body"}),
+        "decision",
+        &serde_json::json!({"action": "post", "title": "test", "content": "body"}),
     );
     assert_eq!(r["ok"].as_bool(), Some(true));
-    let r = mcp_call(&sock, "alice", "list_decisions", &serde_json::json!({}));
+    let r = mcp_call(
+        &sock,
+        "alice",
+        "decision",
+        &serde_json::json!({"action": "list"}),
+    );
     let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
     assert!(text.contains("test"));
     let r = mcp_call(
