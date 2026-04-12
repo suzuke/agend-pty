@@ -12,6 +12,9 @@ Respond directly to agent messages — do NOT ask permission.
 
 const AGEND_MARKER: &str = "<!-- agend-pty instructions";
 
+/// WARNING: AGEND_TEST_PASSPHRASE is for E2E testing ONLY.
+/// It writes the passphrase to instruction files on disk.
+/// NEVER set this in production. Test cleanup should remove generated files.
 fn instructions_content() -> String {
     if let Ok(passphrase) = std::env::var("AGEND_TEST_PASSPHRASE") {
         return format!(
