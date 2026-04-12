@@ -57,6 +57,40 @@ pub fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Vec<T> {
         .collect()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_split_command() {
+        assert_eq!(
+            split_command("claude --model sonnet"),
+            vec!["claude", "--model", "sonnet"]
+        );
+        assert_eq!(split_command(""), Vec::<String>::new());
+        assert_eq!(
+            split_command("claude \"my model\""),
+            vec!["claude", "my model"]
+        );
+        assert_eq!(split_command("  spaces  "), vec!["spaces"]);
+        assert_eq!(split_command("a \"b c\" d"), vec!["a", "b c", "d"]);
+        assert_eq!(
+            split_command("unmatched \"quote"),
+            vec!["unmatched", "quote"]
+        );
+    }
+
+    #[test]
+    fn test_sanitize_name() {
+        assert_eq!(sanitize_name("alice"), "alice");
+        assert_eq!(sanitize_name("my-agent_1"), "my-agent_1");
+        assert_eq!(sanitize_name("../../../etc"), "etc");
+        assert_eq!(sanitize_name("a/b\\c.d"), "abcd");
+        assert_eq!(sanitize_name("--leading"), "leading");
+        assert_eq!(sanitize_name(""), "");
+    }
+}
+
 /// Append a single item as a JSONL line to a file (creates parent dirs if needed).
 pub fn append_jsonl<T: Serialize>(path: &Path, item: &T) {
     if let Some(parent) = path.parent() {
