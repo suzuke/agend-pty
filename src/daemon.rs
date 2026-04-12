@@ -1043,6 +1043,27 @@ fn main() {
         }
     }
 
+    // Build API-visible spawn configs from daemon's spawn configs
+    let api_spawn_configs: Arc<Mutex<HashMap<String, api::SpawnConfigInfo>>> = {
+        let configs = spawn_configs.lock().unwrap_or_else(|e| e.into_inner());
+        let map: HashMap<String, api::SpawnConfigInfo> = configs
+            .iter()
+            .map(|(name, sc)| {
+                (
+                    name.clone(),
+                    api::SpawnConfigInfo {
+                        name: name.clone(),
+                        command: sc.command.clone(),
+                        working_dir: sc.working_dir.clone(),
+                        worktree: sc.worktree,
+                        branch: sc.branch_name.clone(),
+                    },
+                )
+            })
+            .collect();
+        Arc::new(Mutex::new(map))
+    };
+
     // Spawn request channel (create_instance sends here, daemon thread spawns)
     let (spawn_tx, spawn_rx) = crossbeam::channel::unbounded::<api::SpawnConfigInfo>();
 
@@ -1050,7 +1071,7 @@ fn main() {
     api::start(Arc::new(api::DaemonCtx {
         writers: Arc::clone(&agent_writers),
         states: Arc::clone(&agent_states),
-        spawn_configs: Arc::new(Mutex::new(HashMap::new())),
+        spawn_configs: Arc::clone(&api_spawn_configs),
         inbox: Arc::clone(&inbox_store),
         channel_mgr: Arc::clone(&channel_mgr),
         spawn_tx,
@@ -1064,11 +1085,16 @@ fn main() {
         let ib = Arc::clone(&inbox_store);
         let cm = Arc::clone(&channel_mgr);
         let sc = Arc::clone(&spawn_configs);
+        let asc = Arc::clone(&api_spawn_configs);
         std::thread::Builder::new()
             .name("spawn_handler".into())
             .spawn(move || {
                 while let Ok(info) = spawn_rx.recv() {
                     let name = info.name.clone();
+                    // Keep API spawn_configs in sync
+                    asc.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(name.clone(), info.clone());
                     std::fs::create_dir_all(paths::agent_dir(&name)).ok();
                     let reg2 = Arc::clone(&reg);
                     let aw2 = Arc::clone(&aw);
