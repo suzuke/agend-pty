@@ -758,7 +758,7 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
             if running {
                 return json!({"content": [{"type": "text", "text": format!("instance '{name}' already running")}], "isError": true});
             }
-            // Reset health so respawn triggers
+            // Reset health so it doesn't block
             if let Some(handle) = ctx
                 .states
                 .lock()
@@ -768,12 +768,32 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                 if let Ok(mut h) = handle.health.lock() {
                     h.reset();
                 }
-                if let Ok(mut s) = handle.state_machine.lock() {
-                    s.on_restart(std::time::Instant::now());
-                    s.on_restart_complete(std::time::Instant::now());
-                }
             }
-            json!({"content": [{"type": "text", "text": json!({"started": name}).to_string()}]})
+            // Actually spawn via the spawn channel
+            let config = ctx
+                .spawn_configs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(name)
+                .cloned();
+            if let Some(cfg) = config {
+                match ctx.spawn_tx.send(SpawnConfigInfo {
+                    name: name.to_owned(),
+                    command: cfg.command,
+                    working_dir: cfg.working_dir,
+                    worktree: cfg.worktree,
+                    branch: cfg.branch,
+                }) {
+                    Ok(()) => {
+                        json!({"content": [{"type": "text", "text": json!({"started": name}).to_string()}]})
+                    }
+                    Err(e) => {
+                        json!({"content": [{"type": "text", "text": format!("spawn failed: {e}")}], "isError": true})
+                    }
+                }
+            } else {
+                json!({"content": [{"type": "text", "text": format!("no config found for '{name}'. Use create_instance first.")}], "isError": true})
+            }
         }
         "create_instance" => {
             let name = args["instance_name"]

@@ -414,6 +414,35 @@ fn e2e_create_instance_actually_spawns() {
 }
 
 #[test]
+fn e2e_start_instance_validates() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
+    wait_for_agents(&sock, 2, 15);
+    // start_instance on running agent → error "already running"
+    let r = mcp_call(
+        &sock,
+        "alice",
+        "start_instance",
+        &serde_json::json!({"instance_name": "alice"}),
+    );
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(
+        text.contains("already running"),
+        "expected already running: {text}"
+    );
+    // start_instance on unknown agent → error "no config"
+    let r = mcp_call(
+        &sock,
+        "alice",
+        "start_instance",
+        &serde_json::json!({"instance_name": "nonexistent"}),
+    );
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("no config"), "expected no config: {text}");
+    drop(guard);
+}
+
+#[test]
 fn e2e_all_tools_respond() {
     let tmp = tempfile::tempdir().unwrap();
     let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
