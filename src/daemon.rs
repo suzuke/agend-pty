@@ -206,7 +206,7 @@ fn setup_mcp_config(name: &str) -> (std::path::PathBuf, String) {
         } }
     });
     if let Ok(json) = serde_json::to_string_pretty(&mcp_config) {
-        std::fs::write(&mcp_config_path, json).ok();
+        agend_pty_poc::util::atomic_write(&mcp_config_path, &json).ok();
     }
     let path_str = mcp_config_path.display().to_string();
     (mcp_config_path, path_str)

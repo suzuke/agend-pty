@@ -36,6 +36,13 @@ pub fn split_command(cmd: &str) -> Vec<String> {
     parts
 }
 
+/// Atomic write: write to tmp file, then rename. Prevents partial reads.
+pub fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, content)?;
+    std::fs::rename(&tmp, path)
+}
+
 /// Current time as seconds since UNIX epoch.
 pub fn now_secs() -> u64 {
     std::time::SystemTime::now()
