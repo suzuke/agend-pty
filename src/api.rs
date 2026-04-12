@@ -556,6 +556,22 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                 Err(e) => json!({"content": [{"type": "text", "text": e}], "isError": true}),
             }
         }
+        "merge_all" => {
+            let prefix = args["message"].as_str().unwrap_or("merge");
+            let states = ctx.states.lock().unwrap_or_else(|e| e.into_inner());
+            let mut results: Vec<Value> = Vec::new();
+            for (name, handle) in states.iter() {
+                if let Some(ref wd) = handle.working_dir {
+                    let branch = format!("agend/{name}");
+                    let msg = format!("{prefix} {name}");
+                    match git::squash_merge(wd, &branch, &msg) {
+                        Ok(()) => results.push(json!({"agent": name, "merged": true})),
+                        Err(e) => results.push(json!({"agent": name, "error": e})),
+                    }
+                }
+            }
+            json!({"content": [{"type": "text", "text": json!({"results": results}).to_string()}]})
+        }
         "update_decision" => {
             let id = args["id"].as_u64().unwrap_or(0);
             let title = args["title"].as_str();
@@ -841,6 +857,7 @@ pub fn mcp_tools_list() -> Value {
         {"name":"wait_for_idle","description":"Wait for an agent to become idle.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"timeout_secs":{"type":"integer"}},"required":["instance_name"]}},
         {"name":"merge_preview","description":"Preview merge of agent branch.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"}},"required":["instance_name"]}},
         {"name":"merge_agent","description":"Squash merge agent branch.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"message":{"type":"string"}},"required":["instance_name"]}},
+        {"name":"merge_all","description":"Squash merge all agent worktree branches.","inputSchema":{"type":"object","properties":{"message":{"type":"string","description":"Commit message prefix"}}}},
         {"name":"create_instance","description":"Create a new agent instance.","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"working_directory":{"type":"string"},"backend":{"type":"string"},"model":{"type":"string"},"branch":{"type":"string"}},"required":["name"]}},
         {"name":"replace_instance","description":"Replace an agent with new settings (atomic swap).","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string","description":"Agent to replace"},"backend":{"type":"string"},"model":{"type":"string"},"working_directory":{"type":"string"},"branch":{"type":"string"}},"required":["instance_name"]}},
         {"name":"update_decision","description":"Update a decision.","inputSchema":{"type":"object","properties":{"id":{"type":"integer"},"title":{"type":"string"},"content":{"type":"string"}},"required":["id"]}},
