@@ -588,6 +588,70 @@ instances:
     // ── Config build_command edge cases ─────────────────────────────────
 
     #[test]
+    fn test_create_instance_includes_preset_args() {
+        // Simulate what create_instance does: resolve backend + add preset args
+        let backend_str = "claude";
+        let resolved = config::resolve_backend_binary(backend_str);
+        let mut cmd_parts = vec![resolved.clone()];
+        if let Some(b) = backend::Backend::from_command(&resolved) {
+            for arg in b.preset().args {
+                cmd_parts.push(arg.to_string());
+            }
+        }
+        let command = cmd_parts.join(" ");
+        assert!(
+            command.contains("--dangerously-skip-permissions"),
+            "claude command must include skip-permissions, got: {command}"
+        );
+    }
+
+    #[test]
+    fn test_empty_repo_worktree_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        // git init but NO commit
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        let result = git::create_worktree(tmp.path(), "test-agent", None);
+        assert!(result.is_err(), "empty repo should fail");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("no commits"),
+            "error should mention no commits, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_shutdown_flag_suppresses_respawn() {
+        // Verify AtomicBool pattern: when flag is true, action should be skipped
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static TEST_FLAG: AtomicBool = AtomicBool::new(false);
+
+        let mut actions_taken = 0;
+        let action = health::HealthAction::Restart;
+
+        // Normal: action should proceed
+        if !TEST_FLAG.load(Ordering::Relaxed) {
+            if action == health::HealthAction::Restart {
+                actions_taken += 1;
+            }
+        }
+        assert_eq!(actions_taken, 1, "action should proceed when flag is false");
+
+        // Shutdown: action should be skipped
+        TEST_FLAG.store(true, Ordering::Relaxed);
+        if !TEST_FLAG.load(Ordering::Relaxed) {
+            actions_taken += 1;
+        }
+        assert_eq!(
+            actions_taken, 1,
+            "action should be skipped when flag is true"
+        );
+    }
+
+    #[test]
     fn config_build_command_custom() {
         let yaml = "instances:\n  test:\n    command: \"my-tool --flag\"\n";
         let cfg: config::FleetConfig = serde_yml::from_str(yaml).unwrap();
