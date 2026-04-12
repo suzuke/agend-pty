@@ -57,11 +57,12 @@ struct AgentCore {
 
 impl AgentCore {
     fn broadcast(&mut self, data: &[u8]) {
-        self.subscribers.retain(|tx| tx.send(data.to_vec()).is_ok());
+        self.subscribers
+            .retain(|tx| tx.try_send(data.to_vec()).is_ok());
     }
 
     fn subscribe(&mut self) -> crossbeam::channel::Receiver<Vec<u8>> {
-        let (tx, rx) = crossbeam::channel::unbounded();
+        let (tx, rx) = crossbeam::channel::bounded(1024);
         self.subscribers.push(tx);
         rx
     }
