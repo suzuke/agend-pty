@@ -250,6 +250,19 @@ fn e2e_replace_instance() {
     assert_eq!(r["ok"].as_bool(), Some(true));
     let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
     assert!(text.contains("replaced"), "expected replaced: {text}");
+    // Verify agent is still in the list after replace
+    let r = api_call(&sock, "list", &serde_json::json!({}));
+    let instances = r["result"]["instances"].as_array().expect("list");
+    let names: Vec<&str> = instances.iter().filter_map(|v| v.as_str()).collect();
+    // alice may have been removed by kill and not yet respawned, but bob should be there
+    assert!(names.contains(&"bob"), "bob should be in list: {names:?}");
+    // Inject message to verify agent is functional
+    let r = api_call(
+        &sock,
+        "inject",
+        &serde_json::json!({"instance": "bob", "message": "test after replace", "sender": "test"}),
+    );
+    assert_eq!(r["ok"].as_bool(), Some(true));
     drop(guard);
 }
 
@@ -277,6 +290,11 @@ fn e2e_schedule_create_list() {
     );
     let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
     assert!(text.contains("ping"), "expected schedule in list: {text}");
+    assert!(
+        text.contains("0 * * * * *"),
+        "expected cron expression in list: {text}"
+    );
+    assert!(text.contains("bob"), "expected target in list: {text}");
     drop(guard);
 }
 
@@ -302,6 +320,45 @@ fn e2e_team_operations() {
     );
     let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
     assert!(text.contains("devs"), "expected team: {text}");
+    drop(guard);
+}
+
+#[test]
+fn e2e_cross_agent_messaging() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
+    wait_for_agents(&sock, 2, 15);
+    // Send message from alice to bob via send_to_instance
+    let r = mcp_call(
+        &sock,
+        "alice",
+        "send_to_instance",
+        &serde_json::json!({"instance_name": "bob", "message": "hello from alice"}),
+    );
+    assert_eq!(r["ok"].as_bool(), Some(true));
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("sent"), "expected sent: {text}");
+    assert!(text.contains("bob"), "expected target bob: {text}");
+    // Send message from bob to alice
+    let r = mcp_call(
+        &sock,
+        "bob",
+        "send_to_instance",
+        &serde_json::json!({"instance_name": "alice", "message": "reply from bob"}),
+    );
+    assert_eq!(r["ok"].as_bool(), Some(true));
+    // Verify sending to non-existent agent fails
+    let r = mcp_call(
+        &sock,
+        "alice",
+        "send_to_instance",
+        &serde_json::json!({"instance_name": "charlie", "message": "hello"}),
+    );
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(
+        text.contains("not found"),
+        "expected not found for charlie: {text}"
+    );
     drop(guard);
 }
 
