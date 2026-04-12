@@ -48,7 +48,7 @@ pub trait ChannelAdapter: Send + Sync {
 
 /// Manages all channel adapters and agent→topic routing.
 pub struct ChannelManager {
-    adapters: Vec<Box<dyn ChannelAdapter>>,
+    adapters: Vec<Arc<dyn ChannelAdapter>>,
 }
 
 impl ChannelManager {
@@ -60,7 +60,12 @@ impl ChannelManager {
 
     pub fn add_adapter(&mut self, adapter: Box<dyn ChannelAdapter>) {
         tracing::debug!(adapter = %adapter.name(), "registered adapter");
-        self.adapters.push(adapter);
+        self.adapters.push(Arc::from(adapter));
+    }
+
+    /// Clone adapter refs for polling outside the lock.
+    pub fn adapters_clone(&self) -> Vec<Arc<dyn ChannelAdapter>> {
+        self.adapters.clone()
     }
 
     pub fn has_adapters(&self) -> bool {

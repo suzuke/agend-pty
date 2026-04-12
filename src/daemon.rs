@@ -1090,7 +1090,13 @@ fn main() {
             .name("channel_poll".into())
             .spawn(move || {
                 loop {
-                    let msgs = cm.lock().unwrap_or_else(|e| e.into_inner()).poll_all();
+                    // Clone adapter refs (short lock), then poll outside lock
+                    let adapters = cm
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .adapters_clone();
+                    let msgs: Vec<channel::IncomingMessage> =
+                        adapters.iter().flat_map(|a| a.poll()).collect();
                     for msg in msgs {
                         // Get submit_key from registry for this agent
                         let submit_key = reg_poll
