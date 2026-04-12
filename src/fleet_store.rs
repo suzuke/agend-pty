@@ -31,42 +31,76 @@ pub struct Task {
     pub timestamp: u64,
 }
 
-fn decisions_path() -> std::path::PathBuf { paths::run_dir().join("decisions.jsonl") }
-fn tasks_path() -> std::path::PathBuf { paths::run_dir().join("tasks.jsonl") }
+fn decisions_path() -> std::path::PathBuf {
+    paths::run_dir().join("decisions.jsonl")
+}
+fn tasks_path() -> std::path::PathBuf {
+    paths::run_dir().join("tasks.jsonl")
+}
 
 fn now_secs() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn read_jsonl<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Vec<T> {
-    let file = match std::fs::File::open(path) { Ok(f) => f, Err(_) => return vec![] };
-    std::io::BufReader::new(file).lines().map_while(Result::ok)
-        .filter_map(|line| serde_json::from_str(&line).ok()).collect()
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return vec![],
+    };
+    std::io::BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .filter_map(|line| serde_json::from_str(&line).ok())
+        .collect()
 }
 
 fn append_jsonl<T: Serialize>(path: &std::path::Path, item: &T) {
-    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).ok(); }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-        if let Ok(line) = serde_json::to_string(item) { let _ = writeln!(f, "{line}"); }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        if let Ok(line) = serde_json::to_string(item) {
+            let _ = writeln!(f, "{line}");
+        }
     }
 }
 
 pub fn post_decision(author: &str, title: &str, content: &str) -> Decision {
     let decisions: Vec<Decision> = read_jsonl(&decisions_path());
     let id = decisions.len() as u64 + 1;
-    let d = Decision { id, title: title.into(), content: content.into(), author: author.into(), timestamp: now_secs() };
+    let d = Decision {
+        id,
+        title: title.into(),
+        content: content.into(),
+        author: author.into(),
+        timestamp: now_secs(),
+    };
     append_jsonl(&decisions_path(), &d);
     d
 }
 
-pub fn list_decisions() -> Vec<Decision> { read_jsonl(&decisions_path()) }
+pub fn list_decisions() -> Vec<Decision> {
+    read_jsonl(&decisions_path())
+}
 
 pub fn create_task(created_by: &str, title: &str, description: &str, assignee: &str) -> Task {
     let id = format!("T{}", NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed));
     let t = Task {
-        id: id.clone(), title: title.into(), description: description.into(),
-        assignee: assignee.into(), status: "open".into(), result: String::new(),
-        created_by: created_by.into(), timestamp: now_secs(),
+        id: id.clone(),
+        title: title.into(),
+        description: description.into(),
+        assignee: assignee.into(),
+        status: "open".into(),
+        result: String::new(),
+        created_by: created_by.into(),
+        timestamp: now_secs(),
     };
     append_jsonl(&tasks_path(), &t);
     t
@@ -75,16 +109,29 @@ pub fn create_task(created_by: &str, title: &str, description: &str, assignee: &
 pub fn list_tasks() -> Vec<Task> {
     let all: Vec<Task> = read_jsonl(&tasks_path());
     let mut map = std::collections::HashMap::new();
-    for t in all { map.insert(t.id.clone(), t); }
+    for t in all {
+        map.insert(t.id.clone(), t);
+    }
     map.into_values().collect()
 }
 
-pub fn update_task(id: &str, status: Option<&str>, assignee: Option<&str>, result: Option<&str>) -> Option<Task> {
+pub fn update_task(
+    id: &str,
+    status: Option<&str>,
+    assignee: Option<&str>,
+    result: Option<&str>,
+) -> Option<Task> {
     let tasks: Vec<Task> = read_jsonl(&tasks_path());
     let mut task = tasks.into_iter().find(|t| t.id == id)?;
-    if let Some(s) = status { task.status = s.into(); }
-    if let Some(a) = assignee { task.assignee = a.into(); }
-    if let Some(r) = result { task.result = r.into(); }
+    if let Some(s) = status {
+        task.status = s.into();
+    }
+    if let Some(a) = assignee {
+        task.assignee = a.into();
+    }
+    if let Some(r) = result {
+        task.result = r.into();
+    }
     task.timestamp = now_secs();
     append_jsonl(&tasks_path(), &task);
     Some(task)
@@ -96,7 +143,13 @@ mod tests {
 
     #[test]
     fn decision_roundtrip() {
-        let d = Decision { id: 1, title: "test".into(), content: "body".into(), author: "alice".into(), timestamp: 0 };
+        let d = Decision {
+            id: 1,
+            title: "test".into(),
+            content: "body".into(),
+            author: "alice".into(),
+            timestamp: 0,
+        };
         let json = serde_json::to_string(&d).unwrap();
         let restored: Decision = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.title, "test");
@@ -105,9 +158,14 @@ mod tests {
     #[test]
     fn task_roundtrip() {
         let t = Task {
-            id: "T1".into(), title: "fix bug".into(), description: "".into(),
-            assignee: "bob".into(), status: "open".into(), result: "".into(),
-            created_by: "alice".into(), timestamp: 0,
+            id: "T1".into(),
+            title: "fix bug".into(),
+            description: "".into(),
+            assignee: "bob".into(),
+            status: "open".into(),
+            result: "".into(),
+            created_by: "alice".into(),
+            timestamp: 0,
         };
         let json = serde_json::to_string(&t).unwrap();
         let restored: Task = serde_json::from_str(&json).unwrap();

@@ -20,13 +20,17 @@ fn main() {
         let agent = &args[0];
         let mut attempts = 0;
         loop {
-            if let Some(p) = paths::find_agent_mcp_socket(agent) { break p; }
+            if let Some(p) = paths::find_agent_mcp_socket(agent) {
+                break p;
+            }
             attempts += 1;
             if attempts > 50 {
                 eprintln!("[bridge] MCP socket for '{agent}' not found after 5s");
                 std::process::exit(1);
             }
-            if attempts % 10 == 0 { eprintln!("[bridge] waiting for '{agent}' MCP socket..."); }
+            if attempts % 10 == 0 {
+                eprintln!("[bridge] waiting for '{agent}' MCP socket...");
+            }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
     } else {
@@ -49,8 +53,12 @@ fn main() {
         .spawn(move || {
             let reader = BufReader::new(sock_reader);
             for line in reader.lines().map_while(Result::ok) {
-                if line.trim().is_empty() { continue; }
-                if writeln!(stdout, "{}", line.trim()).is_err() { return; }
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if writeln!(stdout, "{}", line.trim()).is_err() {
+                    return;
+                }
                 let _ = stdout.flush();
             }
         })
@@ -61,8 +69,12 @@ fn main() {
     let reader = BufReader::new(stdin.lock());
     for line in reader.lines().map_while(Result::ok) {
         let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
-        if writeln!(sock_writer, "{trimmed}").is_err() { break; }
+        if trimmed.is_empty() {
+            continue;
+        }
+        if writeln!(sock_writer, "{trimmed}").is_err() {
+            break;
+        }
         let _ = sock_writer.flush();
     }
 }

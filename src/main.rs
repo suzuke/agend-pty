@@ -9,23 +9,25 @@
 //!   agend-pty inject <agent> <message>    Inject message to agent
 //!   agend-pty shutdown                    Stop running daemon
 
-#[path = "paths.rs"]
-mod paths;
-#[path = "doctor.rs"]
-mod doctor;
 #[path = "config.rs"]
 mod config;
-#[path = "instructions.rs"]
-mod instructions;
+#[path = "doctor.rs"]
+mod doctor;
 #[path = "features.rs"]
 mod features;
 #[path = "git.rs"]
 mod git;
+#[path = "instructions.rs"]
+mod instructions;
+#[path = "paths.rs"]
+mod paths;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let bin_name = std::path::Path::new(&args[0]).file_name()
-        .and_then(|f| f.to_str()).unwrap_or("agend-pty");
+    let bin_name = std::path::Path::new(&args[0])
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("agend-pty");
 
     // Support symlink/hardlink aliases: agend-daemon → daemon, agend-tui → attach
     let cmd = match bin_name {
@@ -58,28 +60,35 @@ fn main() {
         "doctor" | "doc" => {
             doctor::run();
         }
-        "dry-run" | "dryrun" => {
-            match config::FleetConfig::find_and_load() {
-                Ok(cfg) => features::dry_run(&cfg),
-                Err(e) => { eprintln!("Error: {e}"); std::process::exit(1); }
+        "dry-run" | "dryrun" => match config::FleetConfig::find_and_load() {
+            Ok(cfg) => features::dry_run(&cfg),
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
             }
-        }
+        },
         "snapshot" => {
-            let output = sub_args.iter().position(|s| s == "--output" || s == "-o")
+            let output = sub_args
+                .iter()
+                .position(|s| s == "--output" || s == "-o")
                 .and_then(|i| sub_args.get(i + 1))
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| "fleet-snapshot.json".into());
             if let Err(e) = features::snapshot(None, &output) {
-                eprintln!("Error: {e}"); std::process::exit(1);
+                eprintln!("Error: {e}");
+                std::process::exit(1);
             }
         }
         "restore" => {
-            let input = sub_args.iter().position(|s| s == "--input" || s == "-i")
+            let input = sub_args
+                .iter()
+                .position(|s| s == "--input" || s == "-i")
                 .and_then(|i| sub_args.get(i + 1))
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| "fleet-snapshot.json".into());
             if let Err(e) = features::restore(&input) {
-                eprintln!("Error: {e}"); std::process::exit(1);
+                eprintln!("Error: {e}");
+                std::process::exit(1);
             }
         }
         "--shutdown" | "shutdown" | "stop" => {
@@ -94,7 +103,7 @@ fn main() {
                     Err(e) => eprintln!("Cannot connect to daemon: {e}"),
                 }
             } else {
-                eprintln!("No running daemon found.");
+                eprintln!("No running daemon. Start one with: agend-pty daemon");
             }
         }
         "list" | "ls" => {
@@ -102,7 +111,9 @@ fn main() {
             if agents.is_empty() {
                 println!("No running agents.");
             } else {
-                for a in &agents { println!("  {a}"); }
+                for a in &agents {
+                    println!("  {a}");
+                }
             }
         }
         "status" => {
@@ -111,12 +122,17 @@ fn main() {
                 println!("No running daemons.");
             } else {
                 let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
                 for d in &daemons {
                     let uptime = now.saturating_sub(d.start_time);
-                    let h = uptime / 3600; let m = (uptime % 3600) / 60;
-                    println!("  PID {} | fleet: {} | agents: {} | uptime: {}h{}m",
-                        d.pid, d.fleet_config, d.agent_count, h, m);
+                    let h = uptime / 3600;
+                    let m = (uptime % 3600) / 60;
+                    println!(
+                        "  PID {} | fleet: {} | agents: {} | uptime: {}h{}m",
+                        d.pid, d.fleet_config, d.agent_count, h, m
+                    );
                 }
             }
         }
@@ -141,7 +157,7 @@ fn main() {
                     Err(e) => eprintln!("Cannot connect to API: {e}"),
                 }
             } else {
-                eprintln!("No running daemon found.");
+                eprintln!("No running daemon. Start one with: agend-pty daemon");
             }
         }
         "cleanup" => {
@@ -149,9 +165,12 @@ fn main() {
             if git::is_git_repo(&cwd) {
                 let n = git::cleanup_worktrees(&cwd);
                 println!("Cleaned up {n} worktree(s).");
-            } else { println!("Not a git repo."); }
+            } else {
+                println!("Not a git repo.");
+            }
         }
         "help" | "--help" | "-h" => print_help(),
+        "--version" | "-V" => println!("agend-pty {}", env!("CARGO_PKG_VERSION")),
         _ => {
             eprintln!("Unknown command: {cmd}");
             print_help();
@@ -161,31 +180,35 @@ fn main() {
 }
 
 fn print_help() {
-    println!("agend-pty — AI agent fleet orchestrator\n");
-    println!("Commands:");
-    println!("  daemon [name:cmd ...]  Start daemon (reads fleet.yaml if no args)");
-    println!("  attach [agent]         Attach to agent terminal (Ctrl+B d to detach)");
-    println!("  dry-run                Validate fleet.yaml without starting");
-    println!("  doctor                 Health check");
-    println!("  list                   List running agents");
-    println!("  status                 List running daemons");
-    println!("  inject <agent> <msg>   Inject message to agent");
-    println!("  snapshot [-o file]     Save fleet state to JSON");
-    println!("  restore [-i file]      Restore fleet.yaml from snapshot");
-    println!("  cleanup                Remove residual git worktrees");
-    println!("  shutdown               Stop running daemon");
+    println!("agend-pty — AI agent fleet manager\n");
+    println!("USAGE:");
+    println!("    agend-pty <COMMAND>\n");
+    println!("COMMANDS:");
+    println!("    daemon [name:cmd ...]  Start the daemon (manages agents)");
+    println!("    attach [agent]         Connect TUI to a running agent");
+    println!("    status                 Show running daemons and agents");
+    println!("    list                   List agents in current fleet");
+    println!("    inject <agent> <msg>   Send a message to an agent");
+    println!("    dry-run                Validate fleet.yaml without starting agents");
+    println!("    snapshot [-o file]     Save fleet state to JSON");
+    println!("    restore [-i file]      Restore fleet from snapshot");
+    println!("    cleanup                Remove leftover git worktrees");
+    println!("    doctor                 Check system health");
+    println!("    shutdown               Stop a running daemon\n");
+    println!("OPTIONS:");
+    println!("    -h, --help             Print help");
+    println!("    -V, --version          Print version");
 }
 
 fn exe_dir() -> std::path::PathBuf {
-    std::env::current_exe().ok()
+    std::env::current_exe()
+        .ok()
         .and_then(|p| p.parent().map(|par| par.to_path_buf()))
         .unwrap_or_default()
 }
 
 fn exec_with_args(bin: &std::path::Path, args: &[String]) {
-    let status = std::process::Command::new(bin)
-        .args(args)
-        .status();
+    let status = std::process::Command::new(bin).args(args).status();
     match status {
         Ok(s) => std::process::exit(s.code().unwrap_or(1)),
         Err(e) => {

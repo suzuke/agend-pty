@@ -1,4 +1,3 @@
-
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -70,11 +69,18 @@ impl Backend {
 
     pub fn from_command(command: &str) -> Option<Backend> {
         let cmd = command.to_lowercase();
-        if cmd.contains("claude") { Some(Backend::ClaudeCode) }
-        else if cmd.contains("kiro") { Some(Backend::KiroCli) }
-        else if cmd.contains("codex") { Some(Backend::Codex) }
-        else if cmd.contains("opencode") { Some(Backend::OpenCode) }
-        else if cmd.contains("gemini") { Some(Backend::Gemini) }
-        else { None }
+        if cmd.contains("claude") {
+            Some(Backend::ClaudeCode)
+        } else if cmd.contains("kiro") {
+            Some(Backend::KiroCli)
+        } else if cmd.contains("codex") {
+            Some(Backend::Codex)
+        } else if cmd.contains("opencode") {
+            Some(Backend::OpenCode)
+        } else if cmd.contains("gemini") {
+            Some(Backend::Gemini)
+        } else {
+            None
+        }
     }
 }

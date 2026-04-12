@@ -47,10 +47,18 @@ instances:
 "#;
         let cfg: config::FleetConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(cfg.defaults.backend, "claude");
-        assert!(cfg.instances["alice"].build_command(&cfg.defaults).contains("--dangerously-skip-permissions"));
-        assert!(cfg.instances["alice"].build_command(&cfg.defaults).contains("--model opus"));
-        assert!(cfg.instances["bob"].build_command(&cfg.defaults).contains("gemini"));
-        assert!(cfg.instances["bob"].build_command(&cfg.defaults).contains("--model pro"));
+        assert!(cfg.instances["alice"]
+            .build_command(&cfg.defaults)
+            .contains("--dangerously-skip-permissions"));
+        assert!(cfg.instances["alice"]
+            .build_command(&cfg.defaults)
+            .contains("--model opus"));
+        assert!(cfg.instances["bob"]
+            .build_command(&cfg.defaults)
+            .contains("gemini"));
+        assert!(cfg.instances["bob"]
+            .build_command(&cfg.defaults)
+            .contains("--model pro"));
     }
 
     #[test]
@@ -63,7 +71,8 @@ instances:
 
     #[test]
     fn config_telegram() {
-        let yaml = "channel:\n  bot_token_env: MY_TOKEN\n  group_id: -100123\ninstances:\n  test: {}\n";
+        let yaml =
+            "channel:\n  bot_token_env: MY_TOKEN\n  group_id: -100123\ninstances:\n  test: {}\n";
         let cfg: config::FleetConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(cfg.channel.is_some());
         assert_eq!(cfg.channel.unwrap().group_id, Some(-100123));
@@ -115,10 +124,22 @@ instances:
 
     #[test]
     fn backend_detect() {
-        assert_eq!(backend::Backend::from_command("claude --skip"), Some(backend::Backend::ClaudeCode));
-        assert_eq!(backend::Backend::from_command("gemini --yolo"), Some(backend::Backend::Gemini));
-        assert_eq!(backend::Backend::from_command("kiro-cli chat"), Some(backend::Backend::KiroCli));
-        assert_eq!(backend::Backend::from_command("codex --full-auto"), Some(backend::Backend::Codex));
+        assert_eq!(
+            backend::Backend::from_command("claude --skip"),
+            Some(backend::Backend::ClaudeCode)
+        );
+        assert_eq!(
+            backend::Backend::from_command("gemini --yolo"),
+            Some(backend::Backend::Gemini)
+        );
+        assert_eq!(
+            backend::Backend::from_command("kiro-cli chat"),
+            Some(backend::Backend::KiroCli)
+        );
+        assert_eq!(
+            backend::Backend::from_command("codex --full-auto"),
+            Some(backend::Backend::Codex)
+        );
         assert_eq!(backend::Backend::from_command("bash"), None);
     }
 
@@ -152,7 +173,9 @@ instances:
     }
 
     impl channel::ChannelAdapter for MockAdapter {
-        fn name(&self) -> &str { "mock" }
+        fn name(&self) -> &str {
+            "mock"
+        }
         fn on_agent_created(&self, name: &str) {
             self.created.lock().unwrap().push(name.to_owned());
         }
@@ -160,20 +183,27 @@ instances:
             self.removed.lock().unwrap().push(name.to_owned());
         }
         fn send_to_agent(&self, agent: &str, text: &str) -> Option<String> {
-            self.sent.lock().unwrap().push((agent.to_owned(), text.to_owned()));
+            self.sent
+                .lock()
+                .unwrap()
+                .push((agent.to_owned(), text.to_owned()));
             None
         }
         fn notify(&self, text: &str) {
             self.notifications.lock().unwrap().push(text.to_owned());
         }
-        fn poll(&self) -> Vec<channel::IncomingMessage> { vec![] }
+        fn poll(&self) -> Vec<channel::IncomingMessage> {
+            vec![]
+        }
     }
 
     #[test]
     fn channel_lifecycle_hooks() {
         let mgr = channel::ChannelManager::new();
         let adapter = Arc::new(MockAdapter::new());
-        mgr.lock().unwrap().add_adapter(Box::new(MockAdapterWrapper(Arc::clone(&adapter))));
+        mgr.lock()
+            .unwrap()
+            .add_adapter(Box::new(MockAdapterWrapper(Arc::clone(&adapter))));
 
         mgr.lock().unwrap().on_agent_created("alice");
         mgr.lock().unwrap().on_agent_created("bob");
@@ -190,12 +220,24 @@ instances:
     // Wrapper to delegate Arc<MockAdapter> as Box<dyn ChannelAdapter>
     struct MockAdapterWrapper(Arc<MockAdapter>);
     impl channel::ChannelAdapter for MockAdapterWrapper {
-        fn name(&self) -> &str { self.0.name() }
-        fn on_agent_created(&self, name: &str) { self.0.on_agent_created(name) }
-        fn on_agent_removed(&self, name: &str) { self.0.on_agent_removed(name) }
-        fn send_to_agent(&self, agent: &str, text: &str) -> Option<String> { self.0.send_to_agent(agent, text) }
-        fn notify(&self, text: &str) { self.0.notify(text) }
-        fn poll(&self) -> Vec<channel::IncomingMessage> { self.0.poll() }
+        fn name(&self) -> &str {
+            self.0.name()
+        }
+        fn on_agent_created(&self, name: &str) {
+            self.0.on_agent_created(name)
+        }
+        fn on_agent_removed(&self, name: &str) {
+            self.0.on_agent_removed(name)
+        }
+        fn send_to_agent(&self, agent: &str, text: &str) -> Option<String> {
+            self.0.send_to_agent(agent, text)
+        }
+        fn notify(&self, text: &str) {
+            self.0.notify(text)
+        }
+        fn poll(&self) -> Vec<channel::IncomingMessage> {
+            self.0.poll()
+        }
     }
 
     // ── Inbox JSONL persistence ─────────────────────────────────────────
@@ -249,9 +291,16 @@ instances:
     fn mcp_config_merge_new_file() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join(".gemini").join("settings.json");
-        mcp_config::write_mcp_config(tmp.path(), "gemini --yolo", "test", "/bin/bridge", &["--socket", "/tmp/test.sock"]);
+        mcp_config::write_mcp_config(
+            tmp.path(),
+            "gemini --yolo",
+            "test",
+            "/bin/bridge",
+            &["--socket", "/tmp/test.sock"],
+        );
         assert!(path.exists(), "settings.json should be created");
-        let content: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let content: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(content["mcpServers"]["agend-test"].is_object());
     }
 
@@ -264,11 +313,24 @@ instances:
         // Pre-existing config with user's own MCP server
         std::fs::write(&path, r#"{"mcpServers":{"my-server":{"command":"foo"}}}"#).unwrap();
 
-        mcp_config::write_mcp_config(tmp.path(), "gemini", "test", "/bin/bridge", &["--socket", "/s"]);
-        let content: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        mcp_config::write_mcp_config(
+            tmp.path(),
+            "gemini",
+            "test",
+            "/bin/bridge",
+            &["--socket", "/s"],
+        );
+        let content: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         // Both keys should exist
-        assert!(content["mcpServers"]["my-server"].is_object(), "user's server preserved");
-        assert!(content["mcpServers"]["agend-test"].is_object(), "agend server added");
+        assert!(
+            content["mcpServers"]["my-server"].is_object(),
+            "user's server preserved"
+        );
+        assert!(
+            content["mcpServers"]["agend-test"].is_object(),
+            "agend server added"
+        );
     }
 
     #[test]
@@ -279,10 +341,19 @@ instances:
         let path = gemini_dir.join("settings.json");
         std::fs::write(&path, "{ bad json !!!").unwrap();
 
-        mcp_config::write_mcp_config(tmp.path(), "gemini", "test", "/bin/bridge", &["--socket", "/s"]);
+        mcp_config::write_mcp_config(
+            tmp.path(),
+            "gemini",
+            "test",
+            "/bin/bridge",
+            &["--socket", "/s"],
+        );
         // File should NOT be overwritten
         let content = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(content, "{ bad json !!!", "bad file should not be overwritten");
+        assert_eq!(
+            content, "{ bad json !!!",
+            "bad file should not be overwritten"
+        );
     }
 
     // ── VTerm screen dump ───────────────────────────────────────────────
@@ -295,7 +366,10 @@ instances:
         let dump = vt.dump_screen();
         let text = String::from_utf8_lossy(&dump);
         assert!(text.contains("Hello, World!"), "dump should contain text");
-        assert!(text.contains("Green text"), "dump should contain colored text");
+        assert!(
+            text.contains("Green text"),
+            "dump should contain colored text"
+        );
         assert!(text.contains("\x1b["), "dump should contain ANSI codes");
     }
 
@@ -332,7 +406,9 @@ instances:
     #[test]
     fn channel_manager_with_null_adapter() {
         let mgr = channel::ChannelManager::new();
-        mgr.lock().unwrap().add_adapter(Box::new(channel::NullAdapter));
+        mgr.lock()
+            .unwrap()
+            .add_adapter(Box::new(channel::NullAdapter));
         let m = mgr.lock().unwrap();
         assert!(m.has_adapters());
         m.on_agent_created("test");

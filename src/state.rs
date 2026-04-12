@@ -37,7 +37,7 @@ pub enum StateEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
     RateLimit,
-    AuthError,    // permanent — should NOT respawn
+    AuthError, // permanent — should NOT respawn
     ContextFull,
     ApiError,
 }
@@ -49,11 +49,18 @@ impl ErrorKind {
 
     fn detect(text: &str, state: AgentState) -> Option<ErrorKind> {
         let lower = text.to_lowercase();
-        if lower.contains("rate limit") || lower.contains("429") { return Some(ErrorKind::RateLimit); }
-        if lower.contains("unauthorized") || lower.contains("invalid api key") || lower.contains("401") {
+        if lower.contains("rate limit") || lower.contains("429") {
+            return Some(ErrorKind::RateLimit);
+        }
+        if lower.contains("unauthorized")
+            || lower.contains("invalid api key")
+            || lower.contains("401")
+        {
             return Some(ErrorKind::AuthError);
         }
-        if lower.contains("context") && (lower.contains("full") || lower.contains("limit") || lower.contains("too long")) {
+        if lower.contains("context")
+            && (lower.contains("full") || lower.contains("limit") || lower.contains("too long"))
+        {
             return Some(ErrorKind::ContextFull);
         }
         // Starting state: broad patterns (catching startup errors)
@@ -63,8 +70,12 @@ impl ErrorKind {
             }
         } else {
             // Ready/Busy/Idle: precise patterns only
-            if lower.contains("error:") || lower.contains("fatal:") || lower.contains("panic:")
-                || lower.contains("FATAL") || lower.contains("thread") && lower.contains("panicked") {
+            if lower.contains("error:")
+                || lower.contains("fatal:")
+                || lower.contains("panic:")
+                || lower.contains("FATAL")
+                || lower.contains("thread") && lower.contains("panicked")
+            {
                 return Some(ErrorKind::ApiError);
             }
         }
@@ -84,10 +95,14 @@ impl StatePatterns {
         Self {
             ready_patterns: ready_pattern.split('|').map(|s| s.to_lowercase()).collect(),
             input_patterns: vec![
-                "yes, i trust".into(), "yes, proceed".into(),
-                "allow once".into(), "allow always".into(),
-                "permission required".into(), "grant permission".into(),
-                "(y/n)".into(), "[y/n]".into(),
+                "yes, i trust".into(),
+                "yes, proceed".into(),
+                "allow once".into(),
+                "allow always".into(),
+                "permission required".into(),
+                "grant permission".into(),
+                "(y/n)".into(),
+                "[y/n]".into(),
             ],
         }
     }
@@ -126,9 +141,15 @@ impl StateMachine {
         }
     }
 
-    pub fn state(&self) -> AgentState { self.state }
-    pub fn consecutive_errors(&self) -> u32 { self.consecutive_errors }
-    pub fn last_error_kind(&self) -> Option<ErrorKind> { self.last_error_kind }
+    pub fn state(&self) -> AgentState {
+        self.state
+    }
+    pub fn consecutive_errors(&self) -> u32 {
+        self.consecutive_errors
+    }
+    pub fn last_error_kind(&self) -> Option<ErrorKind> {
+        self.last_error_kind
+    }
 
     /// Pure transition logic.
     pub fn transition(current: AgentState, event: &StateEvent) -> Option<AgentState> {
@@ -175,7 +196,9 @@ impl StateMachine {
         self.last_output = now;
         self.detect_buf.push_str(clean_text);
         if self.detect_buf.len() > 4096 {
-            let keep_from = self.detect_buf.ceil_char_boundary(self.detect_buf.len() - 4096);
+            let keep_from = self
+                .detect_buf
+                .ceil_char_boundary(self.detect_buf.len() - 4096);
             self.detect_buf = self.detect_buf[keep_from..].to_string();
         }
 
@@ -238,7 +261,10 @@ impl StateMachine {
         if is_escalation {
             match &self.pending {
                 Some((t, _)) if *t == target => None,
-                _ => { self.pending = Some((target, now)); None }
+                _ => {
+                    self.pending = Some((target, now));
+                    None
+                }
             }
         } else {
             self.apply(target, now)
@@ -247,7 +273,9 @@ impl StateMachine {
 
     fn apply(&mut self, target: AgentState, _now: Instant) -> Option<AgentState> {
         if Self::transition(self.state, &event_for(target)).is_some() {
-            if target == AgentState::Errored { self.consecutive_errors += 1; }
+            if target == AgentState::Errored {
+                self.consecutive_errors += 1;
+            }
             self.state = target;
             self.pending = None;
             self.detect_buf.clear(); // Finding #2: clear buffer on transition
@@ -278,10 +306,31 @@ pub fn strip_ansi(s: &str) -> String {
     while let Some(c) = chars.next() {
         if c == '\x1b' {
             match chars.peek() {
-                Some('[') => { chars.next(); while let Some(&ch) = chars.peek() { chars.next(); if ch.is_ascii_alphabetic() { break; } } }
-                Some(']') => { chars.next(); while let Some(&ch) = chars.peek() { chars.next(); if ch == '\x07' || ch == '\\' { break; } } }
-                Some('(') | Some(')') => { chars.next(); chars.next(); }
-                _ => { chars.next(); }
+                Some('[') => {
+                    chars.next();
+                    while let Some(&ch) = chars.peek() {
+                        chars.next();
+                        if ch.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    chars.next();
+                    while let Some(&ch) = chars.peek() {
+                        chars.next();
+                        if ch == '\x07' || ch == '\\' {
+                            break;
+                        }
+                    }
+                }
+                Some('(') | Some(')') => {
+                    chars.next();
+                    chars.next();
+                }
+                _ => {
+                    chars.next();
+                }
             }
         } else {
             out.push(c);
@@ -294,72 +343,133 @@ pub fn strip_ansi(s: &str) -> String {
 mod tests {
     use super::*;
 
-    fn claude_patterns() -> StatePatterns { StatePatterns::from_backend("Type your") }
-    fn make_sm() -> StateMachine { StateMachine::new(claude_patterns()) }
+    fn claude_patterns() -> StatePatterns {
+        StatePatterns::from_backend("Type your")
+    }
+    fn make_sm() -> StateMachine {
+        StateMachine::new(claude_patterns())
+    }
 
     // ── Transition table ────────────────────────────────────────────
 
     #[test]
     fn starting_to_ready() {
-        assert_eq!(StateMachine::transition(AgentState::Starting, &StateEvent::ReadyPatternDetected), Some(AgentState::Ready));
+        assert_eq!(
+            StateMachine::transition(AgentState::Starting, &StateEvent::ReadyPatternDetected),
+            Some(AgentState::Ready)
+        );
     }
     #[test]
     fn starting_to_errored() {
-        assert_eq!(StateMachine::transition(AgentState::Starting, &StateEvent::ErrorPatternDetected), Some(AgentState::Errored));
+        assert_eq!(
+            StateMachine::transition(AgentState::Starting, &StateEvent::ErrorPatternDetected),
+            Some(AgentState::Errored)
+        );
     }
     #[test]
     fn starting_to_crashed() {
-        assert_eq!(StateMachine::transition(AgentState::Starting, &StateEvent::ProcessExited), Some(AgentState::Crashed));
+        assert_eq!(
+            StateMachine::transition(AgentState::Starting, &StateEvent::ProcessExited),
+            Some(AgentState::Crashed)
+        );
     }
     #[test]
     fn starting_to_waiting() {
-        assert_eq!(StateMachine::transition(AgentState::Starting, &StateEvent::InputRequested), Some(AgentState::WaitingForInput));
+        assert_eq!(
+            StateMachine::transition(AgentState::Starting, &StateEvent::InputRequested),
+            Some(AgentState::WaitingForInput)
+        );
     }
     #[test]
     fn ready_to_busy() {
-        assert_eq!(StateMachine::transition(AgentState::Ready, &StateEvent::OutputReceived), Some(AgentState::Busy));
+        assert_eq!(
+            StateMachine::transition(AgentState::Ready, &StateEvent::OutputReceived),
+            Some(AgentState::Busy)
+        );
     }
     #[test]
     fn ready_to_idle() {
-        assert_eq!(StateMachine::transition(AgentState::Ready, &StateEvent::SilenceDuration(Duration::from_secs(30))), Some(AgentState::Idle));
+        assert_eq!(
+            StateMachine::transition(
+                AgentState::Ready,
+                &StateEvent::SilenceDuration(Duration::from_secs(30))
+            ),
+            Some(AgentState::Idle)
+        );
     }
     #[test]
     fn busy_to_ready() {
-        assert_eq!(StateMachine::transition(AgentState::Busy, &StateEvent::ReadyPatternDetected), Some(AgentState::Ready));
+        assert_eq!(
+            StateMachine::transition(AgentState::Busy, &StateEvent::ReadyPatternDetected),
+            Some(AgentState::Ready)
+        );
     }
     #[test]
     fn busy_to_crashed() {
-        assert_eq!(StateMachine::transition(AgentState::Busy, &StateEvent::ProcessExited), Some(AgentState::Crashed));
+        assert_eq!(
+            StateMachine::transition(AgentState::Busy, &StateEvent::ProcessExited),
+            Some(AgentState::Crashed)
+        );
     }
     #[test]
     fn busy_to_waiting() {
-        assert_eq!(StateMachine::transition(AgentState::Busy, &StateEvent::InputRequested), Some(AgentState::WaitingForInput));
+        assert_eq!(
+            StateMachine::transition(AgentState::Busy, &StateEvent::InputRequested),
+            Some(AgentState::WaitingForInput)
+        );
     }
     #[test]
     fn idle_to_busy() {
-        assert_eq!(StateMachine::transition(AgentState::Idle, &StateEvent::OutputReceived), Some(AgentState::Busy));
+        assert_eq!(
+            StateMachine::transition(AgentState::Idle, &StateEvent::OutputReceived),
+            Some(AgentState::Busy)
+        );
     }
     #[test]
     fn crashed_to_restarting() {
-        assert_eq!(StateMachine::transition(AgentState::Crashed, &StateEvent::RestartInitiated), Some(AgentState::Restarting));
+        assert_eq!(
+            StateMachine::transition(AgentState::Crashed, &StateEvent::RestartInitiated),
+            Some(AgentState::Restarting)
+        );
     }
     #[test]
     fn restarting_to_starting() {
-        assert_eq!(StateMachine::transition(AgentState::Restarting, &StateEvent::RestartComplete), Some(AgentState::Starting));
+        assert_eq!(
+            StateMachine::transition(AgentState::Restarting, &StateEvent::RestartComplete),
+            Some(AgentState::Starting)
+        );
     }
     #[test]
     fn waiting_to_ready() {
-        assert_eq!(StateMachine::transition(AgentState::WaitingForInput, &StateEvent::ReadyPatternDetected), Some(AgentState::Ready));
+        assert_eq!(
+            StateMachine::transition(
+                AgentState::WaitingForInput,
+                &StateEvent::ReadyPatternDetected
+            ),
+            Some(AgentState::Ready)
+        );
     }
     #[test]
     fn waiting_to_busy() {
-        assert_eq!(StateMachine::transition(AgentState::WaitingForInput, &StateEvent::OutputReceived), Some(AgentState::Busy));
+        assert_eq!(
+            StateMachine::transition(AgentState::WaitingForInput, &StateEvent::OutputReceived),
+            Some(AgentState::Busy)
+        );
     }
     #[test]
     fn invalid_transitions() {
-        assert_eq!(StateMachine::transition(AgentState::Starting, &StateEvent::OutputReceived), None);
-        assert_eq!(StateMachine::transition(AgentState::Crashed, &StateEvent::ReadyPatternDetected), None);
-        assert_eq!(StateMachine::transition(AgentState::Restarting, &StateEvent::OutputReceived), None);
+        assert_eq!(
+            StateMachine::transition(AgentState::Starting, &StateEvent::OutputReceived),
+            None
+        );
+        assert_eq!(
+            StateMachine::transition(AgentState::Crashed, &StateEvent::ReadyPatternDetected),
+            None
+        );
+        assert_eq!(
+            StateMachine::transition(AgentState::Restarting, &StateEvent::OutputReceived),
+            None
+        );
     }
 
     // ── Finding #1: Hysteresis on ESCALATION, immediate RECOVERY ────
@@ -371,7 +481,7 @@ mod tests {
         // Error detected but not yet confirmed
         sm.process_output("fatal error occurred", now);
         assert_eq!(sm.state(), AgentState::Starting); // still pending
-        // After hysteresis period → confirmed
+                                                      // After hysteresis period → confirmed
         let result = sm.tick(now + ERROR_HYSTERESIS);
         assert_eq!(result, Some(AgentState::Errored));
     }
@@ -404,7 +514,10 @@ mod tests {
         let now = Instant::now();
         sm.process_output("Type your question", now);
         assert_eq!(sm.state(), AgentState::Ready);
-        assert!(sm.detect_buf.is_empty(), "buffer should be cleared after transition");
+        assert!(
+            sm.detect_buf.is_empty(),
+            "buffer should be cleared after transition"
+        );
     }
 
     #[test]
@@ -446,15 +559,39 @@ mod tests {
 
     #[test]
     fn error_kind_detection() {
-        assert_eq!(ErrorKind::detect("rate limit exceeded", AgentState::Starting), Some(ErrorKind::RateLimit));
-        assert_eq!(ErrorKind::detect("HTTP 429 too many", AgentState::Starting), Some(ErrorKind::RateLimit));
-        assert_eq!(ErrorKind::detect("unauthorized access", AgentState::Starting), Some(ErrorKind::AuthError));
-        assert_eq!(ErrorKind::detect("invalid api key", AgentState::Starting), Some(ErrorKind::AuthError));
-        assert_eq!(ErrorKind::detect("context too long", AgentState::Starting), Some(ErrorKind::ContextFull));
-        assert_eq!(ErrorKind::detect("fatal crash", AgentState::Starting), Some(ErrorKind::ApiError));
+        assert_eq!(
+            ErrorKind::detect("rate limit exceeded", AgentState::Starting),
+            Some(ErrorKind::RateLimit)
+        );
+        assert_eq!(
+            ErrorKind::detect("HTTP 429 too many", AgentState::Starting),
+            Some(ErrorKind::RateLimit)
+        );
+        assert_eq!(
+            ErrorKind::detect("unauthorized access", AgentState::Starting),
+            Some(ErrorKind::AuthError)
+        );
+        assert_eq!(
+            ErrorKind::detect("invalid api key", AgentState::Starting),
+            Some(ErrorKind::AuthError)
+        );
+        assert_eq!(
+            ErrorKind::detect("context too long", AgentState::Starting),
+            Some(ErrorKind::ContextFull)
+        );
+        assert_eq!(
+            ErrorKind::detect("fatal crash", AgentState::Starting),
+            Some(ErrorKind::ApiError)
+        );
         // Precise patterns in non-Starting states
-        assert_eq!(ErrorKind::detect("error: something", AgentState::Ready), Some(ErrorKind::ApiError));
-        assert_eq!(ErrorKind::detect("some error happened", AgentState::Ready), None); // "error" without colon
+        assert_eq!(
+            ErrorKind::detect("error: something", AgentState::Ready),
+            Some(ErrorKind::ApiError)
+        );
+        assert_eq!(
+            ErrorKind::detect("some error happened", AgentState::Ready),
+            None
+        ); // "error" without colon
         assert_eq!(ErrorKind::detect("all good", AgentState::Starting), None);
     }
 
@@ -508,10 +645,20 @@ mod tests {
 
     #[test]
     fn process_exit_from_any_active_state() {
-        for state in [AgentState::Starting, AgentState::Ready, AgentState::Busy, AgentState::Idle, AgentState::WaitingForInput] {
+        for state in [
+            AgentState::Starting,
+            AgentState::Ready,
+            AgentState::Busy,
+            AgentState::Idle,
+            AgentState::WaitingForInput,
+        ] {
             let mut sm = make_sm();
             sm.state = state;
-            assert_eq!(sm.on_exit(Instant::now()), Some(AgentState::Crashed), "exit from {state:?}");
+            assert_eq!(
+                sm.on_exit(Instant::now()),
+                Some(AgentState::Crashed),
+                "exit from {state:?}"
+            );
         }
     }
 

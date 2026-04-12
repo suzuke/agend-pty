@@ -1,4 +1,3 @@
-
 use std::path::Path;
 
 const INSTRUCTIONS_VERSION: &str = "v1-agend-pty";
@@ -28,12 +27,19 @@ fn instructions_content() -> String {
 /// Generate instructions for the detected backend.
 pub fn generate(working_dir: &Path, command: &str, instance_name: &str) {
     let cmd = command.to_lowercase();
-    let result = if cmd.contains("claude") { generate_claude(working_dir) }
-    else if cmd.contains("kiro") { generate_kiro(working_dir, instance_name) }
-    else if cmd.contains("codex") { generate_codex(working_dir) }
-    else if cmd.contains("gemini") { generate_gemini(working_dir) }
-    else if cmd.contains("opencode") { generate_opencode(working_dir) }
-    else { return; };
+    let result = if cmd.contains("claude") {
+        generate_claude(working_dir)
+    } else if cmd.contains("kiro") {
+        generate_kiro(working_dir, instance_name)
+    } else if cmd.contains("codex") {
+        generate_codex(working_dir)
+    } else if cmd.contains("gemini") {
+        generate_gemini(working_dir)
+    } else if cmd.contains("opencode") {
+        generate_opencode(working_dir)
+    } else {
+        return;
+    };
 
     if let Err(e) = result {
         eprintln!("[instructions] failed to generate: {e}");
@@ -41,31 +47,49 @@ pub fn generate(working_dir: &Path, command: &str, instance_name: &str) {
 }
 
 fn is_current(path: &Path) -> bool {
-    if std::env::var("AGEND_TEST_PASSPHRASE").is_ok() { return false; }
-    path.exists() && std::fs::read_to_string(path)
-        .map(|c| c.contains(INSTRUCTIONS_VERSION))
-        .unwrap_or(false)
+    if std::env::var("AGEND_TEST_PASSPHRASE").is_ok() {
+        return false;
+    }
+    path.exists()
+        && std::fs::read_to_string(path)
+            .map(|c| c.contains(INSTRUCTIONS_VERSION))
+            .unwrap_or(false)
 }
 
 fn write_file(path: &Path, content: &str) -> std::io::Result<()> {
-    if is_current(path) { return Ok(()); }
-    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent)?; }
+    if is_current(path) {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     std::fs::write(path, content)?;
     eprintln!("[instructions] wrote {}", path.display());
     Ok(())
 }
 
 fn write_with_marker(path: &Path, content: &str) -> std::io::Result<()> {
-    if is_current(path) { return Ok(()); }
-    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent)?; }
+    if is_current(path) {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let existing = if path.exists() {
         let text = std::fs::read_to_string(path)?;
         if let Some(start) = text.find(AGEND_MARKER) {
             text[..start].trim_end().to_string()
-        } else { text }
-    } else { String::new() };
-    let new = if existing.is_empty() { content.to_string() }
-    else { format!("{existing}\n\n{content}") };
+        } else {
+            text
+        }
+    } else {
+        String::new()
+    };
+    let new = if existing.is_empty() {
+        content.to_string()
+    } else {
+        format!("{existing}\n\n{content}")
+    };
     std::fs::write(path, new)?;
     eprintln!("[instructions] wrote {}", path.display());
     Ok(())
@@ -73,14 +97,22 @@ fn write_with_marker(path: &Path, content: &str) -> std::io::Result<()> {
 
 /// Claude: .claude/rules/agend.md (auto-read by Claude Code)
 fn generate_claude(wd: &Path) -> std::io::Result<()> {
-    write_file(&wd.join(".claude").join("rules").join("agend.md"), &instructions_content())
+    write_file(
+        &wd.join(".claude").join("rules").join("agend.md"),
+        &instructions_content(),
+    )
 }
 
 /// Kiro: AGENTS.md in working_dir (always included, not affected by --agent flag)
 /// Also writes .kiro/steering/ as backup
 fn generate_kiro(wd: &Path, instance_name: &str) -> std::io::Result<()> {
     write_with_marker(&wd.join("AGENTS.md"), &instructions_content())?;
-    write_file(&wd.join(".kiro").join("steering").join(format!("agend-{instance_name}.md")), &instructions_content())
+    write_file(
+        &wd.join(".kiro")
+            .join("steering")
+            .join(format!("agend-{instance_name}.md")),
+        &instructions_content(),
+    )
 }
 
 /// Codex: AGENTS.md in working_dir + ~/.codex/AGENTS.md (global fallback)
@@ -122,7 +154,8 @@ fn generate_opencode(wd: &Path) -> std::io::Result<()> {
         serde_json::json!({})
     };
 
-    let arr = doc.get("instructions")
+    let arr = doc
+        .get("instructions")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
@@ -130,7 +163,10 @@ fn generate_opencode(wd: &Path) -> std::io::Result<()> {
         let mut new_arr = arr;
         new_arr.push(serde_json::json!(instr_rel));
         doc["instructions"] = serde_json::json!(new_arr);
-        std::fs::write(&config_path, serde_json::to_string_pretty(&doc).unwrap_or_default())?;
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&doc).unwrap_or_default(),
+        )?;
         eprintln!("[instructions] added {} to opencode.json", instr_rel);
     }
     Ok(())

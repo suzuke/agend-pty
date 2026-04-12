@@ -36,7 +36,10 @@ fn read_frame(r: &mut impl Read) -> std::io::Result<Vec<u8>> {
     r.read_exact(&mut len_buf)?;
     let len = u32::from_be_bytes(len_buf) as usize;
     if len > 1_000_000 {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "frame too large"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "frame too large",
+        ));
     }
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
@@ -78,7 +81,9 @@ fn main() {
                 eprintln!("No daemon running. Start one with: agend-daemon");
             } else {
                 eprintln!("Available agents:");
-                for a in agents { eprintln!("  {a}"); }
+                for a in agents {
+                    eprintln!("  {a}");
+                }
             }
             std::process::exit(1);
         }
@@ -118,7 +123,9 @@ fn main() {
     loop {
         if event::poll(std::time::Duration::from_millis(50)).unwrap_or(false) {
             match event::read() {
-                Ok(Event::Key(KeyEvent { code, modifiers, .. })) => {
+                Ok(Event::Key(KeyEvent {
+                    code, modifiers, ..
+                })) => {
                     if ctrl_b_pressed {
                         ctrl_b_pressed = false;
                         if code == KeyCode::Char('d') {
@@ -128,7 +135,9 @@ fn main() {
                         // Not 'd' — send the buffered Ctrl+B (0x02) + this key
                         let mut bytes = vec![0x02];
                         bytes.extend_from_slice(&key_to_bytes(code, modifiers));
-                        if write_data(&mut write_stream, &bytes).is_err() { break; }
+                        if write_data(&mut write_stream, &bytes).is_err() {
+                            break;
+                        }
                         continue;
                     }
                     if code == KeyCode::Char('b') && modifiers.contains(KeyModifiers::CONTROL) {
@@ -136,13 +145,19 @@ fn main() {
                         continue;
                     }
                     let bytes = key_to_bytes(code, modifiers);
-                    if !bytes.is_empty() && write_data(&mut write_stream, &bytes).is_err() { break; }
+                    if !bytes.is_empty() && write_data(&mut write_stream, &bytes).is_err() {
+                        break;
+                    }
                 }
                 Ok(Event::Paste(text)) => {
-                    if write_data(&mut write_stream, text.as_bytes()).is_err() { break; }
+                    if write_data(&mut write_stream, text.as_bytes()).is_err() {
+                        break;
+                    }
                 }
                 Ok(Event::Resize(cols, rows)) => {
-                    if send_resize(&mut write_stream, cols, rows).is_err() { break; }
+                    if send_resize(&mut write_stream, cols, rows).is_err() {
+                        break;
+                    }
                     last_cols = cols;
                     last_rows = rows;
                 }
@@ -167,9 +182,19 @@ fn key_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> Vec<u8> {
     let ctrl = modifiers.contains(KeyModifiers::CONTROL);
     let alt = modifiers.contains(KeyModifiers::ALT);
     match code {
-        KeyCode::Char(c) if ctrl => vec![(c.to_ascii_lowercase() as u8).wrapping_sub(b'a').wrapping_add(1)],
-        KeyCode::Char(c) if alt => { let mut v = vec![0x1b]; let mut b = [0u8;4]; v.extend_from_slice(c.encode_utf8(&mut b).as_bytes()); v }
-        KeyCode::Char(c) => { let mut b = [0u8;4]; c.encode_utf8(&mut b).as_bytes().to_vec() }
+        KeyCode::Char(c) if ctrl => vec![(c.to_ascii_lowercase() as u8)
+            .wrapping_sub(b'a')
+            .wrapping_add(1)],
+        KeyCode::Char(c) if alt => {
+            let mut v = vec![0x1b];
+            let mut b = [0u8; 4];
+            v.extend_from_slice(c.encode_utf8(&mut b).as_bytes());
+            v
+        }
+        KeyCode::Char(c) => {
+            let mut b = [0u8; 4];
+            c.encode_utf8(&mut b).as_bytes().to_vec()
+        }
         KeyCode::Enter => vec![b'\r'],
         KeyCode::Backspace => vec![0x7f],
         KeyCode::Tab => vec![b'\t'],
@@ -185,12 +210,18 @@ fn key_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> Vec<u8> {
         KeyCode::Delete => b"\x1b[3~".to_vec(),
         KeyCode::Insert => b"\x1b[2~".to_vec(),
         KeyCode::F(n) => match n {
-            1 => b"\x1bOP".to_vec(), 2 => b"\x1bOQ".to_vec(),
-            3 => b"\x1bOR".to_vec(), 4 => b"\x1bOS".to_vec(),
-            5 => b"\x1b[15~".to_vec(), 6 => b"\x1b[17~".to_vec(),
-            7 => b"\x1b[18~".to_vec(), 8 => b"\x1b[19~".to_vec(),
-            9 => b"\x1b[20~".to_vec(), 10 => b"\x1b[21~".to_vec(),
-            11 => b"\x1b[23~".to_vec(), 12 => b"\x1b[24~".to_vec(),
+            1 => b"\x1bOP".to_vec(),
+            2 => b"\x1bOQ".to_vec(),
+            3 => b"\x1bOR".to_vec(),
+            4 => b"\x1bOS".to_vec(),
+            5 => b"\x1b[15~".to_vec(),
+            6 => b"\x1b[17~".to_vec(),
+            7 => b"\x1b[18~".to_vec(),
+            8 => b"\x1b[19~".to_vec(),
+            9 => b"\x1b[20~".to_vec(),
+            10 => b"\x1b[21~".to_vec(),
+            11 => b"\x1b[23~".to_vec(),
+            12 => b"\x1b[24~".to_vec(),
             _ => vec![],
         },
         _ => vec![],

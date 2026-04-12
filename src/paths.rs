@@ -1,13 +1,11 @@
-
 use std::path::PathBuf;
 
 /// Base agend home directory.
 pub fn home() -> PathBuf {
-    let h = std::env::var("AGEND_HOME")
-        .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-            format!("{home}/.agend")
-        });
+    let h = std::env::var("AGEND_HOME").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        format!("{home}/.agend")
+    });
     PathBuf::from(h)
 }
 
@@ -35,7 +33,11 @@ pub fn mcp_socket(name: &str) -> PathBuf {
 pub fn find_agent_mcp_socket(name: &str) -> Option<PathBuf> {
     let run = find_active_run_dir()?;
     let sock = run.join("agents").join(name).join("mcp.sock");
-    if sock.exists() { Some(sock) } else { None }
+    if sock.exists() {
+        Some(sock)
+    } else {
+        None
+    }
 }
 
 /// Control socket path.
@@ -62,12 +64,14 @@ pub fn acquire_lock(fleet_config_path: Option<&str>) -> Result<std::fs::File, St
     // Check if same fleet config already has a running daemon
     let fleet_id = fleet_config_path.unwrap_or("(cli)");
     if let Some(info) = find_daemon_for_fleet(fleet_id) {
-        return Err(format!("fleet '{}' already running (pid {})", fleet_id, info.pid));
+        return Err(format!(
+            "fleet '{}' already running (pid {})",
+            fleet_id, info.pid
+        ));
     }
 
     let path = lock_file();
-    let file = std::fs::File::create(&path)
-        .map_err(|e| format!("create lock: {e}"))?;
+    let file = std::fs::File::create(&path).map_err(|e| format!("create lock: {e}"))?;
 
     use std::os::unix::io::AsRawFd;
     let fd = file.as_raw_fd();
@@ -94,7 +98,10 @@ pub fn acquire_lock(fleet_config_path: Option<&str>) -> Result<std::fs::File, St
 }
 
 fn chrono_now() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 /// Info about a running daemon.
@@ -115,15 +122,26 @@ fn read_lock_info(dir: &std::path::Path) -> Option<DaemonInfo> {
     let pid: u32 = lines.next()?.parse().ok()?;
     let fleet_config = lines.next().unwrap_or("(unknown)").to_owned();
     let start_time: u64 = lines.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-    let agent_count = std::fs::read_dir(dir.join("agents")).ok()
-        .map(|e| e.flatten().count()).unwrap_or(0);
-    Some(DaemonInfo { pid, fleet_config, start_time, agent_count, run_dir: dir.to_path_buf() })
+    let agent_count = std::fs::read_dir(dir.join("agents"))
+        .ok()
+        .map(|e| e.flatten().count())
+        .unwrap_or(0);
+    Some(DaemonInfo {
+        pid,
+        fleet_config,
+        start_time,
+        agent_count,
+        run_dir: dir.to_path_buf(),
+    })
 }
 
 /// Check if a daemon's lock is still held (flock-based, immune to PID reuse).
 fn is_lock_held(dir: &std::path::Path) -> bool {
     let lock_path = dir.join("daemon.lock");
-    let file = match std::fs::File::open(&lock_path) { Ok(f) => f, Err(_) => return false };
+    let file = match std::fs::File::open(&lock_path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
     use std::os::unix::io::AsRawFd;
     // Try non-blocking exclusive lock: if it succeeds, the lock was stale
     let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
@@ -139,11 +157,16 @@ fn is_lock_held(dir: &std::path::Path) -> bool {
 /// Clean up stale run directories (flock-based detection).
 pub fn cleanup_stale() {
     let run_base = home().join("run");
-    let entries = match std::fs::read_dir(&run_base) { Ok(e) => e, Err(_) => return };
+    let entries = match std::fs::read_dir(&run_base) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         // Skip our own run dir
-        if path == run_dir() { continue; }
+        if path == run_dir() {
+            continue;
+        }
         if path.join("daemon.lock").exists() && !is_lock_held(&path) {
             let _ = std::fs::remove_dir_all(&path);
         }
@@ -167,18 +190,27 @@ fn find_daemon_for_fleet(fleet_id: &str) -> Option<DaemonInfo> {
 /// List all running daemons.
 pub fn list_daemons() -> Vec<DaemonInfo> {
     let run_base = home().join("run");
-    let entries = match std::fs::read_dir(&run_base) { Ok(e) => e, Err(_) => return vec![] };
-    entries.flatten()
+    let entries = match std::fs::read_dir(&run_base) {
+        Ok(e) => e,
+        Err(_) => return vec![],
+    };
+    entries
+        .flatten()
         .filter_map(|e| {
             let path = e.path();
-            if is_lock_held(&path) { read_lock_info(&path) } else { None }
+            if is_lock_held(&path) {
+                read_lock_info(&path)
+            } else {
+                None
+            }
         })
         .collect()
 }
 
 /// Find a binary in PATH.
 pub fn which(name: &str) -> Option<PathBuf> {
-    std::env::var("PATH").ok()?
+    std::env::var("PATH")
+        .ok()?
         .split(':')
         .map(|dir| PathBuf::from(dir).join(name))
         .find(|p| p.exists())
@@ -186,7 +218,8 @@ pub fn which(name: &str) -> Option<PathBuf> {
 
 /// Find a sibling binary next to the current executable. Falls back to PATH.
 pub fn exe_sibling(name: &str) -> PathBuf {
-    std::env::current_exe().ok()
+    std::env::current_exe()
+        .ok()
         .and_then(|p| p.parent().map(|par| par.join(name)))
         .filter(|p| p.exists())
         .or_else(|| which(name))
@@ -204,13 +237,20 @@ pub fn cleanup() {
 /// Returns the first run dir with a ctrl.sock that exists.
 pub fn find_active_run_dir() -> Option<PathBuf> {
     let run_base = home().join("run");
-    let mut entries: Vec<_> = std::fs::read_dir(&run_base).ok()?
+    let mut entries: Vec<_> = std::fs::read_dir(&run_base)
+        .ok()?
         .flatten()
         .filter(|e| e.path().join("ctrl.sock").exists())
         .collect();
     entries.sort_by(|a, b| {
-        b.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-            .cmp(&a.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH))
+        b.metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+            .cmp(
+                &a.metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+            )
     });
     entries.first().map(|e| e.path())
 }
@@ -219,7 +259,11 @@ pub fn find_active_run_dir() -> Option<PathBuf> {
 pub fn find_agent_tui_socket(name: &str) -> Option<PathBuf> {
     let run = find_active_run_dir()?;
     let sock = run.join("agents").join(name).join("tui.sock");
-    if sock.exists() { Some(sock) } else { None }
+    if sock.exists() {
+        Some(sock)
+    } else {
+        None
+    }
 }
 
 /// List available agent names from the active daemon.

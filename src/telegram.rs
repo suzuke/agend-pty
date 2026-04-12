@@ -1,4 +1,3 @@
-
 use crate::channel::{ChannelAdapter, IncomingMessage};
 use isahc::config::Configurable;
 use isahc::ReadResponseExt;
@@ -31,7 +30,10 @@ impl TelegramAdapter {
         let adapter = Self {
             bot: BotApi::new(&config.bot_token),
             group_id: config.group_id,
-            topics: Mutex::new(TopicMap { by_name: HashMap::new(), by_id: HashMap::new() }),
+            topics: Mutex::new(TopicMap {
+                by_name: HashMap::new(),
+                by_id: HashMap::new(),
+            }),
             offset: Mutex::new(0),
         };
         adapter.load_topics();
@@ -42,7 +44,10 @@ impl TelegramAdapter {
         let mut t = self.topics.lock().unwrap_or_else(|e| e.into_inner());
         t.by_name.insert(agent.to_owned(), thread_id);
         t.by_id.insert(thread_id, agent.to_owned());
-        let _ = std::fs::write(Self::topics_path(), serde_json::to_string_pretty(&t.by_name).unwrap_or_default());
+        let _ = std::fs::write(
+            Self::topics_path(),
+            serde_json::to_string_pretty(&t.by_name).unwrap_or_default(),
+        );
     }
 
     fn topics_path() -> std::path::PathBuf {
@@ -65,14 +70,22 @@ impl TelegramAdapter {
 }
 
 impl ChannelAdapter for TelegramAdapter {
-    fn name(&self) -> &str { "telegram" }
+    fn name(&self) -> &str {
+        "telegram"
+    }
 
     fn on_agent_created(&self, name: &str) {
         let t = self.topics.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(&tid) = t.by_name.get(name) {
             drop(t);
             eprintln!("[telegram] reusing existing topic '{name}' (thread_id: {tid})");
-            self.bot.send_message(self.group_id, &format!("🟢 Agent '{name}' reconnected"), Some(tid)).ok();
+            self.bot
+                .send_message(
+                    self.group_id,
+                    &format!("🟢 Agent '{name}' reconnected"),
+                    Some(tid),
+                )
+                .ok();
             return;
         }
         drop(t);
@@ -80,7 +93,13 @@ impl ChannelAdapter for TelegramAdapter {
             Ok(thread_id) => {
                 self.register_topic(name, thread_id);
                 eprintln!("[telegram] created topic '{name}' (thread_id: {thread_id})");
-                self.bot.send_message(self.group_id, &format!("🟢 Agent '{name}' started"), Some(thread_id)).ok();
+                self.bot
+                    .send_message(
+                        self.group_id,
+                        &format!("🟢 Agent '{name}' started"),
+                        Some(thread_id),
+                    )
+                    .ok();
             }
             Err(e) => eprintln!("[telegram] failed to create topic for '{name}': {e}"),
         }
@@ -91,15 +110,49 @@ impl ChannelAdapter for TelegramAdapter {
         if let Some(tid) = t.by_name.remove(name) {
             t.by_id.remove(&tid);
             drop(t);
-            self.bot.send_message(self.group_id, &format!("🔴 Agent '{name}' stopped"), Some(tid)).ok();
+            self.bot
+                .send_message(
+                    self.group_id,
+                    &format!("🔴 Agent '{name}' stopped"),
+                    Some(tid),
+                )
+                .ok();
         }
     }
 
     fn send_to_agent(&self, agent: &str, text: &str) -> Option<String> {
-        let tid = self.topics.lock().unwrap_or_else(|e| e.into_inner()).by_name.get(agent).copied()?;
-        match self.bot.send_message(self.group_id, text, Some(tid)) {
+        self.send_to_agent_ext(agent, text, "text", None)
+    }
+
+    fn send_to_agent_ext(
+        &self,
+        agent: &str,
+        text: &str,
+        format: &str,
+        reply_to: Option<&str>,
+    ) -> Option<String> {
+        let tid = self
+            .topics
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .by_name
+            .get(agent)
+            .copied()?;
+        let parse_mode = match format {
+            "markdown" => Some("Markdown"),
+            "html" => Some("HTML"),
+            _ => None,
+        };
+        let reply_to_id = reply_to.and_then(|s| s.parse::<i64>().ok());
+        match self
+            .bot
+            .send_message_ext(self.group_id, text, Some(tid), parse_mode, reply_to_id)
+        {
             Ok(val) => val["message_id"].as_i64().map(|id| id.to_string()),
-            Err(e) => { eprintln!("[telegram] send to '{agent}' failed: {e}"); None }
+            Err(e) => {
+                eprintln!("[telegram] send to '{agent}' failed: {e}");
+                None
+            }
         }
     }
 
@@ -126,10 +179,18 @@ impl ChannelAdapter for TelegramAdapter {
             let username = msg["from"]["username"].as_str().unwrap_or("unknown");
             let thread_id = msg["message_thread_id"].as_i64();
 
-            if text.is_empty() || chat_id != self.group_id { continue; }
+            if text.is_empty() || chat_id != self.group_id {
+                continue;
+            }
 
-            let target = thread_id
-                .and_then(|tid| self.topics.lock().unwrap_or_else(|e| e.into_inner()).by_id.get(&tid).cloned());
+            let target = thread_id.and_then(|tid| {
+                self.topics
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .by_id
+                    .get(&tid)
+                    .cloned()
+            });
 
             if let Some(agent) = target {
                 messages.push(IncomingMessage {
@@ -153,13 +214,19 @@ struct BotApi {
 
 impl BotApi {
     fn new(token: &str) -> Self {
-        Self { base_url: format!("https://api.telegram.org/bot{token}") }
+        Self {
+            base_url: format!("https://api.telegram.org/bot{token}"),
+        }
     }
 
     fn call(&self, method: &str, body: &Value) -> Result<Value, String> {
         let url = format!("{}/{method}", self.base_url);
         let is_poll = method == "getUpdates";
-        let timeout = if is_poll { Duration::from_secs(POLL_TIMEOUT + 10) } else { Duration::from_secs(30) };
+        let timeout = if is_poll {
+            Duration::from_secs(POLL_TIMEOUT + 10)
+        } else {
+            Duration::from_secs(30)
+        };
         let max_retries = if is_poll { 1 } else { 3 };
         let mut last_err = String::new();
         for attempt in 0..max_retries {
@@ -174,15 +241,24 @@ impl BotApi {
                 .and_then(|r| isahc::send(r).map_err(|e| format!("send: {e}")));
             let mut resp = match result {
                 Ok(r) => r,
-                Err(e) => { last_err = e; continue; }
+                Err(e) => {
+                    last_err = e;
+                    continue;
+                }
             };
             let text = match resp.text() {
                 Ok(t) => t,
-                Err(e) => { last_err = format!("read: {e}"); continue; }
+                Err(e) => {
+                    last_err = format!("read: {e}");
+                    continue;
+                }
             };
             let parsed: Value = match serde_json::from_str(&text) {
                 Ok(v) => v,
-                Err(e) => { last_err = format!("parse: {e}"); continue; }
+                Err(e) => {
+                    last_err = format!("parse: {e}");
+                    continue;
+                }
             };
             if parsed["ok"].as_bool() == Some(true) {
                 return Ok(parsed["result"].clone());
@@ -200,22 +276,53 @@ impl BotApi {
         Err(last_err)
     }
 
-    fn send_message(&self, chat_id: i64, text: &str, thread_id: Option<i64>) -> Result<Value, String> {
+    fn send_message(
+        &self,
+        chat_id: i64,
+        text: &str,
+        thread_id: Option<i64>,
+    ) -> Result<Value, String> {
+        self.send_message_ext(chat_id, text, thread_id, None, None)
+    }
+
+    fn send_message_ext(
+        &self,
+        chat_id: i64,
+        text: &str,
+        thread_id: Option<i64>,
+        parse_mode: Option<&str>,
+        reply_to: Option<i64>,
+    ) -> Result<Value, String> {
         let mut body = json!({"chat_id": chat_id, "text": text});
-        if let Some(tid) = thread_id { body["message_thread_id"] = json!(tid); }
+        if let Some(tid) = thread_id {
+            body["message_thread_id"] = json!(tid);
+        }
+        if let Some(pm) = parse_mode {
+            body["parse_mode"] = json!(pm);
+        }
+        if let Some(rt) = reply_to {
+            body["reply_to_message_id"] = json!(rt);
+        }
         self.call("sendMessage", &body)
     }
 
     fn create_forum_topic(&self, chat_id: i64, name: &str) -> Result<i64, String> {
-        let result = self.call("createForumTopic", &json!({"chat_id": chat_id, "name": name}))?;
-        result["message_thread_id"].as_i64()
+        let result = self.call(
+            "createForumTopic",
+            &json!({"chat_id": chat_id, "name": name}),
+        )?;
+        result["message_thread_id"]
+            .as_i64()
             .ok_or_else(|| "no message_thread_id in response".into())
     }
 
     fn get_updates(&self, offset: i64) -> Result<Vec<Value>, String> {
-        let result = self.call("getUpdates", &json!({
-            "offset": offset, "timeout": POLL_TIMEOUT, "allowed_updates": ["message"]
-        }))?;
+        let result = self.call(
+            "getUpdates",
+            &json!({
+                "offset": offset, "timeout": POLL_TIMEOUT, "allowed_updates": ["message"]
+            }),
+        )?;
         Ok(result.as_array().cloned().unwrap_or_default())
     }
 }

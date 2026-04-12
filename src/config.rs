@@ -25,11 +25,18 @@ pub struct Defaults {
     pub backend: String,
     pub model: Option<String>,
     pub working_directory: Option<PathBuf>,
+    #[serde(default = "default_true")]
+    pub worktree: bool,
 }
 
 impl Default for Defaults {
     fn default() -> Self {
-        Self { backend: default_backend(), model: None, working_directory: None }
+        Self {
+            backend: default_backend(),
+            model: None,
+            working_directory: None,
+            worktree: true,
+        }
     }
 }
 
@@ -43,29 +50,39 @@ pub struct InstanceConfig {
     pub skip_permissions: bool,
     #[serde(default)]
     pub depends_on: Vec<String>,
-    #[serde(default)]
-    pub git_worktree: bool,
-    pub git_branch: Option<String>,
+    pub worktree: Option<bool>,
+    pub branch: Option<String>,
 }
 
-fn default_backend() -> String { "claude".into() }
+fn default_backend() -> String {
+    "claude".into()
+}
+fn default_true() -> bool {
+    true
+}
 
 impl InstanceConfig {
     pub fn backend_or<'a>(&'a self, defaults: &'a Defaults) -> &'a str {
         self.backend.as_deref().unwrap_or(&defaults.backend)
     }
 
-    /// Get working directory, auto-generating ~/.agend/workspaces/{name}/ if not set.
+    pub fn worktree_enabled(&self, defaults: &Defaults) -> bool {
+        self.worktree.unwrap_or(defaults.worktree)
+    }
+
     pub fn effective_working_dir(&self, defaults: &Defaults, name: &str) -> PathBuf {
-        self.working_directory.clone()
+        self.working_directory
+            .clone()
             .or_else(|| defaults.working_directory.clone())
             .unwrap_or_else(|| {
                 let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-                PathBuf::from(home).join(".agend").join("workspaces").join(name)
+                PathBuf::from(home)
+                    .join(".agend")
+                    .join("workspaces")
+                    .join(name)
             })
     }
 
-    /// Build the full command string for this instance.
     pub fn build_command(&self, defaults: &Defaults) -> String {
         if let Some(cmd) = &self.command {
             return cmd.clone();
@@ -85,20 +102,17 @@ impl InstanceConfig {
 
 impl FleetConfig {
     pub fn load(path: &Path) -> Result<Self, String> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("read {}: {e}", path.display()))?;
-        serde_yaml::from_str(&content)
-            .map_err(|e| format!("parse {}: {e}", path.display()))
+        let content =
+            std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        serde_yaml::from_str(&content).map_err(|e| format!("parse {}: {e}", path.display()))
     }
 
-    /// Find fleet.yaml in current dir or ~/.agend/
     pub fn find_and_load() -> Result<Self, String> {
-        let candidates = [
+        for p in &[
             PathBuf::from("fleet.yaml"),
             PathBuf::from("fleet.yml"),
             dirs(),
-        ];
-        for p in &candidates {
+        ] {
             if p.exists() {
                 return Self::load(p);
             }
@@ -106,13 +120,11 @@ impl FleetConfig {
         Err("fleet.yaml not found (checked ./fleet.yaml, ~/.agend/fleet.yaml)".into())
     }
 
-    /// Get Telegram config (bot_token, group_id) if channel is configured.
     pub fn telegram_config(&self) -> Option<(String, i64)> {
         let ch = self.channel.as_ref()?;
         let token_env = ch.bot_token_env.as_deref().unwrap_or("TELEGRAM_BOT_TOKEN");
         let token = std::env::var(token_env).ok()?;
-        let group_id = ch.group_id?;
-        Some((token, group_id))
+        Some((token, ch.group_id?))
     }
 }
 

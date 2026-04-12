@@ -1,4 +1,3 @@
-
 use crate::{config, paths};
 
 pub fn run() {
@@ -9,9 +8,14 @@ pub fn run() {
     // 1. Home directory
     let home = paths::home();
     if home.exists() {
-        println!("✅ {} exists", home.display()); ok += 1;
+        println!("✅ {} exists", home.display());
+        ok += 1;
     } else {
-        println!("❌ {} not found (run agend-daemon to create)", home.display()); fail += 1;
+        println!(
+            "❌ {} not found (run agend-daemon to create)",
+            home.display()
+        );
+        fail += 1;
     }
 
     // 2. fleet.yaml
@@ -25,9 +29,11 @@ pub fn run() {
                 let backend = ic.backend_or(&cfg.defaults);
                 let bin = backend.split_whitespace().next().unwrap_or(backend);
                 if which(bin) {
-                    println!("✅ {name}: {bin} found"); ok += 1;
+                    println!("✅ {name}: {bin} found");
+                    ok += 1;
                 } else {
-                    println!("❌ {name}: {bin} not found in PATH"); fail += 1;
+                    println!("❌ {name}: {bin} not found in PATH");
+                    fail += 1;
                 }
             }
 
@@ -35,32 +41,39 @@ pub fn run() {
             if let Some(ch) = &cfg.channel {
                 let token_env = ch.bot_token_env.as_deref().unwrap_or("TELEGRAM_BOT_TOKEN");
                 if std::env::var(token_env).is_ok() {
-                    println!("✅ Telegram: {token_env} set"); ok += 1;
+                    println!("✅ Telegram: {token_env} set");
+                    ok += 1;
                 } else {
-                    println!("⚠️  Telegram: {token_env} not set"); warn += 1;
+                    println!("⚠️  Telegram: {token_env} not set");
+                    warn += 1;
                 }
             }
         }
         Err(e) => {
-            println!("❌ fleet.yaml: {e}"); fail += 1;
+            println!("❌ fleet.yaml: {e}");
+            fail += 1;
         }
     }
 
     // 5. Bridge binary
-    let daemon_dir = std::env::current_exe().ok()
+    let daemon_dir = std::env::current_exe()
+        .ok()
         .and_then(|p| p.parent().map(|par| par.to_path_buf()))
         .unwrap_or_default();
     let bridge = daemon_dir.join("agend-mcp-bridge");
     if bridge.exists() {
-        println!("✅ agend-mcp-bridge found at {}", bridge.display()); ok += 1;
+        println!("✅ agend-mcp-bridge found at {}", bridge.display());
+        ok += 1;
     } else {
-        println!("❌ agend-mcp-bridge not found (should be next to agend-daemon)"); fail += 1;
+        println!("❌ agend-mcp-bridge not found (should be next to agend-daemon)");
+        fail += 1;
     }
 
     // 6. Active daemon
     if let Some(run) = paths::find_active_run_dir() {
         let pid = run.file_name().and_then(|f| f.to_str()).unwrap_or("?");
-        println!("✅ daemon running (pid {pid})"); ok += 1;
+        println!("✅ daemon running (pid {pid})");
+        ok += 1;
 
         // Check agent sockets
         let agents_dir = run.join("agents");
@@ -70,28 +83,43 @@ pub fn run() {
                 let tui = entry.path().join("tui.sock").exists();
                 let mcp = entry.path().join("mcp.sock").exists();
                 let status = match (tui, mcp) {
-                    (true, true) => { ok += 1; "✅" }
-                    (true, false) => { warn += 1; "⚠️ " }
-                    _ => { fail += 1; "❌" }
+                    (true, true) => {
+                        ok += 1;
+                        "✅"
+                    }
+                    (true, false) => {
+                        warn += 1;
+                        "⚠️ "
+                    }
+                    _ => {
+                        fail += 1;
+                        "❌"
+                    }
                 };
-                println!("{status} {name}: tui.sock {} mcp.sock {}",
+                println!(
+                    "{status} {name}: tui.sock {} mcp.sock {}",
                     if tui { "✓" } else { "✗" },
-                    if mcp { "✓" } else { "✗" });
+                    if mcp { "✓" } else { "✗" }
+                );
             }
         }
     } else {
-        println!("⚠️  no daemon running"); warn += 1;
+        println!("⚠️  no daemon running");
+        warn += 1;
     }
 
     // 7. API key env vars
     for var in ["ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY"] {
         if std::env::var(var).is_ok() {
-            println!("✅ {var} set"); ok += 1;
+            println!("✅ {var} set");
+            ok += 1;
         }
     }
 
     println!("\n{ok} ok, {warn} warnings, {fail} errors");
-    if fail > 0 { std::process::exit(1); }
+    if fail > 0 {
+        std::process::exit(1);
+    }
 }
 
 fn which(name: &str) -> bool {

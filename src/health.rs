@@ -38,28 +38,50 @@ pub struct HealthMonitor {
 }
 
 impl Default for HealthMonitor {
-    fn default() -> Self { Self { status: HealthStatus::Healthy, crash_times: Vec::new(), last_restart: None, busy_since: None } }
+    fn default() -> Self {
+        Self {
+            status: HealthStatus::Healthy,
+            crash_times: Vec::new(),
+            last_restart: None,
+            busy_since: None,
+        }
+    }
 }
 
 impl HealthMonitor {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
-    pub fn status(&self) -> HealthStatus { self.status }
+    pub fn status(&self) -> HealthStatus {
+        self.status
+    }
 
     /// Backoff from sliding window crash count (Finding #5).
     /// Uses crashes_in_window instead of total restart_count.
     pub fn backoff_duration(&self, now: Instant) -> Duration {
         let window_crashes = self.crashes_in_window(now);
-        if window_crashes <= 1 { return INITIAL_BACKOFF; }
+        if window_crashes <= 1 {
+            return INITIAL_BACKOFF;
+        }
         let secs = INITIAL_BACKOFF.as_secs() * (1u64 << (window_crashes - 1).min(6));
         Duration::from_secs(secs.min(MAX_BACKOFF.as_secs()))
     }
 
     /// Called when agent state changes.
-    pub fn on_state_change(&mut self, state: AgentState, consecutive_errors: u32, error_kind: Option<ErrorKind>, now: Instant) -> HealthAction {
+    pub fn on_state_change(
+        &mut self,
+        state: AgentState,
+        consecutive_errors: u32,
+        error_kind: Option<ErrorKind>,
+        now: Instant,
+    ) -> HealthAction {
         match state {
             AgentState::Crashed => self.on_crash(now),
-            AgentState::Busy => { self.busy_since = Some(now); HealthAction::None }
+            AgentState::Busy => {
+                self.busy_since = Some(now);
+                HealthAction::None
+            }
             AgentState::Ready | AgentState::Idle => {
                 self.busy_since = None;
                 if self.status == HealthStatus::Degraded {
@@ -86,7 +108,9 @@ impl HealthMonitor {
 
     /// Periodic check.
     pub fn tick(&mut self, current_state: AgentState, now: Instant) -> HealthAction {
-        if self.status == HealthStatus::Failed { return HealthAction::None; }
+        if self.status == HealthStatus::Failed {
+            return HealthAction::None;
+        }
 
         // Hang detection
         if current_state == AgentState::Busy {
@@ -128,7 +152,10 @@ impl HealthMonitor {
     }
 
     fn crashes_in_window(&self, now: Instant) -> u32 {
-        self.crash_times.iter().filter(|t| now.duration_since(**t) < CRASH_WINDOW).count() as u32
+        self.crash_times
+            .iter()
+            .filter(|t| now.duration_since(**t) < CRASH_WINDOW)
+            .count() as u32
     }
 
     fn on_crash(&mut self, now: Instant) -> HealthAction {
@@ -171,7 +198,10 @@ mod tests {
         assert_eq!(hm.backoff_duration(now), Duration::from_secs(5));
         // 2 crashes → 10s
         hm.crash_times.push(now + Duration::from_secs(1));
-        assert_eq!(hm.backoff_duration(now + Duration::from_secs(1)), Duration::from_secs(10));
+        assert_eq!(
+            hm.backoff_duration(now + Duration::from_secs(1)),
+            Duration::from_secs(10)
+        );
     }
 
     #[test]
@@ -190,7 +220,9 @@ mod tests {
         let mut hm = HealthMonitor::new();
         let now = Instant::now();
         // Simulate many crashes (won't happen in practice due to MAX_CRASHES_IN_WINDOW)
-        for i in 0..10 { hm.crash_times.push(now + Duration::from_secs(i)); }
+        for i in 0..10 {
+            hm.crash_times.push(now + Duration::from_secs(i));
+        }
         assert!(hm.backoff_duration(now + Duration::from_secs(10)) <= MAX_BACKOFF);
     }
 
@@ -210,7 +242,8 @@ mod tests {
         let now = Instant::now();
         hm.on_state_change(AgentState::Crashed, 0, None, now);
         hm.on_state_change(AgentState::Crashed, 0, None, now + Duration::from_secs(60));
-        let action = hm.on_state_change(AgentState::Crashed, 0, None, now + Duration::from_secs(120));
+        let action =
+            hm.on_state_change(AgentState::Crashed, 0, None, now + Duration::from_secs(120));
         assert_eq!(action, HealthAction::MarkFailed);
     }
 
@@ -221,7 +254,8 @@ mod tests {
         hm.on_state_change(AgentState::Crashed, 0, None, now);
         hm.on_state_change(AgentState::Crashed, 0, None, now + Duration::from_secs(60));
         // Third crash after window → only 1 in window
-        let action = hm.on_state_change(AgentState::Crashed, 0, None, now + Duration::from_secs(700));
+        let action =
+            hm.on_state_change(AgentState::Crashed, 0, None, now + Duration::from_secs(700));
         assert_eq!(action, HealthAction::Restart);
     }
 
@@ -234,7 +268,10 @@ mod tests {
         hm.on_state_change(AgentState::Crashed, 0, None, now);
         assert_eq!(hm.status(), HealthStatus::Degraded);
         // After window expires, tick should restore healthy
-        hm.tick(AgentState::Starting, now + CRASH_WINDOW + Duration::from_secs(1));
+        hm.tick(
+            AgentState::Starting,
+            now + CRASH_WINDOW + Duration::from_secs(1),
+        );
         assert_eq!(hm.status(), HealthStatus::Healthy);
     }
 
@@ -243,7 +280,12 @@ mod tests {
     #[test]
     fn auth_error_marks_failed() {
         let mut hm = HealthMonitor::new();
-        let action = hm.on_state_change(AgentState::Errored, 1, Some(ErrorKind::AuthError), Instant::now());
+        let action = hm.on_state_change(
+            AgentState::Errored,
+            1,
+            Some(ErrorKind::AuthError),
+            Instant::now(),
+        );
         assert_eq!(action, HealthAction::MarkFailed);
         assert_eq!(hm.status(), HealthStatus::Failed);
     }
@@ -251,14 +293,24 @@ mod tests {
     #[test]
     fn rate_limit_does_not_mark_failed() {
         let mut hm = HealthMonitor::new();
-        let action = hm.on_state_change(AgentState::Errored, 1, Some(ErrorKind::RateLimit), Instant::now());
+        let action = hm.on_state_change(
+            AgentState::Errored,
+            1,
+            Some(ErrorKind::RateLimit),
+            Instant::now(),
+        );
         assert_eq!(action, HealthAction::None);
     }
 
     #[test]
     fn consecutive_errors_without_permanent_marks_failed() {
         let mut hm = HealthMonitor::new();
-        let action = hm.on_state_change(AgentState::Errored, 3, Some(ErrorKind::ApiError), Instant::now());
+        let action = hm.on_state_change(
+            AgentState::Errored,
+            3,
+            Some(ErrorKind::ApiError),
+            Instant::now(),
+        );
         assert_eq!(action, HealthAction::MarkFailed);
     }
 
@@ -269,8 +321,14 @@ mod tests {
         let mut hm = HealthMonitor::new();
         let now = Instant::now();
         hm.on_state_change(AgentState::Busy, 0, None, now);
-        assert_eq!(hm.tick(AgentState::Busy, now + Duration::from_secs(600)), HealthAction::None);
-        assert_eq!(hm.tick(AgentState::Busy, now + HANG_TIMEOUT), HealthAction::KillAndRestart);
+        assert_eq!(
+            hm.tick(AgentState::Busy, now + Duration::from_secs(600)),
+            HealthAction::None
+        );
+        assert_eq!(
+            hm.tick(AgentState::Busy, now + HANG_TIMEOUT),
+            HealthAction::KillAndRestart
+        );
     }
 
     #[test]
@@ -279,7 +337,10 @@ mod tests {
         let now = Instant::now();
         hm.on_state_change(AgentState::Busy, 0, None, now);
         hm.on_state_change(AgentState::Ready, 0, None, now + Duration::from_secs(60));
-        assert_eq!(hm.tick(AgentState::Ready, now + HANG_TIMEOUT), HealthAction::None);
+        assert_eq!(
+            hm.tick(AgentState::Ready, now + HANG_TIMEOUT),
+            HealthAction::None
+        );
     }
 
     // ── Recovery ────────────────────────────────────────────────────
@@ -297,7 +358,10 @@ mod tests {
     fn failed_no_tick_actions() {
         let mut hm = HealthMonitor::new();
         hm.status = HealthStatus::Failed;
-        assert_eq!(hm.tick(AgentState::Crashed, Instant::now()), HealthAction::None);
+        assert_eq!(
+            hm.tick(AgentState::Crashed, Instant::now()),
+            HealthAction::None
+        );
     }
 
     #[test]
@@ -306,7 +370,13 @@ mod tests {
         let now = Instant::now();
         hm.on_state_change(AgentState::Crashed, 0, None, now);
         hm.on_restart(now);
-        assert_eq!(hm.tick(AgentState::Crashed, now + Duration::from_secs(3)), HealthAction::None);
-        assert_eq!(hm.tick(AgentState::Crashed, now + Duration::from_secs(6)), HealthAction::Restart);
+        assert_eq!(
+            hm.tick(AgentState::Crashed, now + Duration::from_secs(3)),
+            HealthAction::None
+        );
+        assert_eq!(
+            hm.tick(AgentState::Crashed, now + Duration::from_secs(6)),
+            HealthAction::Restart
+        );
     }
 }

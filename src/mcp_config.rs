@@ -1,10 +1,15 @@
-
 use serde_json::{json, Value};
 use std::path::Path;
 
 /// Write MCP config for the detected backend.
 /// `bridge_args`: the args to pass to agend-mcp-bridge (e.g. ["--socket", "/path/to/mcp.sock"])
-pub fn write_mcp_config(working_dir: &Path, command: &str, name: &str, bridge_path: &str, bridge_args: &[&str]) {
+pub fn write_mcp_config(
+    working_dir: &Path,
+    command: &str,
+    name: &str,
+    bridge_path: &str,
+    bridge_args: &[&str],
+) {
     let key = format!("agend-{name}");
     let entry = json!({ "command": bridge_path, "args": bridge_args });
     let cmd = command.to_lowercase();
@@ -15,12 +20,16 @@ pub fn write_mcp_config(working_dir: &Path, command: &str, name: &str, bridge_pa
     } else if cmd.contains("gemini") {
         merge_json_key(
             &working_dir.join(".gemini").join("settings.json"),
-            "mcpServers", &key, &entry,
+            "mcpServers",
+            &key,
+            &entry,
         )
     } else if cmd.contains("kiro") {
         merge_json_key(
             &working_dir.join(".kiro").join("settings").join("mcp.json"),
-            "mcpServers", &key, &entry,
+            "mcpServers",
+            &key,
+            &entry,
         )
     } else if cmd.contains("opencode") {
         let mut cmd_array = vec![bridge_path.to_owned()];
@@ -29,10 +38,7 @@ pub fn write_mcp_config(working_dir: &Path, command: &str, name: &str, bridge_pa
             "type": "local",
             "command": cmd_array,
         });
-        merge_json_key(
-            &working_dir.join("opencode.json"),
-            "mcp", &key, &oc_entry,
-        )
+        merge_json_key(&working_dir.join("opencode.json"), "mcp", &key, &oc_entry)
     } else if cmd.contains("codex") {
         write_codex_mcp(name, bridge_path, bridge_args)
     } else {
@@ -53,12 +59,15 @@ fn merge_json_key(path: &Path, section: &str, key: &str, value: &Value) -> Resul
     }
 
     let mut doc = if path.exists() {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        let content =
+            std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
         match serde_json::from_str::<Value>(&content) {
             Ok(v) => v,
             Err(e) => {
-                return Err(format!("{} has syntax error: {e}. Fix manually or delete to regenerate.", path.display()));
+                return Err(format!(
+                    "{} has syntax error: {e}. Fix manually or delete to regenerate.",
+                    path.display()
+                ));
             }
         }
     } else {
@@ -90,7 +99,9 @@ fn write_codex_mcp(name: &str, bridge_path: &str, bridge_args: &[&str]) -> Resul
     // Add
     let mut args = vec!["mcp", "add", &key, "--"];
     args.push(bridge_path);
-    for a in bridge_args { args.push(a); }
+    for a in bridge_args {
+        args.push(a);
+    }
 
     let output = std::process::Command::new(codex)
         .args(&args)

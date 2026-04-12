@@ -1,38 +1,38 @@
 #![allow(dead_code, unused_imports)]
 //! agend-daemon: multi-agent PTY manager.
 
-#[path = "config.rs"]
-mod config;
-#[path = "vterm.rs"]
-mod vterm;
-#[path = "backend.rs"]
-mod backend;
-#[path = "instructions.rs"]
-mod instructions;
-#[path = "paths.rs"]
-mod paths;
 #[path = "api.rs"]
 mod api;
-#[path = "telegram.rs"]
-mod telegram;
-#[path = "inbox.rs"]
-mod inbox;
-#[path = "doctor.rs"]
-mod doctor;
-#[path = "mcp_config.rs"]
-mod mcp_config;
+#[path = "backend.rs"]
+mod backend;
 #[path = "channel.rs"]
 mod channel;
-#[path = "state.rs"]
-mod state;
-#[path = "health.rs"]
-mod health;
+#[path = "config.rs"]
+mod config;
+#[path = "doctor.rs"]
+mod doctor;
 #[path = "features.rs"]
 mod features;
 #[path = "fleet_store.rs"]
 mod fleet_store;
 #[path = "git.rs"]
 mod git;
+#[path = "health.rs"]
+mod health;
+#[path = "inbox.rs"]
+mod inbox;
+#[path = "instructions.rs"]
+mod instructions;
+#[path = "mcp_config.rs"]
+mod mcp_config;
+#[path = "paths.rs"]
+mod paths;
+#[path = "state.rs"]
+mod state;
+#[path = "telegram.rs"]
+mod telegram;
+#[path = "vterm.rs"]
+mod vterm;
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
@@ -63,14 +63,15 @@ fn read_tagged_frame(r: &mut impl Read) -> std::io::Result<(u8, Vec<u8>)> {
     r.read_exact(&mut len_buf)?;
     let len = u32::from_be_bytes(len_buf) as usize;
     if len > MAX_FRAME_SIZE {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "frame too large"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "frame too large",
+        ));
     }
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
     Ok((tag[0], buf))
 }
-
-
 
 type PtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
@@ -105,7 +106,11 @@ struct AgentHandle {
 }
 
 type AgentRegistry = Arc<Mutex<HashMap<String, AgentHandle>>>;
-type AgentTickInfo = (String, Arc<Mutex<state::StateMachine>>, Arc<Mutex<health::HealthMonitor>>);
+type AgentTickInfo = (
+    String,
+    Arc<Mutex<state::StateMachine>>,
+    Arc<Mutex<health::HealthMonitor>>,
+);
 
 /// Spawn config for respawning crashed agents.
 /// Holds persistent health/state monitors that survive respawn.
@@ -114,8 +119,8 @@ struct SpawnConfig {
     name: String,
     command: String,
     working_dir: Option<std::path::PathBuf>,
-    git_worktree: bool,
-    git_branch: Option<String>,
+    worktree: bool,
+    branch_name: Option<String>,
     state_machine: Arc<Mutex<state::StateMachine>>,
     health: Arc<Mutex<health::HealthMonitor>>,
 }
@@ -137,13 +142,28 @@ fn handle_health_action(
     match action {
         health::HealthAction::Restart => {
             eprintln!("[health] {name}: scheduling respawn");
-            do_respawn(name, registry, agent_writers, agent_states, spawn_configs, inbox_store, channel_mgr);
+            do_respawn(
+                name,
+                registry,
+                agent_writers,
+                agent_states,
+                spawn_configs,
+                inbox_store,
+                channel_mgr,
+            );
         }
         health::HealthAction::KillAndRestart => {
             eprintln!("[health] {name}: hang detected — killing and respawning");
             // Send Ctrl+C + EOF to kill the process
-            if let Some(pw) = agent_writers.lock().unwrap_or_else(|e| e.into_inner()).get(name) {
-                let _ = pw.lock().unwrap_or_else(|e| e.into_inner()).write_all(b"\x03\x04");
+            if let Some(pw) = agent_writers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(name)
+            {
+                let _ = pw
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .write_all(b"\x03\x04");
             }
             // Respawn will happen on next tick after process exits
         }
@@ -163,13 +183,23 @@ fn do_respawn(
     inbox_store: &Arc<inbox::InboxStore>,
     channel_mgr: &Arc<Mutex<channel::ChannelManager>>,
 ) {
-    let cfg = match spawn_configs.lock().unwrap_or_else(|e| e.into_inner()).get(name).cloned() {
+    let cfg = match spawn_configs
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(name)
+        .cloned()
+    {
         Some(c) => c,
-        None => { eprintln!("[health] {name}: no spawn config for respawn"); return; }
+        None => {
+            eprintln!("[health] {name}: no spawn config for respawn");
+            return;
+        }
     };
 
     let now = std::time::Instant::now();
-    if let Ok(mut h) = cfg.health.lock() { h.on_restart(now); }
+    if let Ok(mut h) = cfg.health.lock() {
+        h.on_restart(now);
+    }
     if let Ok(mut s) = cfg.state_machine.lock() {
         s.on_restart(now);
         s.on_restart_complete(now);
@@ -185,17 +215,34 @@ fn do_respawn(
         .name(format!("respawn_{}", name))
         .spawn(move || {
             eprintln!("[health] {}: respawning", cfg.name);
-            spawn_agent(cfg.name, cfg.command, cfg.working_dir, cfg.git_worktree, cfg.git_branch, reg, aw, as_, ib, cm, sc);
+            spawn_agent(
+                cfg.name,
+                cfg.command,
+                cfg.working_dir,
+                cfg.worktree,
+                cfg.branch_name,
+                reg,
+                aw,
+                as_,
+                ib,
+                cm,
+                sc,
+            );
         })
         .ok();
 }
 
-fn socket_path(name: &str) -> std::path::PathBuf { paths::tui_socket(name) }
+fn socket_path(name: &str) -> std::path::PathBuf {
+    paths::tui_socket(name)
+}
 
 /// Unified PTY write — appends submit_key and writes atomically.
 fn inject_to_pty(writer: &PtyWriter, text: &str, submit_key: &str) {
     let msg = format!("{text}{submit_key}");
-    let _ = writer.lock().unwrap_or_else(|e| e.into_inner()).write_all(msg.as_bytes());
+    let _ = writer
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .write_all(msg.as_bytes());
 }
 
 fn setup_mcp_config(name: &str) -> (std::path::PathBuf, String) {
@@ -217,63 +264,115 @@ fn setup_mcp_config(name: &str) -> (std::path::PathBuf, String) {
 
 fn setup_prompt(name: &str, registry: &AgentRegistry) -> (std::path::PathBuf, String) {
     let prompt_path = paths::agent_dir(name).join("prompt.md");
-    let others: Vec<String> = registry.lock().unwrap_or_else(|e| e.into_inner()).keys()
-        .filter(|k| k.as_str() != name).cloned().collect();
-    std::fs::write(&prompt_path, format!(
-        "You are '{}', part of an AI agent fleet. Other agents: {}.\n\
+    let others: Vec<String> = registry
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .keys()
+        .filter(|k| k.as_str() != name)
+        .cloned()
+        .collect();
+    std::fs::write(
+        &prompt_path,
+        format!(
+            "You are '{}', part of an AI agent fleet. Other agents: {}.\n\
          Use `send_to_instance`/`list_instances` MCP tools. Respond directly to [message from X].",
-        name, if others.is_empty() { "(none yet)".into() } else { others.join(", ") }
-    )).ok();
+            name,
+            if others.is_empty() {
+                "(none yet)".into()
+            } else {
+                others.join(", ")
+            }
+        ),
+    )
+    .ok();
     let path_str = prompt_path.display().to_string();
     (prompt_path, path_str)
 }
 
-
-fn inject_mcp_for_backend(command: &str, _name: &str, mcp_config_path: &str, prompt_path: &str) -> String {
+fn inject_mcp_for_backend(
+    command: &str,
+    _name: &str,
+    mcp_config_path: &str,
+    prompt_path: &str,
+) -> String {
     match command.split_whitespace().next().unwrap_or(command) {
-        "claude" => format!("{command} --mcp-config {mcp_config_path} --append-system-prompt-file {prompt_path}"),
+        "claude" => format!(
+            "{command} --mcp-config {mcp_config_path} --append-system-prompt-file {prompt_path}"
+        ),
         "kiro-cli" => command.to_owned(),
         _ => command.to_owned(),
     }
 }
 
-
 #[allow(clippy::too_many_arguments)]
-fn spawn_agent(name: String, command: String, working_dir: Option<std::path::PathBuf>, git_worktree: bool, git_branch: Option<String>, registry: AgentRegistry, agent_writers: api::AgentWriters, agent_states: api::AgentStateMap, inbox_store: Arc<inbox::InboxStore>, channel_mgr: Arc<Mutex<channel::ChannelManager>>, spawn_configs: SpawnConfigs) {
+fn spawn_agent(
+    name: String,
+    command: String,
+    working_dir: Option<std::path::PathBuf>,
+    worktree: bool,
+    branch_name: Option<String>,
+    registry: AgentRegistry,
+    agent_writers: api::AgentWriters,
+    agent_states: api::AgentStateMap,
+    inbox_store: Arc<inbox::InboxStore>,
+    channel_mgr: Arc<Mutex<channel::ChannelManager>>,
+    spawn_configs: SpawnConfigs,
+) {
     let sock = socket_path(&name);
     let _ = std::fs::remove_file(&sock);
 
     let (cols, rows) = crossterm::terminal::size().unwrap_or((DEFAULT_COLS, DEFAULT_ROWS));
 
     let pty_system = native_pty_system();
-    let pair = match pty_system.openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }) {
+    let pair = match pty_system.openpty(PtySize {
+        rows,
+        cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    }) {
         Ok(p) => p,
-        Err(e) => { eprintln!("[{name}] failed to open pty: {e}"); return; }
+        Err(e) => {
+            eprintln!("[{name}] failed to open pty: {e}");
+            return;
+        }
     };
 
     let (_, mcp_config_path_str) = setup_mcp_config(&name);
     let (_, prompt_path_str) = setup_prompt(&name, &registry);
 
-    let final_command = inject_mcp_for_backend(&command, &name, &mcp_config_path_str, &prompt_path_str);
+    let final_command =
+        inject_mcp_for_backend(&command, &name, &mcp_config_path_str, &prompt_path_str);
     let final_command = if command.starts_with("gemini") && !final_command.contains("--resume") {
         format!("{final_command} --resume latest")
-    } else { final_command };
+    } else {
+        final_command
+    };
 
     let parts: Vec<&str> = final_command.split_whitespace().collect();
     let mut cmd = CommandBuilder::new(parts[0]);
-    if parts.len() > 1 { cmd.args(&parts[1..]); }
+    if parts.len() > 1 {
+        cmd.args(&parts[1..]);
+    }
     cmd.env("TERM", "xterm-256color");
 
     let effective_wd = if let Some(ref wd) = working_dir {
         std::fs::create_dir_all(wd).ok();
         // Git worktree: redirect to isolated worktree directory
-        let actual_wd = if git_worktree && git::is_git_repo(wd) {
-            let custom_branch = git_branch.as_deref();
+        let actual_wd = if worktree && git::is_git_repo(wd) {
+            let custom_branch = branch_name.as_deref();
             match git::create_worktree(wd, &name, custom_branch) {
-                Ok(wt) => { eprintln!("[{name}] git worktree: {}", wt.display()); wt }
-                Err(e) => { eprintln!("[{name}] git worktree failed: {e}, using original dir"); wd.clone() }
+                Ok(wt) => {
+                    eprintln!("[{name}] git worktree: {}", wt.display());
+                    wt
+                }
+                Err(e) => {
+                    eprintln!("[{name}] git worktree failed: {e}, using original dir");
+                    wd.clone()
+                }
             }
-        } else { wd.clone() };
+        } else {
+            wd.clone()
+        };
         cmd.cwd(&actual_wd);
         actual_wd
     } else {
@@ -285,19 +384,29 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
 
     let _child = match pair.slave.spawn_command(cmd) {
         Ok(c) => c,
-        Err(e) => { eprintln!("[{name}] failed to spawn '{command}': {e}"); return; }
+        Err(e) => {
+            eprintln!("[{name}] failed to spawn '{command}': {e}");
+            return;
+        }
     };
     drop(pair.slave);
 
     let pty_writer: PtyWriter = Arc::new(Mutex::new(match pair.master.take_writer() {
         Ok(w) => w,
-        Err(e) => { eprintln!("[{name}] take_writer failed: {e}"); return; }
+        Err(e) => {
+            eprintln!("[{name}] take_writer failed: {e}");
+            return;
+        }
     }));
     let mut pty_reader = match pair.master.try_clone_reader() {
         Ok(r) => r,
-        Err(e) => { eprintln!("[{name}] clone_reader failed: {e}"); return; }
+        Err(e) => {
+            eprintln!("[{name}] clone_reader failed: {e}");
+            return;
+        }
     };
-    let pty_master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>> = Arc::new(Mutex::new(pair.master));
+    let pty_master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>> =
+        Arc::new(Mutex::new(pair.master));
 
     let core = Arc::new(Mutex::new(AgentCore {
         vterm: vterm::VTerm::new(cols, rows),
@@ -305,41 +414,75 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     }));
 
     let preset = backend::Backend::from_command(&command).map(|b| b.preset());
-    let submit_key = preset.as_ref().map(|p| p.submit_key.to_owned()).unwrap_or_else(|| "\r".to_owned());
-    let inject_prefix = preset.as_ref().map(|p| p.inject_prefix.to_owned()).unwrap_or_default();
+    let submit_key = preset
+        .as_ref()
+        .map(|p| p.submit_key.to_owned())
+        .unwrap_or_else(|| "\r".to_owned());
+    let inject_prefix = preset
+        .as_ref()
+        .map(|p| p.inject_prefix.to_owned())
+        .unwrap_or_default();
     let typed_inject = preset.as_ref().map(|p| p.typed_inject).unwrap_or(false);
 
     let ready_pattern = preset.as_ref().map(|p| p.ready_pattern).unwrap_or(">");
     let (state_machine, health_monitor) = {
         let configs = spawn_configs.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(existing) = configs.get(&name) {
-            (Arc::clone(&existing.state_machine), Arc::clone(&existing.health))
+            (
+                Arc::clone(&existing.state_machine),
+                Arc::clone(&existing.health),
+            )
         } else {
             let state_patterns = state::StatePatterns::from_backend(ready_pattern);
-            (Arc::new(Mutex::new(state::StateMachine::new(state_patterns))),
-             Arc::new(Mutex::new(health::HealthMonitor::new())))
+            (
+                Arc::new(Mutex::new(state::StateMachine::new(state_patterns))),
+                Arc::new(Mutex::new(health::HealthMonitor::new())),
+            )
         }
     };
 
-    spawn_configs.lock().unwrap_or_else(|e| e.into_inner()).insert(name.clone(), SpawnConfig {
-        name: name.clone(), command: command.clone(), working_dir: working_dir.clone(),
-        git_worktree, git_branch: git_branch.clone(),
-        state_machine: Arc::clone(&state_machine), health: Arc::clone(&health_monitor),
-    });
+    spawn_configs
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(
+            name.clone(),
+            SpawnConfig {
+                name: name.clone(),
+                command: command.clone(),
+                working_dir: working_dir.clone(),
+                worktree,
+                branch_name: branch_name.clone(),
+                state_machine: Arc::clone(&state_machine),
+                health: Arc::clone(&health_monitor),
+            },
+        );
 
-    registry.lock().unwrap_or_else(|e| e.into_inner()).insert(name.clone(), AgentHandle {
-        pty_writer: Arc::clone(&pty_writer),
-        core: Arc::clone(&core),
-        submit_key,
-        inject_prefix,
-        typed_inject,
-        state_machine: Arc::clone(&state_machine),
-        health: Arc::clone(&health_monitor),
-    });
-    agent_writers.lock().unwrap_or_else(|e| e.into_inner())
+    registry.lock().unwrap_or_else(|e| e.into_inner()).insert(
+        name.clone(),
+        AgentHandle {
+            pty_writer: Arc::clone(&pty_writer),
+            core: Arc::clone(&core),
+            submit_key,
+            inject_prefix,
+            typed_inject,
+            state_machine: Arc::clone(&state_machine),
+            health: Arc::clone(&health_monitor),
+        },
+    );
+    agent_writers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(name.clone(), Arc::clone(&pty_writer));
-    agent_states.lock().unwrap_or_else(|e| e.into_inner())
-        .insert(name.clone(), api::AgentStateHandle { state_machine: Arc::clone(&state_machine), working_dir: working_dir.clone() });
+    agent_states
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(
+            name.clone(),
+            api::AgentStateHandle {
+                state_machine: Arc::clone(&state_machine),
+                working_dir: working_dir.clone(),
+            },
+        );
 
     // PTY read thread — feeds VTerm + broadcasts + reaps on exit
     let core2 = Arc::clone(&core);
@@ -369,21 +512,50 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
                             if let Some(new_state) = s.on_exit(now) {
                                 eprintln!("[{n}] state: {:?}", new_state);
                                 if let Ok(mut h) = hm.lock() {
-                                    let a = h.on_state_change(new_state, s.consecutive_errors(), s.last_error_kind(), now);
+                                    let a = h.on_state_change(
+                                        new_state,
+                                        s.consecutive_errors(),
+                                        s.last_error_kind(),
+                                        now,
+                                    );
                                     eprintln!("[{n}] health action: {:?}", a);
                                     a
-                                } else { health::HealthAction::None }
-                            } else { health::HealthAction::None }
-                        } else { health::HealthAction::None };
+                                } else {
+                                    health::HealthAction::None
+                                }
+                            } else {
+                                health::HealthAction::None
+                            }
+                        } else {
+                            health::HealthAction::None
+                        };
 
                         // 2. Cleanup first — remove from registry, writers, notify channels
-                        reg_reaper.lock().unwrap_or_else(|e| e.into_inner()).remove(&n);
-                        aw_reaper.lock().unwrap_or_else(|e| e.into_inner()).remove(&n);
-                        cm_reaper.lock().unwrap_or_else(|e| e.into_inner()).on_agent_removed(&n);
+                        reg_reaper
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .remove(&n);
+                        aw_reaper
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .remove(&n);
+                        cm_reaper
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .on_agent_removed(&n);
                         let _ = std::fs::remove_dir_all(paths::agent_dir(&n));
 
                         // 3. Now safe to respawn (cleanup complete, no race)
-                        handle_health_action(&action, &n, &reg_reaper, &aw_reaper, &as_reaper, &sc_reaper, &ib_reaper, &cm_reaper);
+                        handle_health_action(
+                            &action,
+                            &n,
+                            &reg_reaper,
+                            &aw_reaper,
+                            &as_reaper,
+                            &sc_reaper,
+                            &ib_reaper,
+                            &cm_reaper,
+                        );
                         break;
                     }
                     Ok(n_bytes) => {
@@ -392,11 +564,17 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
                         // Auto-dismiss trust dialog
                         if !dialog_dismissed {
                             detect_buf.extend_from_slice(data);
-                            if detect_buf.len() > PTY_BUF_SIZE { let d = detect_buf.len() - PTY_BUF_SIZE; detect_buf.drain(..d); }
+                            if detect_buf.len() > PTY_BUF_SIZE {
+                                let d = detect_buf.len() - PTY_BUF_SIZE;
+                                detect_buf.drain(..d);
+                            }
                             let clean = state::strip_ansi(&String::from_utf8_lossy(&detect_buf));
                             if clean.contains("Yes, I trust") || clean.contains("Yes, proceed") {
                                 eprintln!("[{n}] auto-dismissing trust dialog");
-                                let _ = pw.lock().unwrap_or_else(|e| e.into_inner()).write_all(b"\x1b[A\x1b[A\r");
+                                let _ = pw
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .write_all(b"\x1b[A\x1b[A\r");
                                 dialog_dismissed = true;
                                 detect_buf.clear();
                             }
@@ -406,13 +584,29 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
                         {
                             let clean = state::strip_ansi(&String::from_utf8_lossy(data));
                             if let Ok(mut s) = sm.lock() {
-                                if let Some(new_state) = s.process_output(&clean, std::time::Instant::now()) {
+                                if let Some(new_state) =
+                                    s.process_output(&clean, std::time::Instant::now())
+                                {
                                     eprintln!("[{n}] state: {:?}", new_state);
                                     if let Ok(mut h) = hm.lock() {
-                                        let action = h.on_state_change(new_state, s.consecutive_errors(), s.last_error_kind(), std::time::Instant::now());
+                                        let action = h.on_state_change(
+                                            new_state,
+                                            s.consecutive_errors(),
+                                            s.last_error_kind(),
+                                            std::time::Instant::now(),
+                                        );
                                         if action != health::HealthAction::None {
                                             eprintln!("[{n}] health action: {:?}", action);
-                                            handle_health_action(&action, &n, &reg_reaper, &aw_reaper, &as_reaper, &sc_reaper, &ib_reaper, &cm_reaper);
+                                            handle_health_action(
+                                                &action,
+                                                &n,
+                                                &reg_reaper,
+                                                &aw_reaper,
+                                                &as_reaper,
+                                                &sc_reaper,
+                                                &ib_reaper,
+                                                &cm_reaper,
+                                            );
                                         }
                                     }
                                 }
@@ -435,15 +629,24 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
     // TUI socket server (blocks this thread)
     let listener = match UnixListener::bind(&sock) {
         Ok(l) => l,
-        Err(e) => { eprintln!("[{name}] failed to bind {}: {e}", sock.display()); return; }
+        Err(e) => {
+            eprintln!("[{name}] failed to bind {}: {e}", sock.display());
+            return;
+        }
     };
     eprintln!("[{name}] TUI socket on {} (cmd: {command})", sock.display());
 
-    channel_mgr.lock().unwrap_or_else(|e| e.into_inner()).on_agent_created(&name);
+    channel_mgr
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .on_agent_created(&name);
 
     let reg3 = Arc::clone(&registry);
     for stream in listener.incoming() {
-        let mut stream = match stream { Ok(s) => s, Err(_) => continue };
+        let mut stream = match stream {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
         eprintln!("[{name}] TUI client connected");
 
         // Atomic subscribe + screen dump (under core lock — no output gap)
@@ -458,21 +661,28 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
             // Subscribe BEFORE releasing lock — no output lost
             let rx = core.subscribe();
             // Send screen dump to client
-            if write_frame(&mut stream, &dump).is_err() { continue; }
+            if write_frame(&mut stream, &dump).is_err() {
+                continue;
+            }
             rx
         };
 
         // Output thread: forward broadcast to this client
         let mut write_stream = match stream.try_clone() {
             Ok(s) => s,
-            Err(e) => { eprintln!("[{name}] TUI clone failed: {e}"); continue; }
+            Err(e) => {
+                eprintln!("[{name}] TUI clone failed: {e}");
+                continue;
+            }
         };
         let n4 = name.clone();
         std::thread::Builder::new()
             .name(format!("{n4}_tui_out"))
             .spawn(move || {
                 while let Ok(data) = rx.recv() {
-                    if write_frame(&mut write_stream, &data).is_err() { break; }
+                    if write_frame(&mut write_stream, &data).is_err() {
+                        break;
+                    }
                 }
                 eprintln!("[{n4}] TUI output thread ended");
             })
@@ -491,14 +701,32 @@ fn spawn_agent(name: String, command: String, working_dir: Option<std::path::Pat
                 loop {
                     match read_tagged_frame(&mut reader) {
                         Ok((TAG_DATA, data)) => {
-                            if pty_w.lock().unwrap_or_else(|e| e.into_inner()).write_all(&data).is_err() { break; }
+                            if pty_w
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .write_all(&data)
+                                .is_err()
+                            {
+                                break;
+                            }
                         }
                         Ok((TAG_RESIZE, data)) if data.len() == 4 => {
                             let cols = u16::from_be_bytes([data[0], data[1]]);
                             let rows = u16::from_be_bytes([data[2], data[3]]);
                             eprintln!("[{n5}] resize: {cols}x{rows}");
-                            let _ = pty_m.lock().unwrap_or_else(|e| e.into_inner()).resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
-                            if let Ok(mut c) = core3.lock() { c.vterm.resize(cols, rows); }
+                            let _ =
+                                pty_m
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .resize(PtySize {
+                                        rows,
+                                        cols,
+                                        pixel_width: 0,
+                                        pixel_height: 0,
+                                    });
+                            if let Ok(mut c) = core3.lock() {
+                                c.vterm.resize(cols, rows);
+                            }
                         }
                         _ => break,
                     }
@@ -525,7 +753,11 @@ fn main() {
                 continue;
             }
         }
-        if args[i] == "--dry-run" { dry_run = true; i += 1; continue; }
+        if args[i] == "--dry-run" {
+            dry_run = true;
+            i += 1;
+            continue;
+        }
         filtered_args.push(args[i].clone());
         i += 1;
     }
@@ -533,9 +765,15 @@ fn main() {
 
     if dry_run {
         let cfg = if let Some(ref p) = config_path {
-            config::FleetConfig::load(p).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(1); })
+            config::FleetConfig::load(p).unwrap_or_else(|e| {
+                eprintln!("{e}");
+                std::process::exit(1);
+            })
         } else {
-            config::FleetConfig::find_and_load().unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(1); })
+            config::FleetConfig::find_and_load().unwrap_or_else(|e| {
+                eprintln!("{e}");
+                std::process::exit(1);
+            })
         };
         features::dry_run(&cfg);
         return;
@@ -546,7 +784,10 @@ fn main() {
         if let Some(run) = paths::find_active_run_dir() {
             let ctrl = run.join("ctrl.sock");
             match UnixStream::connect(&ctrl) {
-                Ok(mut s) => { let _ = s.write_all(b"shutdown"); eprintln!("[daemon] shutdown signal sent"); }
+                Ok(mut s) => {
+                    let _ = s.write_all(b"shutdown");
+                    eprintln!("[daemon] shutdown signal sent");
+                }
                 Err(e) => eprintln!("[daemon] cannot connect to {}: {e}", ctrl.display()),
             }
         } else {
@@ -563,10 +804,15 @@ fn main() {
     let fleet_id = config_path.as_ref().map(|p| p.display().to_string());
     let _lock_file = match paths::acquire_lock(fleet_id.as_deref()) {
         Ok(f) => f,
-        Err(e) => { eprintln!("[daemon] {e}"); std::process::exit(1); }
+        Err(e) => {
+            eprintln!("[daemon] {e}");
+            std::process::exit(1);
+        }
     };
     eprintln!("[daemon] lock acquired");
-    if !git::has_git() { eprintln!("[daemon] ⚠️  git not found — git_worktree features disabled"); }
+    if !git::has_git() {
+        eprintln!("[daemon] ⚠️  git not found — worktree disabled. Install: brew install git");
+    }
 
     // Parse agents from CLI args or fleet.yaml
     let load_config = || -> Result<config::FleetConfig, String> {
@@ -578,17 +824,37 @@ fn main() {
     };
 
     #[allow(clippy::type_complexity)]
-    let agents: Vec<(String, String, Option<std::path::PathBuf>, bool, Option<String>)> = if !args.is_empty() {
-        args.iter().map(|a| {
-            if let Some((name, cmd)) = a.split_once(':') { (name.to_owned(), cmd.to_owned(), None, false, None) }
-            else { (a.to_owned(), a.to_owned(), None, false, None) }
-        }).collect()
+    let agents: Vec<(
+        String,
+        String,
+        Option<std::path::PathBuf>,
+        bool,
+        Option<String>,
+    )> = if !args.is_empty() {
+        args.iter()
+            .map(|a| {
+                if let Some((name, cmd)) = a.split_once(':') {
+                    (name.to_owned(), cmd.to_owned(), None, false, None)
+                } else {
+                    (a.to_owned(), a.to_owned(), None, false, None)
+                }
+            })
+            .collect()
     } else if let Ok(cfg) = load_config() {
-        cfg.instances.iter().map(|(name, ic)| {
-            let cmd = ic.build_command(&cfg.defaults);
-            let wd = Some(ic.effective_working_dir(&cfg.defaults, name));
-            (name.clone(), cmd, wd, ic.git_worktree, ic.git_branch.clone())
-        }).collect()
+        cfg.instances
+            .iter()
+            .map(|(name, ic)| {
+                let cmd = ic.build_command(&cfg.defaults);
+                let wd = Some(ic.effective_working_dir(&cfg.defaults, name));
+                (
+                    name.clone(),
+                    cmd,
+                    wd,
+                    ic.worktree_enabled(&cfg.defaults),
+                    ic.branch.clone(),
+                )
+            })
+            .collect()
     } else {
         vec![("shell".into(), "bash".into(), None, false, None)]
     };
@@ -602,7 +868,13 @@ fn main() {
     {
         let mut seen: HashMap<String, Vec<String>> = HashMap::new();
         for (name, _, wd, _, _) in &agents {
-            seen.entry(wd.as_ref().map(|p| p.display().to_string()).unwrap_or_default()).or_default().push(name.clone());
+            seen.entry(
+                wd.as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+            )
+            .or_default()
+            .push(name.clone());
         }
         for (dir, names) in &seen {
             if names.len() > 1 && !dir.is_empty() {
@@ -615,14 +887,24 @@ fn main() {
     eprintln!("[daemon] starting {} agent(s)", agents.len());
 
     for (name, command, wd, _, _) in &agents {
-        eprintln!("[daemon]   {name}: {command}{}", wd.as_ref().map(|p| format!(" (cwd: {})", p.display())).unwrap_or_default());
+        eprintln!(
+            "[daemon]   {name}: {command}{}",
+            wd.as_ref()
+                .map(|p| format!(" (cwd: {})", p.display()))
+                .unwrap_or_default()
+        );
     }
 
     // Setup channel adapters BEFORE spawning agents (so on_agent_created works)
     if let Ok(cfg) = load_config() {
         if let Some((token, group_id)) = cfg.telegram_config() {
-            let adapter = telegram::TelegramAdapter::new(telegram::TelegramConfig { bot_token: token, group_id });
-            channel_mgr.lock().unwrap_or_else(|e| e.into_inner())
+            let adapter = telegram::TelegramAdapter::new(telegram::TelegramConfig {
+                bot_token: token,
+                group_id,
+            });
+            channel_mgr
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
                 .add_adapter(Box::new(adapter));
         }
     }
@@ -637,14 +919,21 @@ fn main() {
         vec![agents.iter().map(|(n, _, _, _, _)| n.clone()).collect()]
     };
 
-    let agent_map: HashMap<String, (String, Option<std::path::PathBuf>, bool, Option<String>)> = agents.into_iter()
-        .map(|(n, c, w, gw, gb)| (n, (c, w, gw, gb))).collect();
+    let agent_map: HashMap<String, (String, Option<std::path::PathBuf>, bool, Option<String>)> =
+        agents
+            .into_iter()
+            .map(|(n, c, w, gw, gb)| (n, (c, w, gw, gb)))
+            .collect();
 
     for (layer_idx, layer) in dep_layers.iter().enumerate() {
         if layer_idx > 0 {
-            eprintln!("[daemon] waiting for layer {} agents to be ready...", layer_idx - 1);
+            eprintln!(
+                "[daemon] waiting for layer {} agents to be ready...",
+                layer_idx - 1
+            );
             // Wait up to 60s for previous layer agents to reach Ready
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(DEPENDENCY_READY_TIMEOUT_SECS);
+            let deadline = std::time::Instant::now()
+                + std::time::Duration::from_secs(DEPENDENCY_READY_TIMEOUT_SECS);
             'wait: loop {
                 if std::time::Instant::now() > deadline {
                     eprintln!("[daemon] ⚠️  timeout waiting for dependencies, proceeding");
@@ -652,12 +941,22 @@ fn main() {
                 }
                 let reg = registry.lock().unwrap_or_else(|e| e.into_inner());
                 let all_ready = dep_layers[layer_idx - 1].iter().all(|name| {
-                    reg.get(name).and_then(|h| h.state_machine.lock().ok())
-                        .map(|s| matches!(s.state(), state::AgentState::Ready | state::AgentState::Busy | state::AgentState::Idle))
+                    reg.get(name)
+                        .and_then(|h| h.state_machine.lock().ok())
+                        .map(|s| {
+                            matches!(
+                                s.state(),
+                                state::AgentState::Ready
+                                    | state::AgentState::Busy
+                                    | state::AgentState::Idle
+                            )
+                        })
                         .unwrap_or(false)
                 });
                 drop(reg);
-                if all_ready { break 'wait; }
+                if all_ready {
+                    break 'wait;
+                }
                 std::thread::sleep(std::time::Duration::from_secs(2));
             }
         }
@@ -691,6 +990,7 @@ fn main() {
     api::start(Arc::new(api::DaemonCtx {
         writers: Arc::clone(&agent_writers),
         states: Arc::clone(&agent_states),
+        registry: Arc::new(Mutex::new(HashMap::new())),
         inbox: Arc::clone(&inbox_store),
         channel_mgr: Arc::clone(&channel_mgr),
     }));
@@ -707,14 +1007,23 @@ fn main() {
                     let msgs = cm.lock().unwrap_or_else(|e| e.into_inner()).poll_all();
                     for msg in msgs {
                         // Get submit_key from registry for this agent
-                        let submit_key = reg_poll.lock().unwrap_or_else(|e| e.into_inner())
-                            .get(&msg.agent_target).map(|h| h.submit_key.clone()).unwrap_or_else(|| "\r".into());
+                        let submit_key = reg_poll
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .get(&msg.agent_target)
+                            .map(|h| h.submit_key.clone())
+                            .unwrap_or_else(|| "\r".into());
                         let w = aw.lock().unwrap_or_else(|e| e.into_inner());
                         if let Some(pw) = w.get(&msg.agent_target) {
-                            let formatted = format!("[user:{} via telegram] {}", msg.sender, msg.text);
+                            let formatted =
+                                format!("[user:{} via telegram] {}", msg.sender, msg.text);
                             inject_to_pty(pw, &formatted, &submit_key);
-                            eprintln!("[channel] {} → {}: {}", msg.sender, msg.agent_target,
-                                msg.text.chars().take(60).collect::<String>());
+                            eprintln!(
+                                "[channel] {} → {}: {}",
+                                msg.sender,
+                                msg.agent_target,
+                                msg.text.chars().take(60).collect::<String>()
+                            );
                         }
                     }
                     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -741,9 +1050,15 @@ fn main() {
                     // Snapshot agent names + their Arc handles to avoid holding registry lock
                     let agents: Vec<AgentTickInfo> = {
                         let reg = reg.lock().unwrap_or_else(|e| e.into_inner());
-                        reg.iter().map(|(name, handle)| {
-                            (name.clone(), Arc::clone(&handle.state_machine), Arc::clone(&handle.health))
-                        }).collect()
+                        reg.iter()
+                            .map(|(name, handle)| {
+                                (
+                                    name.clone(),
+                                    Arc::clone(&handle.state_machine),
+                                    Arc::clone(&handle.health),
+                                )
+                            })
+                            .collect()
                     };
 
                     for (name, sm, hm) in &agents {
@@ -752,10 +1067,17 @@ fn main() {
                             if let Some(new_state) = s.tick(now) {
                                 eprintln!("[tick] {name} state: {:?}", new_state);
                                 if let Ok(mut h) = hm.lock() {
-                                    let action = h.on_state_change(new_state, s.consecutive_errors(), s.last_error_kind(), now);
+                                    let action = h.on_state_change(
+                                        new_state,
+                                        s.consecutive_errors(),
+                                        s.last_error_kind(),
+                                        now,
+                                    );
                                     if action != health::HealthAction::None {
                                         eprintln!("[tick] {name} health action: {:?}", action);
-                                        handle_health_action(&action, name, &reg, &aw, &as2, &sc, &ib, &cm);
+                                        handle_health_action(
+                                            &action, name, &reg, &aw, &as2, &sc, &ib, &cm,
+                                        );
                                     }
                                 }
                             }
@@ -783,7 +1105,8 @@ fn main() {
         if let Ok(mut s) = UnixStream::connect(&ctrl_sock2) {
             let _ = s.write_all(b"shutdown");
         }
-    }).ok();
+    })
+    .ok();
 
     // Control socket for shutdown
     let _ = std::fs::remove_file(&ctrl_sock);

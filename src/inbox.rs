@@ -41,7 +41,13 @@ impl InboxStore {
         std::sync::Arc::new(Self)
     }
 
-    pub fn store_or_inject(&self, agent: &str, sender: &str, message: &str, submit_key: &str) -> InjectAction {
+    pub fn store_or_inject(
+        &self,
+        agent: &str,
+        sender: &str,
+        message: &str,
+        submit_key: &str,
+    ) -> InjectAction {
         if message.len() <= MAX_DIRECT_INJECT_LEN {
             return InjectAction::Direct(format!(
                 "[message from {sender} (reply via send_to_instance to \"{sender}\")] {message}{submit_key}"
@@ -56,7 +62,11 @@ impl InboxStore {
         };
         // Append to JSONL file
         let path = inbox_path(agent);
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
             if let Ok(line) = serde_json::to_string(&msg) {
                 let _ = writeln!(f, "{line}");
             }
@@ -91,8 +101,11 @@ impl InboxStore {
             return vec![];
         }
         let msgs = match std::fs::File::open(&tmp) {
-            Ok(f) => std::io::BufReader::new(f).lines().map_while(Result::ok)
-                .filter_map(|line| serde_json::from_str(&line).ok()).collect(),
+            Ok(f) => std::io::BufReader::new(f)
+                .lines()
+                .map_while(Result::ok)
+                .filter_map(|line| serde_json::from_str(&line).ok())
+                .collect(),
             Err(_) => vec![],
         };
         let _ = std::fs::remove_file(&tmp);

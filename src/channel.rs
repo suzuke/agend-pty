@@ -23,8 +23,21 @@ pub trait ChannelAdapter: Send + Sync {
     fn on_agent_removed(&self, name: &str);
     /// Send a message to a specific agent's topic/thread. Returns message ID if available.
     fn send_to_agent(&self, agent: &str, text: &str) -> Option<String>;
-    fn react(&self, _agent: &str, _message_id: &str, _emoji: &str) -> Result<(), String> { Ok(()) }
-    fn edit_message(&self, _agent: &str, _message_id: &str, _text: &str) -> Result<(), String> { Ok(()) }
+    fn send_to_agent_ext(
+        &self,
+        agent: &str,
+        text: &str,
+        _format: &str,
+        _reply_to: Option<&str>,
+    ) -> Option<String> {
+        self.send_to_agent(agent, text)
+    }
+    fn react(&self, _agent: &str, _message_id: &str, _emoji: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn edit_message(&self, _agent: &str, _message_id: &str, _text: &str) -> Result<(), String> {
+        Ok(())
+    }
     /// Send a notification to the general/default topic.
     fn notify(&self, text: &str);
     /// Poll for incoming messages (blocking, with timeout).
@@ -40,7 +53,9 @@ pub struct ChannelManager {
 
 impl ChannelManager {
     pub fn new() -> Arc<Mutex<Self>> {
-        Arc::new(Mutex::new(Self { adapters: Vec::new() }))
+        Arc::new(Mutex::new(Self {
+            adapters: Vec::new(),
+        }))
     }
 
     pub fn add_adapter(&mut self, adapter: Box<dyn ChannelAdapter>) {
@@ -48,34 +63,62 @@ impl ChannelManager {
         self.adapters.push(adapter);
     }
 
-    pub fn has_adapters(&self) -> bool { !self.adapters.is_empty() }
+    pub fn has_adapters(&self) -> bool {
+        !self.adapters.is_empty()
+    }
 
     pub fn on_agent_created(&self, name: &str) {
-        for adapter in &self.adapters { adapter.on_agent_created(name); }
+        for adapter in &self.adapters {
+            adapter.on_agent_created(name);
+        }
     }
 
     pub fn on_agent_removed(&self, name: &str) {
-        for adapter in &self.adapters { adapter.on_agent_removed(name); }
+        for adapter in &self.adapters {
+            adapter.on_agent_removed(name);
+        }
     }
 
     pub fn send_to_agent(&self, agent: &str, text: &str) -> Option<String> {
+        self.send_to_agent_ext(agent, text, "text", None)
+    }
+
+    pub fn send_to_agent_ext(
+        &self,
+        agent: &str,
+        text: &str,
+        format: &str,
+        reply_to: Option<&str>,
+    ) -> Option<String> {
         let mut last_id = None;
-        for adapter in &self.adapters { last_id = adapter.send_to_agent(agent, text).or(last_id); }
+        for adapter in &self.adapters {
+            last_id = adapter
+                .send_to_agent_ext(agent, text, format, reply_to)
+                .or(last_id);
+        }
         last_id
     }
 
     pub fn notify(&self, text: &str) {
-        for adapter in &self.adapters { adapter.notify(text); }
+        for adapter in &self.adapters {
+            adapter.notify(text);
+        }
     }
 
     pub fn poll_all(&self) -> Vec<IncomingMessage> {
         self.adapters.iter().flat_map(|a| a.poll()).collect()
     }
     pub fn react(&self, agent: &str, message_id: &str, emoji: &str) -> Result<(), String> {
-        for a in &self.adapters { a.react(agent, message_id, emoji)?; } Ok(())
+        for a in &self.adapters {
+            a.react(agent, message_id, emoji)?;
+        }
+        Ok(())
     }
     pub fn edit_message(&self, agent: &str, message_id: &str, text: &str) -> Result<(), String> {
-        for a in &self.adapters { a.edit_message(agent, message_id, text)?; } Ok(())
+        for a in &self.adapters {
+            a.edit_message(agent, message_id, text)?;
+        }
+        Ok(())
     }
 }
 
@@ -83,10 +126,16 @@ impl ChannelManager {
 pub struct NullAdapter;
 
 impl ChannelAdapter for NullAdapter {
-    fn name(&self) -> &str { "null" }
+    fn name(&self) -> &str {
+        "null"
+    }
     fn on_agent_created(&self, _name: &str) {}
     fn on_agent_removed(&self, _name: &str) {}
-    fn send_to_agent(&self, _agent: &str, _text: &str) -> Option<String> { None }
+    fn send_to_agent(&self, _agent: &str, _text: &str) -> Option<String> {
+        None
+    }
     fn notify(&self, _text: &str) {}
-    fn poll(&self) -> Vec<IncomingMessage> { vec![] }
+    fn poll(&self) -> Vec<IncomingMessage> {
+        vec![]
+    }
 }
