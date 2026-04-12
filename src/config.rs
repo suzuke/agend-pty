@@ -104,9 +104,7 @@ impl InstanceConfig {
         self.working_directory
             .clone()
             .or_else(|| defaults.working_directory.clone())
-            .unwrap_or_else(|| {
-                crate::paths::home().join("workspaces").join(name)
-            })
+            .unwrap_or_else(|| crate::paths::home().join("workspaces").join(name))
     }
 
     pub fn build_command(&self, defaults: &Defaults) -> String {

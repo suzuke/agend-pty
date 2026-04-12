@@ -88,6 +88,7 @@ fn main() {
                 }
             } else {
                 eprintln!("No running daemon found. Start with: agend-pty daemon");
+                std::process::exit(1);
             }
         }
         "list" | "ls" => {
@@ -147,6 +148,7 @@ fn main() {
                 }
             } else {
                 eprintln!("No running daemon found. Start with: agend-pty daemon");
+                std::process::exit(1);
             }
         }
         "logs" | "log" => {

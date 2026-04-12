@@ -21,6 +21,7 @@ pub struct BackendPreset {
     pub dismiss_patterns: &'static [(&'static str, &'static [u8])],
     pub quit_command: &'static str,
     pub mcp_inject_flag: &'static str,
+    pub resume_flag: &'static str,
     pub ready_timeout_secs: u64,
 }
 
@@ -43,6 +44,7 @@ impl Backend {
                 ],
                 quit_command: "/exit",
                 mcp_inject_flag: "--mcp-config",
+                resume_flag: "--continue",
                 ready_timeout_secs: 30,
             },
             Backend::KiroCli => BackendPreset {
@@ -55,6 +57,7 @@ impl Backend {
                 dismiss_patterns: &[],
                 quit_command: "/quit",
                 mcp_inject_flag: "",
+                resume_flag: "--resume",
                 ready_timeout_secs: 30,
             },
             Backend::Codex => BackendPreset {
@@ -73,6 +76,7 @@ impl Backend {
                 ],
                 quit_command: "/quit",
                 mcp_inject_flag: "",
+                resume_flag: "resume --last",
                 ready_timeout_secs: 30,
             },
             Backend::OpenCode => BackendPreset {
@@ -85,6 +89,7 @@ impl Backend {
                 dismiss_patterns: &[],
                 quit_command: "exit",
                 mcp_inject_flag: "",
+                resume_flag: "--continue",
                 ready_timeout_secs: 30,
             },
             Backend::Gemini => BackendPreset {
@@ -101,6 +106,7 @@ impl Backend {
                 ],
                 quit_command: "/quit",
                 mcp_inject_flag: "",
+                resume_flag: "--resume latest",
                 ready_timeout_secs: 30,
             },
         }

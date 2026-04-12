@@ -6,17 +6,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::Duration;
 
-fn wait_for_path(path: &Path, timeout_ms: u64) -> bool {
-    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
-    while std::time::Instant::now() < deadline {
-        if path.exists() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    false
-}
-
 fn find_api_socket(run_base: &Path) -> Option<PathBuf> {
     for e in std::fs::read_dir(run_base).ok()?.flatten() {
         let sock = e.path().join("api.sock");

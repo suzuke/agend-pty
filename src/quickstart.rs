@@ -87,10 +87,7 @@ fn looks_like_bot_token(s: &str) -> bool {
 
 /// Scan .env files for a bot-token-shaped value. Returns the token if found.
 fn find_env_token() -> Option<(PathBuf, String)> {
-    let candidates = [
-        crate::paths::home().join(".env"),
-        PathBuf::from(".env"),
-    ];
+    let candidates = [crate::paths::home().join(".env"), PathBuf::from(".env")];
     for path in &candidates {
         if let Ok(content) = std::fs::read_to_string(path) {
             for line in content.lines() {

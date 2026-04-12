@@ -79,7 +79,15 @@ instances:
             "channel:\n  bot_token_env: MY_TOKEN\n  group_id: -100123\ninstances:\n  test: {}\n";
         let cfg: config::FleetConfig = serde_yml::from_str(yaml).unwrap();
         assert!(cfg.channel.is_some());
-        assert_eq!(cfg.channel.as_ref().unwrap().extra.get("group_id").and_then(|v| v.as_i64()), Some(-100123));
+        assert_eq!(
+            cfg.channel
+                .as_ref()
+                .unwrap()
+                .extra
+                .get("group_id")
+                .and_then(|v| v.as_i64()),
+            Some(-100123)
+        );
     }
 
     #[test]

@@ -300,8 +300,18 @@ fn spawn_agent(
         &mcp_config_path_str,
         &prompt_path_str,
     );
-    let final_command = if command.starts_with("gemini") && !final_command.contains("--resume") {
-        format!("{final_command} --resume latest")
+    // Add resume flag if backend supports it and this isn't a fresh spawn
+    let resume_flag = preset.as_ref().map(|p| p.resume_flag).unwrap_or("");
+    let final_command = if !resume_flag.is_empty()
+        && !final_command.contains(resume_flag.split_whitespace().next().unwrap_or(""))
+    {
+        // Check if agent had a previous session (worktree or working_dir exists with history)
+        let has_session = working_dir.as_ref().map(|wd| wd.exists()).unwrap_or(false);
+        if has_session {
+            format!("{final_command} {resume_flag}")
+        } else {
+            final_command
+        }
     } else {
         final_command
     };
