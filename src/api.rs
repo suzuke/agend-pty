@@ -138,14 +138,28 @@ fn handle_request(req: &ApiRequest, ctx: &DaemonCtx) -> ApiResponse {
             ok(json!({"instances": names}))
         }
         "status" => {
-            let names: Vec<Value> = ctx
-                .writers
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
+            let writers = ctx.writers.lock().unwrap_or_else(|e| e.into_inner());
+            let states = ctx.states.lock().unwrap_or_else(|e| e.into_inner());
+            let agents: Vec<Value> = writers
                 .keys()
-                .map(|n| json!({"name": n, "status": "running"}))
+                .map(|n| {
+                    let st = states
+                        .get(n)
+                        .and_then(|h| {
+                            h.state_machine
+                                .lock()
+                                .ok()
+                                .map(|s| format!("{:?}", s.state()))
+                        })
+                        .unwrap_or_else(|| "Unknown".into());
+                    let hl = states
+                        .get(n)
+                        .and_then(|h| h.health.lock().ok().map(|hm| format!("{:?}", hm.status())))
+                        .unwrap_or_else(|| "Unknown".into());
+                    json!({"name": n, "state": st, "health": hl})
+                })
                 .collect();
-            ok(json!({"agents": names}))
+            ok(json!({"agents": agents}))
         }
         "inject" => {
             let target = req.params["instance"].as_str().unwrap_or("");

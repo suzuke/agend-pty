@@ -127,22 +127,27 @@ fn main() {
             }
         }
         "status" => {
-            let daemons = paths::list_daemons();
-            if daemons.is_empty() {
-                println!("No running daemons.");
+            let live = sub_args.iter().any(|s| s == "--live" || s == "-l");
+            if live {
+                status_live();
             } else {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                for d in &daemons {
-                    let uptime = now.saturating_sub(d.start_time);
-                    let h = uptime / 3600;
-                    let m = (uptime % 3600) / 60;
-                    println!(
-                        "  PID {} | fleet: {} | agents: {} | uptime: {}h{}m",
-                        d.pid, d.fleet_config, d.agent_count, h, m
-                    );
+                let daemons = paths::list_daemons();
+                if daemons.is_empty() {
+                    println!("No running daemons.");
+                } else {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    for d in &daemons {
+                        let uptime = now.saturating_sub(d.start_time);
+                        let h = uptime / 3600;
+                        let m = (uptime % 3600) / 60;
+                        println!(
+                            "  PID {} | fleet: {} | agents: {} | uptime: {}h{}m",
+                            d.pid, d.fleet_config, d.agent_count, h, m
+                        );
+                    }
                 }
             }
         }
@@ -198,7 +203,7 @@ fn print_help() {
     println!("    demo                   Run demo with mock agents (no API key)");
     println!("    daemon [name:cmd ...]  Start the daemon (manages agents)");
     println!("    attach [agent]         Connect TUI to a running agent");
-    println!("    status                 Show running daemons and agents");
+    println!("    status [--live]         Show fleet status (--live for dashboard)");
     println!("    list                   List agents in current fleet");
     println!("    inject <agent> <msg>   Send a message to an agent");
     println!("    dry-run                Validate fleet.yaml without starting agents");
@@ -218,6 +223,83 @@ fn exe_dir() -> std::path::PathBuf {
         .ok()
         .and_then(|p| p.parent().map(|par| par.to_path_buf()))
         .unwrap_or_default()
+}
+
+fn status_live() {
+    let run = match paths::find_active_run_dir() {
+        Some(r) => r,
+        None => {
+            eprintln!("No running daemon found. Start with: agend-pty daemon");
+            std::process::exit(1);
+        }
+    };
+    let sock = run.join("api.sock");
+    loop {
+        // Clear screen + home
+        print!("\x1b[2J\x1b[H");
+        let resp = {
+            use std::io::{BufRead, Write};
+            std::os::unix::net::UnixStream::connect(&sock)
+                .and_then(|mut s| {
+                    s.set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                        .ok();
+                    writeln!(s, r#"{{"method":"status","params":{{}}}}"#)?;
+                    s.flush()?;
+                    let mut line = String::new();
+                    std::io::BufReader::new(s).read_line(&mut line)?;
+                    Ok(line)
+                })
+                .ok()
+                .and_then(|l| serde_json::from_str::<serde_json::Value>(l.trim()).ok())
+        };
+        let agents = resp
+            .as_ref()
+            .and_then(|r| r["result"]["agents"].as_array())
+            .cloned()
+            .unwrap_or_default();
+        let daemon = paths::list_daemons().into_iter().next();
+        let uptime = daemon
+            .as_ref()
+            .map(|d| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let s = now.saturating_sub(d.start_time);
+                format!("{}h{:02}m", s / 3600, (s % 3600) / 60)
+            })
+            .unwrap_or_else(|| "?".into());
+
+        println!("┌─ agend-pty fleet ──────────────────────────────┐");
+        let mut healthy = 0u32;
+        for a in &agents {
+            let name = a["name"].as_str().unwrap_or("?");
+            let state = a["state"].as_str().unwrap_or("?");
+            let icon = match state {
+                "Ready" | "Idle" => "●",
+                "Busy" => "◐",
+                "Starting" | "Restarting" => "○",
+                _ => "✗",
+            };
+            let health = a["health"].as_str().unwrap_or("?");
+            if health == "Healthy" {
+                healthy += 1;
+            }
+            println!(
+                "│ {:<8} {icon} {:<12} │ {:<8} │ agend/{:<8} │",
+                name, state, health, name
+            );
+        }
+        let total = agents.len() as u32;
+        println!("├────────────────────────────────────────────────┤");
+        println!(
+            "│ Health: {healthy}/{total} healthy │ Uptime: {:<19} │",
+            uptime
+        );
+        println!("└────────────────────────────────────────────────┘");
+        println!("\nPress Ctrl+C to exit. Refreshing every 2s...");
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
 }
 
 fn exec_with_args(bin: &std::path::Path, args: &[String]) {
