@@ -510,7 +510,7 @@ fn spawn_agent(
         .spawn(move || {
             let mut buf = [0u8; PTY_BUF_SIZE];
             let mut detect_buf = Vec::with_capacity(DETECT_BUF_CAP);
-            let mut dialog_dismissed = false;
+            let mut dismiss_count = 0u32;
             loop {
                 match pty_reader.read(&mut buf) {
                     Ok(0) => {
@@ -571,7 +571,7 @@ fn spawn_agent(
                         let data = &buf[..n_bytes];
 
                         // Auto-dismiss trust dialog
-                        if !dialog_dismissed && !dismiss_patterns.is_empty() {
+                        if dismiss_count < 5 && !dismiss_patterns.is_empty() {
                             detect_buf.extend_from_slice(data);
                             if detect_buf.len() > PTY_BUF_SIZE {
                                 let d = detect_buf.len() - PTY_BUF_SIZE;
@@ -585,7 +585,7 @@ fn spawn_agent(
                                         .lock()
                                         .unwrap_or_else(|e| e.into_inner())
                                         .write_all(key_seq);
-                                    dialog_dismissed = true;
+                                    dismiss_count += 1;
                                     detect_buf.clear();
                                     break;
                                 }

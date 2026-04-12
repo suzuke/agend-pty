@@ -32,6 +32,11 @@ impl Backend {
                 inject_prefix: "",
                 typed_inject: false,
                 dismiss_patterns: &[
+                    // TS: pattern: /[❯›]\s*\d+\.\s*No/m → Down+Enter
+                    ("No, exit", b"\x1b[B\r"),
+                    // TS: pattern: /I accept|I trust/i → Enter
+                    ("I accept", b"\r"),
+                    ("I trust", b"\r"),
                     ("Yes, I trust", b"\x1b[A\x1b[A\r"),
                     ("Yes, proceed", b"\x1b[A\x1b[A\r"),
                 ],
@@ -43,7 +48,7 @@ impl Backend {
                 submit_key: "\r",
                 inject_prefix: "",
                 typed_inject: false,
-                dismiss_patterns: &[],
+                dismiss_patterns: &[], // --trust-all-tools skips dialogs
             },
             Backend::Codex => BackendPreset {
                 command: "codex",
@@ -52,7 +57,13 @@ impl Backend {
                 submit_key: "\r",
                 inject_prefix: "",
                 typed_inject: false,
-                dismiss_patterns: &[],
+                dismiss_patterns: &[
+                    // TS: "Do you trust the files in this folder" → Enter
+                    ("Do you trust", b"\r"),
+                    ("Yes, continue", b"\r"),
+                    // TS: "Approaching rate limits" → Down+Down+Enter (keep current model)
+                    ("Approaching rate limits", b"\x1b[B\x1b[B\r"),
+                ],
             },
             Backend::OpenCode => BackendPreset {
                 command: "opencode",
@@ -70,7 +81,11 @@ impl Backend {
                 submit_key: "\n\r",
                 inject_prefix: "\r",
                 typed_inject: true,
-                dismiss_patterns: &[],
+                dismiss_patterns: &[
+                    // TS: "Don't trust" selected → Up+Up+Enter (navigate to Trust folder)
+                    ("Don't trust", b"\x1b[A\x1b[A\r"),
+                    ("Trust folder", b"\r"),
+                ],
             },
         }
     }
