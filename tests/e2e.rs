@@ -51,6 +51,26 @@ fn mcp_call(
     )
 }
 
+fn wait_for_agents(sock: &Path, count: usize, timeout_secs: u64) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        let resp = api_call(sock, "list", &serde_json::json!({}));
+        if resp["result"]["instances"]
+            .as_array()
+            .map(|a| a.len())
+            .unwrap_or(0)
+            >= count
+        {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "agents didn't register in time"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
 struct DaemonGuard {
     child: Child,
     run_dir: PathBuf,
@@ -95,16 +115,18 @@ fn start_daemon(fleet_yaml: &str, tmp: &Path) -> (DaemonGuard, PathBuf) {
 const MOCK_FLEET: &str = r#"
 instances:
   alice:
-    command: "bash -c 'echo Type your question; cat'"
+    command: "bash"
+    working_directory: /tmp/agend-e2e-alice
   bob:
-    command: "bash -c 'echo Type your question; cat'"
+    command: "bash"
+    working_directory: /tmp/agend-e2e-bob
 "#;
 
 #[test]
 fn e2e_daemon_startup_and_list() {
     let tmp = tempfile::tempdir().unwrap();
     let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
-    std::thread::sleep(Duration::from_secs(4));
+    wait_for_agents(&sock, 2, 15);
     let resp = api_call(&sock, "list", &serde_json::json!({}));
     assert_eq!(resp["ok"].as_bool(), Some(true), "list failed: {resp}");
     let instances = resp["result"]["instances"]
@@ -122,7 +144,7 @@ fn e2e_daemon_startup_and_list() {
 fn e2e_inject_message() {
     let tmp = tempfile::tempdir().unwrap();
     let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
-    std::thread::sleep(Duration::from_secs(4));
+    wait_for_agents(&sock, 2, 15);
     let resp = api_call(
         &sock,
         "inject",
@@ -136,7 +158,7 @@ fn e2e_inject_message() {
 fn e2e_decisions_and_tasks() {
     let tmp = tempfile::tempdir().unwrap();
     let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
-    std::thread::sleep(Duration::from_secs(4));
+    wait_for_agents(&sock, 2, 15);
     let r = mcp_call(
         &sock,
         "alice",

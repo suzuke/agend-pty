@@ -39,10 +39,19 @@ pub struct AgentStateHandle {
 pub type AgentStateMap = Arc<Mutex<HashMap<String, AgentStateHandle>>>;
 
 /// Shared daemon context — holds all shared state.
+/// Minimal spawn info for create_instance.
+#[derive(Clone)]
+pub struct SpawnConfigInfo {
+    pub command: String,
+    pub working_dir: Option<std::path::PathBuf>,
+    pub worktree: bool,
+    pub branch: Option<String>,
+}
+
 pub struct DaemonCtx {
     pub writers: AgentWriters,
     pub states: AgentStateMap,
-    pub registry: Arc<Mutex<HashMap<String, ()>>>, // agent existence tracking
+    pub spawn_configs: Arc<Mutex<HashMap<String, SpawnConfigInfo>>>,
     pub inbox: Arc<inbox::InboxStore>,
     pub channel_mgr: Arc<Mutex<channel::ChannelManager>>,
 }
@@ -220,7 +229,10 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
             json!({"content": [{"type": "text", "text": json!({"instances": names}).to_string()}]})
         }
         "describe_instance" => {
-            let name = args["name"].as_str().unwrap_or("");
+            let name = args["instance_name"]
+                .as_str()
+                .or_else(|| args["name"].as_str())
+                .unwrap_or("");
             let w = ctx.writers.lock().unwrap_or_else(|e| e.into_inner());
             if w.contains_key(name) {
                 json!({"content": [{"type": "text", "text": json!({"name": name, "status": "running"}).to_string()}]})
@@ -229,7 +241,10 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
             }
         }
         "request_information" => {
-            let target = args["target_instance"].as_str().unwrap_or("");
+            let target = args["instance_name"]
+                .as_str()
+                .or_else(|| args["target_instance"].as_str())
+                .unwrap_or("");
             let question = args["question"].as_str().unwrap_or("");
             let ctx_text = args["context"].as_str().unwrap_or("");
             let msg = if ctx_text.is_empty() {
@@ -241,7 +256,10 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
             json!({"content": [{"type": "text", "text": format!("{{\"sent\":true,\"target\":\"{target}\"}}")}]})
         }
         "delegate_task" => {
-            let target = args["target_instance"].as_str().unwrap_or("");
+            let target = args["instance_name"]
+                .as_str()
+                .or_else(|| args["target_instance"].as_str())
+                .unwrap_or("");
             let task = args["task"].as_str().unwrap_or("");
             let criteria = args["success_criteria"].as_str().unwrap_or("");
             let ctx_text = args["context"].as_str().unwrap_or("");
@@ -256,7 +274,10 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
             json!({"content": [{"type": "text", "text": format!("{{\"sent\":true,\"target\":\"{target}\"}}")}]})
         }
         "report_result" => {
-            let target = args["target_instance"].as_str().unwrap_or("");
+            let target = args["instance_name"]
+                .as_str()
+                .or_else(|| args["target_instance"].as_str())
+                .unwrap_or("");
             let summary = args["summary"].as_str().unwrap_or("");
             let artifacts = args["artifacts"].as_str().unwrap_or("");
             let mut msg = format!("[result from {instance}] {summary}");
@@ -508,6 +529,38 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                 Err(e) => json!({"content": [{"type": "text", "text": e}], "isError": true}),
             }
         }
+        "create_instance" => {
+            let name = args["instance_name"]
+                .as_str()
+                .or_else(|| args["name"].as_str())
+                .unwrap_or("");
+            if name.is_empty() {
+                return json!({"content": [{"type": "text", "text": "name required"}], "isError": true});
+            }
+            let backend = args["backend"].as_str().unwrap_or("claude");
+            let model = args["model"].as_str();
+            let wd = args["working_directory"]
+                .as_str()
+                .map(std::path::PathBuf::from);
+            let branch = args["branch"].as_str().map(String::from);
+            let mut cmd_parts = vec![backend.to_owned()];
+            if let Some(m) = model {
+                cmd_parts.push("--model".into());
+                cmd_parts.push(m.into());
+            }
+            let command = cmd_parts.join(" ");
+            let info = SpawnConfigInfo {
+                command: command.clone(),
+                working_dir: wd.clone(),
+                worktree: true,
+                branch: branch.clone(),
+            };
+            ctx.spawn_configs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(name.to_owned(), info);
+            json!({"content": [{"type": "text", "text": json!({"created": name, "command": command, "branch": branch}).to_string()}]})
+        }
         _ => {
             json!({"content": [{"type": "text", "text": format!("unknown tool: {tool}")}], "isError": true})
         }
@@ -546,12 +599,12 @@ pub fn mcp_tools_list() -> Value {
     json!({"tools": [
         {"name":"reply","description":"Reply to a Telegram user.","inputSchema":{"type":"object","properties":{"text":{"type":"string"},"format":{"type":"string","enum":["text","markdown","html"]},"reply_to":{"type":"string"}},"required":["text"]}},
         {"name":"send_to_instance","description":"Send a message to another agent instance.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"message":{"type":"string"},"request_kind":{"type":"string","enum":["query","task","report","update"]},"requires_reply":{"type":"boolean"},"correlation_id":{"type":"string"}},"required":["instance_name","message"]}},
-        {"name":"request_information","description":"Ask another agent a question.","inputSchema":{"type":"object","properties":{"target_instance":{"type":"string"},"question":{"type":"string"},"context":{"type":"string"}},"required":["target_instance","question"]}},
-        {"name":"delegate_task","description":"Delegate a task to another agent.","inputSchema":{"type":"object","properties":{"target_instance":{"type":"string"},"task":{"type":"string"},"success_criteria":{"type":"string"},"context":{"type":"string"}},"required":["target_instance","task"]}},
-        {"name":"report_result","description":"Report results back.","inputSchema":{"type":"object","properties":{"target_instance":{"type":"string"},"summary":{"type":"string"},"correlation_id":{"type":"string"},"artifacts":{"type":"string"}},"required":["target_instance","summary"]}},
+        {"name":"request_information","description":"Ask another agent a question.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"question":{"type":"string"},"context":{"type":"string"}},"required":["instance_name","question"]}},
+        {"name":"delegate_task","description":"Delegate a task to another agent.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"task":{"type":"string"},"success_criteria":{"type":"string"},"context":{"type":"string"}},"required":["instance_name","task"]}},
+        {"name":"report_result","description":"Report results back.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"summary":{"type":"string"},"correlation_id":{"type":"string"},"artifacts":{"type":"string"}},"required":["instance_name","summary"]}},
         {"name":"broadcast","description":"Send to all agents.","inputSchema":{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}},
         {"name":"list_instances","description":"List running agents.","inputSchema":{"type":"object","properties":{}}},
-        {"name":"describe_instance","description":"Get agent details.","inputSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}},
+        {"name":"describe_instance","description":"Get agent details.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"}},"required":["instance_name"]}},
         {"name":"delete_instance","description":"Stop an agent.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"cleanup_worktree":{"type":"boolean"}},"required":["instance_name"]}},
         {"name":"inbox","description":"Read inbox messages.","inputSchema":{"type":"object","properties":{"id":{"type":"integer"}}}},
         {"name":"post_decision","description":"Post a fleet-wide decision.","inputSchema":{"type":"object","properties":{"title":{"type":"string"},"content":{"type":"string"}},"required":["title","content"]}},
@@ -561,6 +614,7 @@ pub fn mcp_tools_list() -> Value {
         {"name":"edit_message","description":"Edit a sent message.","inputSchema":{"type":"object","properties":{"message_id":{"type":"string"},"text":{"type":"string"}},"required":["message_id","text"]}},
         {"name":"wait_for_idle","description":"Wait for an agent to become idle.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"timeout_secs":{"type":"integer"}},"required":["instance_name"]}},
         {"name":"merge_preview","description":"Preview merge of agent branch.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"}},"required":["instance_name"]}},
-        {"name":"merge_agent","description":"Squash merge agent branch.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"message":{"type":"string"}},"required":["instance_name"]}}
+        {"name":"merge_agent","description":"Squash merge agent branch.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"message":{"type":"string"}},"required":["instance_name"]}},
+        {"name":"create_instance","description":"Create a new agent instance.","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"working_directory":{"type":"string"},"backend":{"type":"string"},"model":{"type":"string"},"branch":{"type":"string"}},"required":["name"]}}
     ]})
 }

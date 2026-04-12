@@ -990,7 +990,7 @@ fn main() {
     api::start(Arc::new(api::DaemonCtx {
         writers: Arc::clone(&agent_writers),
         states: Arc::clone(&agent_states),
-        registry: Arc::new(Mutex::new(HashMap::new())),
+        spawn_configs: Arc::new(Mutex::new(HashMap::new())),
         inbox: Arc::clone(&inbox_store),
         channel_mgr: Arc::clone(&channel_mgr),
     }));
