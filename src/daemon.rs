@@ -305,10 +305,10 @@ fn spawn_agent(
         final_command
     };
 
-    let parts: Vec<&str> = final_command.split_whitespace().collect();
-    let mut cmd = CommandBuilder::new(parts[0]);
-    if parts.len() > 1 {
-        cmd.args(&parts[1..]);
+    let parts = agend_pty_poc::util::split_command(&final_command);
+    let mut cmd = CommandBuilder::new(&parts[0]);
+    for arg in &parts[1..] {
+        cmd.arg(arg);
     }
     cmd.env("TERM", "xterm-256color");
 

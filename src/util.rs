@@ -14,6 +14,28 @@ pub fn sanitize_name(name: &str) -> String {
     s.trim_start_matches('-').to_owned()
 }
 
+/// Split a command string respecting double-quoted segments.
+pub fn split_command(cmd: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    for ch in cmd.chars() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            ' ' if !in_quotes => {
+                if !current.is_empty() {
+                    parts.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    parts
+}
+
 /// Current time as seconds since UNIX epoch.
 pub fn now_secs() -> u64 {
     std::time::SystemTime::now()
