@@ -358,6 +358,18 @@ fn spawn_agent(
         cwd
     };
     instructions::generate(&effective_wd, &command, &name);
+    // Write per-backend MCP config (Kiro wrapper, Gemini settings, OpenCode config)
+    let mcp_bridge = paths::exe_sibling("agend-mcp");
+    let mcp_bridge_str = mcp_bridge.display().to_string();
+    let agent_dir = paths::agent_dir(&name);
+    mcp_config::write_mcp_config(
+        &effective_wd,
+        &command,
+        &name,
+        &mcp_bridge_str,
+        &[],
+        &agent_dir,
+    );
 
     let _child = match pair.slave.spawn_command(cmd) {
         Ok(c) => c,

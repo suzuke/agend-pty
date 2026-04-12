@@ -309,6 +309,7 @@ instances:
             "test",
             "/bin/agend-mcp",
             &["--socket", "/tmp/test.sock"],
+            tmp.path(),
         );
         assert!(path.exists(), "settings.json should be created");
         let content: serde_json::Value =
@@ -331,6 +332,7 @@ instances:
             "test",
             "/bin/agend-mcp",
             &["--socket", "/s"],
+            tmp.path(),
         );
         let content: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -359,6 +361,7 @@ instances:
             "test",
             "/bin/agend-mcp",
             &["--socket", "/s"],
+            tmp.path(),
         );
         // File should NOT be overwritten
         let content = std::fs::read_to_string(&path).unwrap();
