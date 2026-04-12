@@ -14,12 +14,14 @@ pub struct FleetConfig {
     pub channel: Option<ChannelConfig>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ChannelConfig {
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub channel_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bot_token_env: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub group_id: Option<i64>,
+    #[serde(flatten)]
+    pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -174,7 +176,8 @@ impl FleetConfig {
         let ch = self.channel.as_ref()?;
         let token_env = ch.bot_token_env.as_deref().unwrap_or("TELEGRAM_BOT_TOKEN");
         let token = std::env::var(token_env).ok()?;
-        Some((token, ch.group_id?))
+        let group_id = ch.extra.get("group_id").and_then(|v| v.as_i64())?;
+        Some((token, group_id))
     }
 }
 
