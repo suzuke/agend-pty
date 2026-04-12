@@ -109,6 +109,11 @@ pub struct DaemonCtx {
     pub spawn_tx: crossbeam::channel::Sender<SpawnConfigInfo>,
 }
 
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+static ACTIVE_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
+const MAX_CONNECTIONS: usize = 64;
+
 /// Start the API socket server in a new thread.
 pub fn start(ctx: Arc<DaemonCtx>) {
     let sock = paths::run_dir().join("api.sock");
@@ -126,6 +131,12 @@ pub fn start(ctx: Arc<DaemonCtx>) {
         .name("api_server".into())
         .spawn(move || {
             for stream in listener.incoming().flatten() {
+                if ACTIVE_CONNECTIONS.load(AtomicOrdering::Relaxed) >= MAX_CONNECTIONS {
+                    tracing::warn!("max API connections reached, rejecting");
+                    drop(stream);
+                    continue;
+                }
+                ACTIVE_CONNECTIONS.fetch_add(1, AtomicOrdering::Relaxed);
                 let c = Arc::clone(&ctx);
                 std::thread::spawn(move || {
                     let cloned = match stream.try_clone() {
@@ -168,6 +179,7 @@ pub fn start(ctx: Arc<DaemonCtx>) {
                         let _ = writer.flush();
                         line.clear();
                     }
+                    ACTIVE_CONNECTIONS.fetch_sub(1, AtomicOrdering::Relaxed);
                 });
             }
         })
