@@ -87,9 +87,11 @@ impl InstanceConfig {
         if let Some(cmd) = &self.command {
             return cmd.clone();
         }
-        let backend = self.backend_or(defaults);
-        let mut parts = vec![backend.to_owned()];
-        if self.skip_permissions && backend == "claude" {
+        let backend_str = self.backend_or(defaults);
+        // Resolve backend name to actual binary (e.g., "claude-code" → "claude")
+        let resolved = resolve_backend_binary(backend_str);
+        let mut parts = vec![resolved.clone()];
+        if self.skip_permissions && resolved == "claude" {
             parts.push("--dangerously-skip-permissions".into());
         }
         if let Some(m) = self.model.as_deref().or(defaults.model.as_deref()) {
@@ -131,4 +133,16 @@ impl FleetConfig {
 fn dirs() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     PathBuf::from(home).join(".agend").join("fleet.yaml")
+}
+
+/// Resolve backend name to actual binary command.
+fn resolve_backend_binary(backend: &str) -> String {
+    match backend {
+        "claude-code" | "claude" => "claude".into(),
+        "kiro-cli" | "kiro" => "kiro-cli".into(),
+        "codex" => "codex".into(),
+        "opencode" => "opencode".into(),
+        "gemini" => "gemini".into(),
+        other => other.into(),
+    }
 }
