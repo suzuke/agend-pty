@@ -931,15 +931,7 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
             if name.is_empty() {
                 return json!({"content": [{"type": "text", "text": "instance_name required"}], "isError": true});
             }
-            // Check old instance exists
-            let exists = ctx
-                .writers
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .contains_key(name);
-            if !exists {
-                return json!({"content": [{"type": "text", "text": format!("instance '{name}' not found")}], "isError": true});
-            }
+            // Check existence (actual kill happens below in same-scope pattern)
             // Build new config (use provided or fall back to existing)
             let old_config = ctx
                 .spawn_configs
@@ -986,17 +978,20 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                     h.reset();
                 }
             }
-            // Kill old instance (Ctrl+C + EOF) — health monitor will respawn with new config
-            if let Some(pw) = ctx
-                .writers
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(name)
+            // Kill old instance atomically (check + kill in same lock scope)
             {
-                let _ = pw
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .write_all(b"\x03\x04");
+                let w = ctx.writers.lock().unwrap_or_else(|e| e.into_inner());
+                match w.get(name) {
+                    Some(pw) => {
+                        let _ = pw
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .write_all(b"\x03\x04");
+                    }
+                    None => {
+                        return json!({"content": [{"type": "text", "text": format!("instance '{name}' not found")}], "isError": true});
+                    }
+                }
             }
             json!({"content": [{"type": "text", "text": json!({
                 "replaced": name, "command": command, "branch": branch,
