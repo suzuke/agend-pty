@@ -4,6 +4,7 @@ use crate::{paths, util};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+static NEXT_DECISION_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,9 +38,23 @@ fn tasks_path() -> std::path::PathBuf {
     paths::run_dir().join("tasks.jsonl")
 }
 
-pub fn post_decision(author: &str, title: &str, content: &str) -> Decision {
+/// Initialize counters from persisted data (call on daemon startup).
+pub fn init_counters() {
     let decisions: Vec<Decision> = util::read_jsonl(&decisions_path());
-    let id = decisions.len() as u64 + 1;
+    let max_d = decisions.iter().map(|d| d.id).max().unwrap_or(0);
+    NEXT_DECISION_ID.store(max_d + 1, Ordering::Relaxed);
+
+    let tasks: Vec<Task> = util::read_jsonl(&tasks_path());
+    let max_t = tasks
+        .iter()
+        .filter_map(|t| t.id.trim_start_matches('T').parse::<u64>().ok())
+        .max()
+        .unwrap_or(0);
+    NEXT_TASK_ID.store(max_t + 1, Ordering::Relaxed);
+}
+
+pub fn post_decision(author: &str, title: &str, content: &str) -> Decision {
+    let id = NEXT_DECISION_ID.fetch_add(1, Ordering::Relaxed);
     let d = Decision {
         id,
         title: title.into(),
