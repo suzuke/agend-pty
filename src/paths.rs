@@ -81,17 +81,10 @@ pub fn acquire_lock(fleet_config_path: Option<&str>) -> Result<std::fs::File, St
     let mut f = &file;
     writeln!(f, "{}", std::process::id()).map_err(|e| format!("write lock: {e}"))?;
     writeln!(f, "{fleet_id}").map_err(|e| format!("write lock: {e}"))?;
-    writeln!(f, "{}", chrono_now()).map_err(|e| format!("write lock: {e}"))?;
+    writeln!(f, "{}", crate::util::now_secs()).map_err(|e| format!("write lock: {e}"))?;
     f.flush().map_err(|e| format!("flush lock: {e}"))?;
 
     Ok(file)
-}
-
-fn chrono_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 /// Info about a running daemon.
