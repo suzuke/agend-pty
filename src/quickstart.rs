@@ -15,7 +15,10 @@ fn prompt(msg: &str) -> String {
     print!("{msg}");
     io::stdout().flush().ok();
     let mut buf = String::new();
-    io::stdin().read_line(&mut buf).unwrap_or_default();
+    if io::stdin().read_line(&mut buf).unwrap_or(0) == 0 {
+        eprintln!("\nEOF — exiting.");
+        std::process::exit(1);
+    }
     buf.trim().to_owned()
 }
 
