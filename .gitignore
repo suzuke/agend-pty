@@ -10,3 +10,8 @@ AGENTS.md
 GEMINI.md
 opencode.json
 fleet-instructions.md
+instructions/
+
+# Runtime config (user-specific)
+fleet.yaml
+fleet.yml
