@@ -29,6 +29,16 @@ fn prompt_yn(msg: &str, default_yes: bool) -> bool {
     }
 }
 
+fn prompt_nonempty(msg: &str) -> String {
+    loop {
+        let ans = prompt(msg);
+        if !ans.is_empty() {
+            return ans;
+        }
+        println!("  Value cannot be empty.");
+    }
+}
+
 fn which(name: &str) -> Option<PathBuf> {
     std::env::var("PATH")
         .ok()?
@@ -64,36 +74,151 @@ fn expand_tilde(path: &str) -> String {
     }
 }
 
+fn home_dir() -> String {
+    std::env::var("HOME").unwrap_or_else(|_| ".".into())
+}
+
+/// Check if a string looks like a Telegram bot token (digits:alphanumeric).
+fn looks_like_bot_token(s: &str) -> bool {
+    let Some((num, rest)) = s.split_once(':') else {
+        return false;
+    };
+    !num.is_empty() && num.chars().all(|c| c.is_ascii_digit()) && !rest.is_empty()
+}
+
+/// Scan .env files for a bot-token-shaped value. Returns the token if found.
+fn find_env_token() -> Option<(PathBuf, String)> {
+    let candidates = [
+        PathBuf::from(home_dir()).join(".agend").join(".env"),
+        PathBuf::from(".env"),
+    ];
+    for path in &candidates {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            for line in content.lines() {
+                let line = line.trim();
+                if line.starts_with('#') || line.is_empty() {
+                    continue;
+                }
+                if let Some((key, val)) = line.split_once('=') {
+                    let val = val.trim().trim_matches('"').trim_matches('\'');
+                    if key.trim().contains("TOKEN") && looks_like_bot_token(val) {
+                        return Some((path.clone(), val.to_owned()));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Find existing fleet.yaml; returns (path, instance_count).
+fn find_existing_fleet() -> Option<(PathBuf, usize)> {
+    let candidates = [
+        PathBuf::from("fleet.yaml"),
+        PathBuf::from(home_dir()).join(".agend").join("fleet.yaml"),
+    ];
+    for path in &candidates {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if let Ok(cfg) = serde_yaml::from_str::<serde_json::Value>(&content) {
+                let count = cfg
+                    .get("instances")
+                    .and_then(|v| v.as_object())
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                return Some((path.clone(), count));
+            }
+        }
+    }
+    None
+}
+
 pub fn run() {
     println!("AgEnD-PTY — Quick Setup\n");
 
-    // Step 1: Backend
+    // ── Step 0: Environment scan ──
+    println!("Checking environment...");
+
+    // 0a. Existing fleet.yaml
+    if let Some((path, count)) = find_existing_fleet() {
+        println!(
+            "  ✓ fleet.yaml found at {} ({count} instance(s) configured)",
+            path.display()
+        );
+        if !prompt_yn("    → Overwrite?", false) {
+            println!("  Aborted.");
+            return;
+        }
+    }
+
+    // 0b. Existing .env with bot token
+    let env_token = find_env_token();
+    if let Some((ref path, _)) = env_token {
+        println!("  ✓ .env found at {} (bot token detected)", path.display());
+        println!("    → Will use existing token");
+    }
+
+    // 0c. Scan backend binaries
+    let mut available: Vec<bool> = Vec::new();
+    for (_, label, binary) in BACKENDS {
+        match which(binary) {
+            Some(p) => {
+                println!("  ✓ {label} ({binary}) in PATH ({})", p.display());
+                available.push(true);
+            }
+            None => {
+                println!("  ✗ {binary} not found");
+                available.push(false);
+            }
+        }
+    }
+
+    // 0d. Git
+    let has_git = which("git").is_some();
+    if has_git {
+        println!("  ✓ git in PATH");
+    } else {
+        println!("  ✗ git not found (worktree isolation unavailable)");
+    }
+    println!();
+
+    // Check at least one backend is available
+    if !available.iter().any(|&a| a) {
+        eprintln!("No supported backend found in PATH. Install one first.");
+        std::process::exit(1);
+    }
+
+    // ── Step 1: Backend ──
     println!("[1/6] Which AI coding agent?");
-    for (i, (_, label, _)) in BACKENDS.iter().enumerate() {
-        println!("  {}. {}", i + 1, label);
+    for (i, ((_, label, _), &avail)) in BACKENDS.iter().zip(available.iter()).enumerate() {
+        let mark = if avail { " " } else { "✗" };
+        println!("  {mark} {}. {label}", i + 1);
     }
     let choice: usize = loop {
         if let Ok(n) = prompt("> ").parse::<usize>() {
             if n >= 1 && n <= BACKENDS.len() {
-                break n;
+                if available[n - 1] {
+                    break n;
+                }
+                println!("  {} is not installed.", BACKENDS[n - 1].2);
+                continue;
             }
         }
         println!("  Enter 1-{}", BACKENDS.len());
     };
-    let (backend_id, backend_label, binary) = BACKENDS[choice - 1];
-    match which(binary) {
-        Some(p) => println!("  ✓ {} found ({})\n", backend_label, p.display()),
-        None => {
-            eprintln!("  ✗ {binary} not found in PATH. Install it first.");
-            std::process::exit(1);
-        }
-    }
+    let (backend_id, backend_label, _) = BACKENDS[choice - 1];
+    println!("  ✓ Selected {backend_label}\n");
 
-    // Step 2: Channel (optional)
+    // ── Step 2: Channel (optional) ──
     println!("[2/6] Telegram integration?");
     let (mut channel_token, mut channel_group): (Option<String>, Option<i64>) = (None, None);
-    if prompt_yn("  Enable Telegram?", false) {
-        let token = prompt("  Bot token (from @BotFather): ");
+    if prompt_yn("  Enable Telegram?", env_token.is_some()) {
+        // Use existing token or ask for new one
+        let token = if let Some((_, ref tok)) = env_token {
+            println!("  Using token from .env");
+            tok.clone()
+        } else {
+            prompt("  Bot token (from @BotFather): ")
+        };
         print!("  Verifying... ");
         io::stdout().flush().ok();
         match verify_token(&token) {
@@ -116,29 +241,34 @@ pub fn run() {
     }
     println!();
 
-    // Step 3-4: Agents
+    // ── Step 3-4: Agents ──
     println!("[3/6] First agent");
     let mut agents: Vec<(String, String)> = Vec::new();
     agents.push((
-        prompt("  Name: "),
-        expand_tilde(&prompt("  Working directory: ")),
+        prompt_nonempty("  Name: "),
+        expand_tilde(&prompt_nonempty("  Working directory: ")),
     ));
     println!("\n[4/6] Add more agents?");
     while prompt_yn("  Add another agent?", false) {
         agents.push((
-            prompt("  Name: "),
-            expand_tilde(&prompt("  Working directory: ")),
+            prompt_nonempty("  Name: "),
+            expand_tilde(&prompt_nonempty("  Working directory: ")),
         ));
     }
     println!();
 
-    // Step 5: Worktree
+    // ── Step 5: Worktree ──
     println!("[5/6] Git worktree isolation?");
-    println!("  Agents sharing the same repo will work in isolated branches.");
-    let worktree = prompt_yn("  Enable worktree isolation?", true);
+    let worktree = if has_git {
+        println!("  Agents sharing the same repo will work in isolated branches.");
+        prompt_yn("  Enable worktree isolation?", true)
+    } else {
+        println!("  Skipped (git not found).");
+        false
+    };
     println!();
 
-    // Step 6: Generate fleet.yaml
+    // ── Step 6: Generate fleet.yaml ──
     println!("[6/6] Generating fleet.yaml...\n");
     let mut yaml = format!("defaults:\n  backend: {backend_id}\n  worktree: {worktree}\n");
     if let (Some(_), Some(gid)) = (&channel_token, channel_group) {
@@ -154,17 +284,7 @@ pub fn run() {
         }
     }
 
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let out_path = PathBuf::from(&home).join(".agend").join("fleet.yaml");
-    if out_path.exists()
-        && !prompt_yn(
-            &format!("  {} exists. Overwrite?", out_path.display()),
-            false,
-        )
-    {
-        println!("  Aborted.");
-        return;
-    }
+    let out_path = PathBuf::from(home_dir()).join(".agend").join("fleet.yaml");
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
@@ -177,7 +297,9 @@ pub fn run() {
     println!("{yaml}");
     println!("Next steps:");
     if let Some(ref tok) = channel_token {
-        println!("  export TELEGRAM_BOT_TOKEN={tok}");
+        if env_token.is_none() {
+            println!("  export TELEGRAM_BOT_TOKEN={tok}");
+        }
     }
     println!("  agend-pty daemon");
     if let Some((name, _)) = agents.first() {
