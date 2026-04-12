@@ -1,6 +1,35 @@
 # agend-pty
 
-AI agent fleet orchestrator with PTY-based daemon architecture.
+Persistent PTY-based fleet manager for AI coding agents. Run multiple agents (Claude, Kiro, Codex, Gemini) in managed pseudo-terminals with inter-agent messaging, git worktree isolation, and auto-recovery.
+
+## 30-Second Start
+
+```bash
+cargo build --release
+./target/release/agend-pty quickstart   # interactive setup wizard
+./target/release/agend-pty daemon       # start the fleet
+```
+
+Or try the demo (no API key needed):
+
+```bash
+./target/release/agend-pty demo
+```
+
+## Install
+
+```bash
+# Build from source
+git clone https://github.com/user/agend-pty.git
+cd agend-pty
+cargo build --release
+
+# Binaries are in target/release/:
+#   agend-pty      CLI entry point
+#   agend-daemon   Persistent daemon
+#   agend-tui      TUI client (Ctrl+B d to detach)
+#   agend-mcp      MCP bridge (spawned automatically)
+```
 
 ## Architecture
 
@@ -15,107 +44,50 @@ AI agent fleet orchestrator with PTY-based daemon architecture.
 │  │ PTY: alice │ PTY: bob │ ...  │    One PTY per agent
 │  └─────────┘  └─────────┘      │
 │  ┌─────────────────────────┐    │
-│  │  API socket (api.sock)  │    │    JSON-RPC over Unix socket
-│  └─────────────────────────┘    │
-│  ┌─────────────────────────┐    │
-│  │  agend-mcp (per agent)  │    │    MCP server: stdin NDJSON ↔ API socket
+│  │  API socket (api.sock)  │    │    JSON-RPC + MCP protocol
 │  └─────────────────────────┘    │
 └─────────────────────────────────┘
 ```
 
-## Quick Start
+See [docs/architecture.md](docs/architecture.md) for the full system design (state machine, health monitor, socket protocol, etc).
 
-```bash
-# Create fleet.yaml
-cat > fleet.yaml << 'YAML'
-defaults:
-  backend: claude
-  worktree: true
+## CLI Commands
 
-instances:
-  alice:
-    skip_permissions: true
-    working_directory: /tmp/alice-workspace
-    branch: feature-alice
-  bob:
-    skip_permissions: true
-    working_directory: /tmp/bob-workspace
-    depends_on: [alice]
-YAML
-
-# Start daemon
-cargo run --bin agend-daemon
-
-# Attach to an agent (in another terminal)
-cargo run --bin agend-tui -- alice
-
-# Detach: Ctrl+B d
-# Shutdown: agend-pty shutdown
-```
-
-## CLI Usage
-
-```bash
-# From fleet.yaml (recommended)
-agend-pty daemon
-
-# From CLI args
-agend-pty daemon alice:claude bob:bash
-
-# Attach to agent
-agend-pty attach alice
-
-# Show running daemons
-agend-pty status
-
-# List agents in current fleet
-agend-pty list
-
-# Send a message to an agent
-agend-pty inject alice "hello"
-
-# Validate fleet.yaml without starting agents
-agend-pty dry-run
-
-# Save/restore fleet state
-agend-pty snapshot -o fleet-snapshot.json
-agend-pty restore -i fleet-snapshot.json
-
-# Remove leftover git worktrees
-agend-pty cleanup
-
-# Health check
-agend-pty doctor
-
-# Shutdown
-agend-pty shutdown
-```
+| Command | Description |
+|---------|-------------|
+| `quickstart` | Interactive setup wizard |
+| `demo` | Run demo with mock agents (no API key) |
+| `daemon` | Start the daemon |
+| `attach <agent>` | Connect TUI to a running agent |
+| `logs <agent> [-f]` | Stream agent output (read-only) |
+| `status [--live]` | Show fleet status (--live for dashboard) |
+| `list` | List agents in current fleet |
+| `inject <agent> <msg>` | Send a message to an agent |
+| `dry-run` | Validate fleet.yaml without starting |
+| `snapshot [-o file]` | Save fleet state to JSON |
+| `restore [-i file]` | Restore fleet from snapshot |
+| `cleanup` | Remove leftover git worktrees |
+| `bugreport` | Export diagnostic info to file |
+| `doctor` | Check system health |
+| `shutdown` | Stop a running daemon |
 
 ## Features
 
-- **Multi-agent PTY management** via portable-pty
+- **Multi-agent PTY management** via portable-pty (5 backends: Claude, Kiro, Codex, OpenCode, Gemini)
 - **Daemon/client split** — agents persist across TUI disconnects
-- **VTerm screen state** — reconnect gets proper screen dump (via alacritty_terminal)
-- **Git worktree isolation** — each agent gets its own branch/worktree
-- **Dependency ordering** — `depends_on` ensures agents start in correct order
-- **Auto-dismiss trust dialogs** — Claude Code, Gemini, Codex trust prompts handled automatically
-- **Terminal resize** — synced from TUI client to PTY
-- **fleet.yaml config** — define agents, backends, working directories
-- **Graceful shutdown** — Ctrl+C or `shutdown` command
-- **Dry-run mode** — validate config without starting agents
-- **Snapshot/restore** — save and restore fleet state
-- **Health monitoring** — auto-respawn crashed agents with backoff
+- **Git worktree isolation** — each agent gets its own branch, merge_preview/merge_all to integrate
+- **8-state lifecycle machine** — Starting, Ready, Busy, Idle, Errored, Crashed, Restarting, WaitingForInput
+- **Health monitor** — auto-respawn with exponential backoff, hang detection, session timer
+- **Dependency ordering** — `depends_on` with Kahn's algorithm for layered startup
 - **Cron scheduler** — schedule recurring messages to agents
-- **Teams** — group agents for targeted broadcasts
-- **Decisions** — fleet-wide shared decision log
-- **Task board** — create, claim, and track tasks across agents
-- **Event log** — append-only audit trail of state changes and health actions
-- **Merge preview/merge** — preview and squash-merge agent worktree branches
-- **Wait for idle** — block until an agent reaches idle/ready state
+- **Teams, Decisions, Task board** — fleet-wide coordination primitives
+- **Telegram integration** — forum topics per agent, react, edit, reply
+- **Live dashboard** — `status --live` with 2s polling ASCII display
+- **Structured logging** — tracing with `AGEND_LOG` env filter
+- **MCP socket pooling** — daemon handles MCP protocol natively
+- **CI automation** — `watch_ci` checks GitHub PR status via gh CLI
 
 ### MCP Tools (26)
-
-The daemon exposes these tools to agents via the MCP protocol:
 
 | Tool | Description |
 |------|-------------|
@@ -140,36 +112,47 @@ The daemon exposes these tools to agents via the MCP protocol:
 | `wait_for_idle` | Wait for an agent to become idle |
 | `merge_preview` | Preview merge of agent branch |
 | `merge_agent` | Squash merge agent branch |
+| `merge_all` | Squash merge all agent worktree branches |
 | `team` | Team operations (create/list/delete/update) |
 | `list_events` | List event log |
 | `schedule` | Cron schedule operations (create/list/delete/update) |
-| `merge_all` | Squash merge all agent worktree branches |
 | `watch_ci` | Check GitHub PR CI status via gh CLI |
 
 ## fleet.yaml Schema
 
 ```yaml
-# Default settings applied to all instances
 defaults:
-  backend: claude          # Default backend: claude, kiro, codex, opencode, gemini
-  model: sonnet            # Default model (optional, backend-specific)
-  working_directory: /path # Default working directory
-  worktree: true           # Enable git worktree isolation (default: true)
+  backend: claude            # claude, kiro, codex, opencode, gemini
+  model: sonnet              # Optional default model
+  working_directory: /path   # Optional default working dir
+  worktree: true             # Git worktree isolation (default: true)
+  max_session_hours: 8       # Optional session time limit
 
-# Agent instance definitions
 instances:
   agent-name:
-    working_directory: /path  # Working directory (overrides default)
-    backend: claude           # Backend override
-    model: opus               # Model override
-    command: "custom cmd"     # Full custom command (overrides backend/model)
-    skip_permissions: false   # Pass --dangerously-skip-permissions to Claude
-    depends_on: [other-agent] # Start after these agents are ready
-    worktree: true            # Git worktree isolation override
-    branch: feature-branch    # Custom branch name for worktree
+    working_directory: /path
+    backend: claude
+    model: opus
+    command: "custom cmd"      # Full command override
+    skip_permissions: false
+    depends_on: [other-agent]
+    worktree: true
+    branch: feature-branch
+    max_session_hours: 4       # Per-instance override
 
-# Messaging channel (optional)
-channel:
-  bot_token_env: TELEGRAM_BOT_TOKEN  # Env var for bot token
-  group_id: -100123456789            # Telegram group ID
+channel:                       # Optional Telegram integration
+  bot_token_env: TELEGRAM_BOT_TOKEN
+  group_id: -100123456789
 ```
+
+See [examples/](examples/) for ready-to-use configurations.
+
+## Documentation
+
+- [Architecture](docs/architecture.md) — system design, state machine, protocols
+- [Changelog](CHANGELOG.md) — version history
+- [Examples](examples/) — fleet.yaml templates
+
+## License
+
+[MIT](LICENSE)
