@@ -113,7 +113,7 @@ agend-pty shutdown
 - **Merge preview/merge** — preview and squash-merge agent worktree branches
 - **Wait for idle** — block until an agent reaches idle/ready state
 
-### MCP Tools (24)
+### MCP Tools (26)
 
 The daemon exposes these tools to agents via the MCP protocol:
 
@@ -143,6 +143,8 @@ The daemon exposes these tools to agents via the MCP protocol:
 | `team` | Team operations (create/list/delete/update) |
 | `list_events` | List event log |
 | `schedule` | Cron schedule operations (create/list/delete/update) |
+| `merge_all` | Squash merge all agent worktree branches |
+| `watch_ci` | Check GitHub PR CI status via gh CLI |
 
 ## fleet.yaml Schema
 

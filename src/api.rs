@@ -820,6 +820,9 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
             if repo.is_empty() || pr == 0 {
                 return json!({"content": [{"type": "text", "text": "repo and pr required"}], "isError": true});
             }
+            if !repo.contains('/') || repo.contains(' ') || repo.starts_with('-') {
+                return json!({"content": [{"type": "text", "text": "invalid repo format, expected: owner/repo"}], "isError": true});
+            }
             let output = std::process::Command::new("gh")
                 .args([
                     "pr",

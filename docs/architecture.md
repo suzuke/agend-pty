@@ -376,7 +376,7 @@ shared functions used by every store:
 
 ## MCP Tools
 
-24 tools exposed to agents via the MCP server:
+26 tools exposed to agents via the MCP server:
 
 ### Communication
 | Tool                 | Description                                    |
@@ -417,6 +417,8 @@ shared functions used by every store:
 |----------------------|------------------------------------------------|
 | `merge_preview`      | Preview merge diff + conflict detection        |
 | `merge_agent`        | Squash merge agent branch into main            |
+| `merge_all`          | Batch squash merge all agent branches           |
+| `watch_ci`           | Check GitHub PR CI status via gh CLI            |
 
 ---
 

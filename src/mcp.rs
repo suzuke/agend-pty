@@ -1,11 +1,10 @@
 #![allow(dead_code)]
-//! MCP server — stdin NDJSON → API socket → stdout NDJSON.
+//! MCP server — identity-injecting bridge to daemon API socket.
 //! Spawned by CLI agents as their MCP server process.
 //! Instance identity via AGEND_INSTANCE_NAME env var.
 //!
-//! Supports explicit socket path or auto-discovery:
-//!   agend-mcp --socket <path>   (explicit API socket)
-//!   agend-mcp <agent-name>      (discover via active run dir)
+//! Forwards all MCP JSON-RPC to daemon's API socket with `_instance`
+//! field injected. Daemon handles protocol natively.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -24,7 +23,6 @@ fn main() {
     };
 
     let instance = std::env::var("AGEND_INSTANCE_NAME").unwrap_or_else(|_| {
-        // Fall back to first positional arg (skip --socket pair)
         let positional = if explicit_socket.is_some() {
             args.get(2)
         } else {
@@ -82,56 +80,42 @@ fn main() {
             continue;
         }
 
-        let req: serde_json::Value = match serde_json::from_str(trimmed) {
+        let mut req: serde_json::Value = match serde_json::from_str(trimmed) {
             Ok(v) => v,
             Err(_) => continue,
         };
 
-        let id = req.get("id").cloned();
-        let method = req["method"].as_str().unwrap_or("");
-
-        let result = match method {
-            "initialize" => serde_json::json!({
-                "protocolVersion": "2024-11-05",
-                "capabilities": { "tools": { "listChanged": false } },
-                "serverInfo": { "name": "agend", "version": "0.1.0" }
-            }),
-            "tools/list" => match api_call(&api_sock, "mcp_tools_list", &serde_json::json!({})) {
-                Ok(v) => v,
-                Err(e) => {
-                    eprintln!("[mcp] tools/list failed: {e}");
-                    serde_json::json!({"tools": []})
-                }
-            },
-            "tools/call" => {
-                let tool = req["params"]["name"].as_str().unwrap_or("");
-                let args = &req["params"]["arguments"];
-                api_call(&api_sock, "mcp_call", &serde_json::json!({
-                    "instance": instance, "tool": tool, "arguments": args
-                })).unwrap_or_else(|e| serde_json::json!({"content": [{"type": "text", "text": format!("error: {e}")}], "isError": true}))
-            }
-            "notifications/initialized" | "notifications/cancelled" => continue,
-            _ => continue,
+        // Skip notifications (no id → no response expected)
+        let id = match req.get("id") {
+            Some(id) => id.clone(),
+            None => continue,
         };
 
-        if let Some(id) = id {
-            let resp = serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result});
-            writeln!(stdout, "{}", resp).ok();
-            stdout.flush().ok();
-        }
+        // Inject instance identity so daemon knows who's calling
+        req["_instance"] = serde_json::json!(instance);
+
+        // Forward to daemon API socket (which handles MCP JSON-RPC natively)
+        let resp = match forward_jsonrpc(&api_sock, &req) {
+            Ok(r) => r,
+            Err(e) => serde_json::json!({
+                "jsonrpc": "2.0", "id": id,
+                "error": {"code": -32000, "message": format!("daemon error: {e}")}
+            }),
+        };
+
+        writeln!(stdout, "{}", resp).ok();
+        stdout.flush().ok();
     }
 }
 
-fn api_call(
+fn forward_jsonrpc(
     sock: &std::path::Path,
-    method: &str,
-    params: &serde_json::Value,
+    req: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let mut stream = UnixStream::connect(sock).map_err(|e| format!("connect: {e}"))?;
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(30)))
         .ok();
-    let req = serde_json::json!({"method": method, "params": params});
     writeln!(stream, "{}", req).map_err(|e| format!("write: {e}"))?;
     stream.flush().map_err(|e| format!("flush: {e}"))?;
     let mut reader = BufReader::new(stream);
@@ -139,11 +123,5 @@ fn api_call(
     reader
         .read_line(&mut line)
         .map_err(|e| format!("read: {e}"))?;
-    let resp: serde_json::Value =
-        serde_json::from_str(line.trim()).map_err(|e| format!("parse: {e}"))?;
-    if resp["ok"].as_bool() == Some(true) {
-        Ok(resp["result"].clone())
-    } else {
-        Err(resp["error"].as_str().unwrap_or("unknown").to_owned())
-    }
+    serde_json::from_str(line.trim()).map_err(|e| format!("parse: {e}"))
 }
