@@ -11,6 +11,8 @@ mod channel;
 mod config;
 #[path = "doctor.rs"]
 mod doctor;
+#[path = "event_log.rs"]
+mod event_log;
 #[path = "features.rs"]
 mod features;
 #[path = "fleet_store.rs"]
@@ -27,6 +29,8 @@ mod instructions;
 mod mcp_config;
 #[path = "paths.rs"]
 mod paths;
+#[path = "scheduler.rs"]
+mod scheduler;
 #[path = "state.rs"]
 mod state;
 #[path = "telegram.rs"]

@@ -90,6 +90,83 @@ pub fn list_decisions() -> Vec<Decision> {
     read_jsonl(&decisions_path())
 }
 
+pub fn update_decision(id: u64, title: Option<&str>, content: Option<&str>) -> Option<Decision> {
+    let decisions = list_decisions();
+    let mut d = decisions.into_iter().find(|d| d.id == id)?;
+    if let Some(t) = title {
+        d.title = t.into();
+    }
+    if let Some(c) = content {
+        d.content = c.into();
+    }
+    d.timestamp = now_secs();
+    append_jsonl(&decisions_path(), &d);
+    Some(d)
+}
+
+// ── Teams ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Team {
+    pub name: String,
+    pub members: Vec<String>,
+    pub timestamp: u64,
+}
+
+fn teams_path() -> std::path::PathBuf {
+    paths::run_dir().join("teams.jsonl")
+}
+
+pub fn create_team(name: &str, members: &[String]) -> Team {
+    let t = Team {
+        name: name.into(),
+        members: members.to_vec(),
+        timestamp: now_secs(),
+    };
+    append_jsonl(&teams_path(), &t);
+    t
+}
+
+pub fn list_teams() -> Vec<Team> {
+    let all: Vec<Team> = read_jsonl(&teams_path());
+    let mut map = std::collections::HashMap::new();
+    for t in all {
+        map.insert(t.name.clone(), t);
+    }
+    map.into_values().collect()
+}
+
+pub fn update_team(name: &str, members: &[String]) -> Option<Team> {
+    let teams = list_teams();
+    if !teams.iter().any(|t| t.name == name) {
+        return None;
+    }
+    let t = Team {
+        name: name.into(),
+        members: members.to_vec(),
+        timestamp: now_secs(),
+    };
+    append_jsonl(&teams_path(), &t);
+    Some(t)
+}
+
+pub fn delete_team(name: &str) -> bool {
+    let t = Team {
+        name: name.into(),
+        members: vec![],
+        timestamp: 0,
+    };
+    append_jsonl(&teams_path(), &t);
+    true
+}
+
+pub fn get_team_members(name: &str) -> Option<Vec<String>> {
+    list_teams()
+        .into_iter()
+        .find(|t| t.name == name && !t.members.is_empty())
+        .map(|t| t.members)
+}
+
 pub fn create_task(created_by: &str, title: &str, description: &str, assignee: &str) -> Task {
     let id = format!("T{}", NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed));
     let t = Task {

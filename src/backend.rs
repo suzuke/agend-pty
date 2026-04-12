@@ -19,6 +19,10 @@ pub struct BackendPreset {
     pub inject_prefix: &'static str,
     pub typed_inject: bool,
     pub dismiss_patterns: &'static [(&'static str, &'static [u8])],
+    pub quit_command: &'static str,
+    pub instructions_path: &'static str,
+    pub mcp_config_path: &'static str,
+    pub ready_timeout_secs: u64,
 }
 
 impl Backend {
@@ -32,9 +36,16 @@ impl Backend {
                 inject_prefix: "",
                 typed_inject: false,
                 dismiss_patterns: &[
-                    // Trust dialog: cursor starts on "Yes, I trust" → just Enter
+                    ("No, exit", b"\x1b[B\r"),
+                    ("I accept", b"\r"),
                     ("I trust", b"\r"),
+                    ("Yes, I trust", b"\x1b[A\x1b[A\r"),
+                    ("Yes, proceed", b"\x1b[A\x1b[A\r"),
                 ],
+                quit_command: "/exit",
+                instructions_path: ".claude/rules/agend.md",
+                mcp_config_path: "",
+                ready_timeout_secs: 30,
             },
             Backend::KiroCli => BackendPreset {
                 command: "kiro-cli",
@@ -43,7 +54,11 @@ impl Backend {
                 submit_key: "\r",
                 inject_prefix: "",
                 typed_inject: false,
-                dismiss_patterns: &[], // --trust-all-tools skips dialogs
+                dismiss_patterns: &[],
+                quit_command: "/quit",
+                instructions_path: "AGENTS.md",
+                mcp_config_path: ".kiro/settings/mcp.json",
+                ready_timeout_secs: 30,
             },
             Backend::Codex => BackendPreset {
                 command: "codex",
@@ -59,6 +74,10 @@ impl Backend {
                     // TS: "Approaching rate limits" → Down+Down+Enter (keep current model)
                     ("Approaching rate limits", b"\x1b[B\x1b[B\r"),
                 ],
+                quit_command: "/quit",
+                instructions_path: "AGENTS.md",
+                mcp_config_path: "",
+                ready_timeout_secs: 30,
             },
             Backend::OpenCode => BackendPreset {
                 command: "opencode",
@@ -68,6 +87,10 @@ impl Backend {
                 inject_prefix: "\r",
                 typed_inject: false,
                 dismiss_patterns: &[],
+                quit_command: "exit",
+                instructions_path: "fleet-instructions.md",
+                mcp_config_path: "opencode.json",
+                ready_timeout_secs: 30,
             },
             Backend::Gemini => BackendPreset {
                 command: "gemini",
@@ -81,6 +104,10 @@ impl Backend {
                     ("Don't trust", b"\x1b[A\x1b[A\r"),
                     ("Trust folder", b"\r"),
                 ],
+                quit_command: "/quit",
+                instructions_path: "GEMINI.md",
+                mcp_config_path: ".gemini/settings.json",
+                ready_timeout_secs: 30,
             },
         }
     }

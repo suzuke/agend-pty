@@ -3,7 +3,7 @@
 //! Listens on ~/.agend/run/<pid>/api.sock
 //! Protocol: newline-delimited JSON (one request per line, one response per line)
 
-use crate::{channel, fleet_store, git, inbox, paths, state};
+use crate::{channel, event_log, fleet_store, git, inbox, paths, scheduler, state};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -205,12 +205,15 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
         }
         "broadcast" => {
             let message = args["message"].as_str().unwrap_or("");
+            let team = args["team"].as_str();
+            let team_members = team.and_then(fleet_store::get_team_members);
             let names: Vec<String> = ctx
                 .writers
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .keys()
                 .filter(|k| *k != instance)
+                .filter(|k| team_members.as_ref().map(|m| m.contains(k)).unwrap_or(true))
                 .cloned()
                 .collect();
             for target in &names {
@@ -529,6 +532,118 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                 Err(e) => json!({"content": [{"type": "text", "text": e}], "isError": true}),
             }
         }
+        "update_decision" => {
+            let id = args["id"].as_u64().unwrap_or(0);
+            let title = args["title"].as_str();
+            let content = args["content"].as_str();
+            match fleet_store::update_decision(id, title, content) {
+                Some(d) => {
+                    json!({"content": [{"type": "text", "text": json!({"updated": d.id}).to_string()}]})
+                }
+                None => {
+                    json!({"content": [{"type": "text", "text": "decision not found"}], "isError": true})
+                }
+            }
+        }
+        "team" => {
+            let action = args["action"].as_str().unwrap_or("");
+            match action {
+                "create" => {
+                    let name = args["name"].as_str().unwrap_or("");
+                    let members: Vec<String> = args["members"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let t = fleet_store::create_team(name, &members);
+                    json!({"content": [{"type": "text", "text": json!({"created": t.name}).to_string()}]})
+                }
+                "list" => {
+                    let teams = fleet_store::list_teams();
+                    let list: Vec<Value> = teams
+                        .iter()
+                        .map(|t| json!({"name": t.name, "members": t.members}))
+                        .collect();
+                    json!({"content": [{"type": "text", "text": json!({"teams": list}).to_string()}]})
+                }
+                "delete" => {
+                    let name = args["name"].as_str().unwrap_or("");
+                    fleet_store::delete_team(name);
+                    json!({"content": [{"type": "text", "text": json!({"deleted": name}).to_string()}]})
+                }
+                "update" => {
+                    let name = args["name"].as_str().unwrap_or("");
+                    let members: Vec<String> = args["members"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    match fleet_store::update_team(name, &members) {
+                        Some(t) => {
+                            json!({"content": [{"type": "text", "text": json!({"updated": t.name}).to_string()}]})
+                        }
+                        None => {
+                            json!({"content": [{"type": "text", "text": "team not found"}], "isError": true})
+                        }
+                    }
+                }
+                _ => {
+                    json!({"content": [{"type": "text", "text": format!("unknown team action: {action}")}], "isError": true})
+                }
+            }
+        }
+        "list_events" => {
+            let agent = args["agent"].as_str();
+            let etype = args["type"].as_str();
+            let events = event_log::list_events(agent, etype);
+            let list: Vec<Value> = events.iter().map(|e| json!({"ts": e.ts, "type": e.event_type, "agent": e.agent, "details": e.details})).collect();
+            json!({"content": [{"type": "text", "text": json!({"events": list}).to_string()}]})
+        }
+        "schedule" => {
+            let action = args["action"].as_str().unwrap_or("");
+            match action {
+                "create" => {
+                    let cron = args["cron"].as_str().unwrap_or("* * * * *");
+                    let target = args["target"].as_str().unwrap_or("");
+                    let message = args["message"].as_str().unwrap_or("");
+                    let s = scheduler::create_schedule(cron, target, message);
+                    json!({"content": [{"type": "text", "text": json!({"created": s.id}).to_string()}]})
+                }
+                "list" => {
+                    let schedules = scheduler::list_schedules();
+                    let list: Vec<Value> = schedules.iter().map(|s| json!({"id": s.id, "cron": s.cron, "target": s.target, "message": s.message})).collect();
+                    json!({"content": [{"type": "text", "text": json!({"schedules": list}).to_string()}]})
+                }
+                "delete" => {
+                    let id = args["id"].as_str().unwrap_or("");
+                    scheduler::delete_schedule(id);
+                    json!({"content": [{"type": "text", "text": json!({"deleted": id}).to_string()}]})
+                }
+                "update" => {
+                    let id = args["id"].as_str().unwrap_or("");
+                    let enabled = args["enabled"].as_bool();
+                    let cron = args["cron"].as_str();
+                    let message = args["message"].as_str();
+                    match scheduler::update_schedule(id, enabled, cron, message) {
+                        Some(s) => {
+                            json!({"content": [{"type": "text", "text": json!({"updated": s.id}).to_string()}]})
+                        }
+                        None => {
+                            json!({"content": [{"type": "text", "text": "schedule not found"}], "isError": true})
+                        }
+                    }
+                }
+                _ => {
+                    json!({"content": [{"type": "text", "text": format!("unknown schedule action: {action}")}], "isError": true})
+                }
+            }
+        }
         "create_instance" => {
             let name = args["instance_name"]
                 .as_str()
@@ -602,7 +717,7 @@ pub fn mcp_tools_list() -> Value {
         {"name":"request_information","description":"Ask another agent a question.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"question":{"type":"string"},"context":{"type":"string"}},"required":["instance_name","question"]}},
         {"name":"delegate_task","description":"Delegate a task to another agent.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"task":{"type":"string"},"success_criteria":{"type":"string"},"context":{"type":"string"}},"required":["instance_name","task"]}},
         {"name":"report_result","description":"Report results back.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"summary":{"type":"string"},"correlation_id":{"type":"string"},"artifacts":{"type":"string"}},"required":["instance_name","summary"]}},
-        {"name":"broadcast","description":"Send to all agents.","inputSchema":{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}},
+        {"name":"broadcast","description":"Send to all agents (or team members).","inputSchema":{"type":"object","properties":{"message":{"type":"string"},"team":{"type":"string"}},"required":["message"]}},
         {"name":"list_instances","description":"List running agents.","inputSchema":{"type":"object","properties":{}}},
         {"name":"describe_instance","description":"Get agent details.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"}},"required":["instance_name"]}},
         {"name":"delete_instance","description":"Stop an agent.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"cleanup_worktree":{"type":"boolean"}},"required":["instance_name"]}},
@@ -615,6 +730,10 @@ pub fn mcp_tools_list() -> Value {
         {"name":"wait_for_idle","description":"Wait for an agent to become idle.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"timeout_secs":{"type":"integer"}},"required":["instance_name"]}},
         {"name":"merge_preview","description":"Preview merge of agent branch.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"}},"required":["instance_name"]}},
         {"name":"merge_agent","description":"Squash merge agent branch.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"message":{"type":"string"}},"required":["instance_name"]}},
-        {"name":"create_instance","description":"Create a new agent instance.","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"working_directory":{"type":"string"},"backend":{"type":"string"},"model":{"type":"string"},"branch":{"type":"string"}},"required":["name"]}}
+        {"name":"create_instance","description":"Create a new agent instance.","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"working_directory":{"type":"string"},"backend":{"type":"string"},"model":{"type":"string"},"branch":{"type":"string"}},"required":["name"]}},
+        {"name":"update_decision","description":"Update a decision.","inputSchema":{"type":"object","properties":{"id":{"type":"integer"},"title":{"type":"string"},"content":{"type":"string"}},"required":["id"]}},
+        {"name":"team","description":"Team operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["create","list","delete","update"]},"name":{"type":"string"},"members":{"type":"array","items":{"type":"string"}}},"required":["action"]}},
+        {"name":"list_events","description":"List event log.","inputSchema":{"type":"object","properties":{"agent":{"type":"string"},"type":{"type":"string"}}}},
+        {"name":"schedule","description":"Cron schedule operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["create","list","delete","update"]},"cron":{"type":"string"},"target":{"type":"string"},"message":{"type":"string"},"id":{"type":"string"},"enabled":{"type":"boolean"}},"required":["action"]}}
     ]})
 }
