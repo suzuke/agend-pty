@@ -3,32 +3,74 @@
 use crate::paths;
 use std::fmt::Write as FmtWrite;
 
-/// Redact strings that look like bot tokens (digits:alphanum30+).
+/// Sensitive env var key patterns.
+const SENSITIVE_KEYS: &[&str] = &[
+    "API_KEY",
+    "SECRET",
+    "TOKEN",
+    "PASSWORD",
+    "PRIVATE_KEY",
+    "CREDENTIALS",
+];
+
+/// Redact secrets from text: bot tokens, API keys, Bearer tokens, sensitive env vars.
 fn redact(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for line in text.lines() {
-        let redacted = if let Some((key, val)) = line.split_once('=') {
-            let v = val.trim().trim_matches('"').trim_matches('\'');
-            if looks_like_token(v) {
-                format!("{key}=***REDACTED***")
-            } else {
-                line.to_owned()
-            }
-        } else {
-            line.to_owned()
-        };
-        out.push_str(&redacted);
+        out.push_str(&redact_line(line));
         out.push('\n');
     }
     out
 }
 
-fn looks_like_token(s: &str) -> bool {
-    if let Some((num, rest)) = s.split_once(':') {
-        !num.is_empty() && num.chars().all(|c| c.is_ascii_digit()) && rest.len() >= 30
-    } else {
-        false
+fn redact_line(line: &str) -> String {
+    let mut s = line.to_owned();
+    // KEY=value patterns (env vars)
+    if let Some((key, _val)) = s.split_once('=') {
+        let key_upper = key.trim().to_uppercase();
+        if SENSITIVE_KEYS.iter().any(|k| key_upper.contains(k)) {
+            return format!("{}=***REDACTED***", key.trim());
+        }
     }
+    // Telegram bot token: digits:alphanum30+
+    if let Some(pos) = s.find(':') {
+        let before = &s[..pos];
+        let after = &s[pos + 1..];
+        if before.len() >= 8
+            && before.chars().all(|c| c.is_ascii_digit())
+            && after.len() >= 30
+            && after
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            s = s.replace(&format!("{before}:{after}"), "***REDACTED***");
+        }
+    }
+    // sk-... API keys (OpenAI, Anthropic)
+    for prefix in &["sk-", "key-", "anthropic-"] {
+        if let Some(start) = s.find(prefix) {
+            let rest = &s[start + prefix.len()..];
+            let end = rest
+                .find(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
+                .unwrap_or(rest.len());
+            if end >= 20 {
+                let token = &s[start..start + prefix.len() + end];
+                s = s.replace(token, "***REDACTED***");
+            }
+        }
+    }
+    // Bearer tokens
+    if let Some(start) = s.find("Bearer ") {
+        let rest = &s[start + 7..];
+        let end = rest
+            .find(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '-' && c != '_')
+            .unwrap_or(rest.len());
+        if end >= 20 {
+            let token = &s[start..start + 7 + end];
+            s = s.replace(token, "Bearer ***REDACTED***");
+        }
+    }
+    s
 }
 
 fn cmd_output(cmd: &str, args: &[&str]) -> String {
