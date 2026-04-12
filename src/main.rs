@@ -21,6 +21,8 @@ mod git;
 mod instructions;
 #[path = "paths.rs"]
 mod paths;
+#[path = "quickstart.rs"]
+mod quickstart;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -51,6 +53,9 @@ fn main() {
         "attach" | "a" => {
             let bin = exe_dir().join("agend-tui");
             exec_with_args(&bin, &sub_args);
+        }
+        "quickstart" | "init" | "setup" => {
+            quickstart::run();
         }
         "doctor" | "doc" => {
             doctor::run();
@@ -179,6 +184,7 @@ fn print_help() {
     println!("USAGE:");
     println!("    agend-pty <COMMAND>\n");
     println!("COMMANDS:");
+    println!("    quickstart             Interactive setup wizard");
     println!("    daemon [name:cmd ...]  Start the daemon (manages agents)");
     println!("    attach [agent]         Connect TUI to a running agent");
     println!("    status                 Show running daemons and agents");

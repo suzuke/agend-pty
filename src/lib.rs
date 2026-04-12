@@ -13,6 +13,7 @@ pub mod inbox;
 pub mod instructions;
 pub mod mcp_config;
 pub mod paths;
+pub mod quickstart;
 pub mod scheduler;
 pub mod state;
 pub mod telegram;
