@@ -728,6 +728,40 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                 }
             }
         }
+        "start_instance" => {
+            let name = args["instance_name"]
+                .as_str()
+                .or_else(|| args["name"].as_str())
+                .unwrap_or("");
+            if name.is_empty() {
+                return json!({"content": [{"type": "text", "text": "instance_name required"}], "isError": true});
+            }
+            // Already running?
+            let running = ctx
+                .writers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(name);
+            if running {
+                return json!({"content": [{"type": "text", "text": format!("instance '{name}' already running")}], "isError": true});
+            }
+            // Reset health so respawn triggers
+            if let Some(handle) = ctx
+                .states
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(name)
+            {
+                if let Ok(mut h) = handle.health.lock() {
+                    h.reset();
+                }
+                if let Ok(mut s) = handle.state_machine.lock() {
+                    s.on_restart(std::time::Instant::now());
+                    s.on_restart_complete(std::time::Instant::now());
+                }
+            }
+            json!({"content": [{"type": "text", "text": json!({"started": name}).to_string()}]})
+        }
         "create_instance" => {
             let name = args["instance_name"]
                 .as_str()
@@ -940,6 +974,7 @@ pub fn mcp_tools_list() -> Value {
         {"name":"edit_message","description":"Edit a sent message.","inputSchema":{"type":"object","properties":{"message_id":{"type":"string"},"text":{"type":"string"}},"required":["message_id","text"]}},
         {"name":"wait_for_idle","description":"Wait for an agent to become idle.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"timeout_secs":{"type":"integer"}},"required":["instance_name"]}},
         {"name":"merge","description":"Git merge operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["preview","squash","all"]},"instance_name":{"type":"string"},"message":{"type":"string"}},"required":["action"]}},
+        {"name":"start_instance","description":"Restart a stopped/failed agent.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"}},"required":["instance_name"]}},
         {"name":"create_instance","description":"Create a new agent instance.","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"working_directory":{"type":"string"},"backend":{"type":"string"},"model":{"type":"string"},"branch":{"type":"string"}},"required":["name"]}},
         {"name":"replace_instance","description":"Replace an agent with new settings (atomic swap).","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string","description":"Agent to replace"},"backend":{"type":"string"},"model":{"type":"string"},"working_directory":{"type":"string"},"branch":{"type":"string"}},"required":["instance_name"]}},
         {"name":"team","description":"Team operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["create","list","delete","update"]},"name":{"type":"string"},"members":{"type":"array","items":{"type":"string"}}},"required":["action"]}},
