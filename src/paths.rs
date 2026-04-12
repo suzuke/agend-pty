@@ -241,7 +241,8 @@ pub fn find_active_run_dir() -> Option<PathBuf> {
 /// Find TUI socket for an agent name (for TUI client).
 pub fn find_agent_tui_socket(name: &str) -> Option<PathBuf> {
     let run = find_active_run_dir()?;
-    let sock = run.join("agents").join(name).join("tui.sock");
+    let safe = crate::util::sanitize_name(name);
+    let sock = run.join("agents").join(safe).join("tui.sock");
     if sock.exists() {
         Some(sock)
     } else {

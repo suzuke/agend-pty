@@ -50,7 +50,7 @@ type PtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 /// Core state for one agent — protected by a single Mutex for atomic operations.
 struct AgentCore {
     vterm: vterm::VTerm,
-    /// Output subscribers — each gets its own unbounded channel.
+    /// Output subscribers — each gets its own bounded(1024) channel.
     /// Dead subscribers auto-removed on send failure.
     subscribers: Vec<crossbeam::channel::Sender<Vec<u8>>>,
 }
@@ -777,6 +777,7 @@ fn main() {
     paths::init();
     fleet_store::init_counters();
     scheduler::init_counter();
+    inbox::init_counter();
     tracing::info!(path = %paths::run_dir().display(), "run dir");
 
     // Acquire daemon lock (prevents duplicate fleet daemons)
@@ -1009,7 +1010,10 @@ fn main() {
         }
     }
 
-    // Build API-visible spawn configs from daemon's spawn configs
+    // Build API-visible spawn configs from daemon's spawn configs.
+    // Two maps exist by design: daemon SpawnConfigs holds Arc<Mutex<StateMachine/Health>>
+    // for respawn continuity; API SpawnConfigInfo is lightweight for start_instance lookups.
+    // Fleet.yaml agents are populated here; dynamic instances are synced via spawn_handler.
     let api_spawn_configs: Arc<Mutex<HashMap<String, api::SpawnConfigInfo>>> = {
         let configs = spawn_configs.lock().unwrap_or_else(|e| e.into_inner());
         let map: HashMap<String, api::SpawnConfigInfo> = configs
@@ -1031,7 +1035,7 @@ fn main() {
     };
 
     // Spawn request channel (create_instance sends here, daemon thread spawns)
-    let (spawn_tx, spawn_rx) = crossbeam::channel::unbounded::<api::SpawnConfigInfo>();
+    let (spawn_tx, spawn_rx) = crossbeam::channel::bounded::<api::SpawnConfigInfo>(64);
 
     // Start API socket
     api::start(Arc::new(api::DaemonCtx {
