@@ -44,10 +44,14 @@ impl TelegramAdapter {
         let mut t = self.topics.lock().unwrap_or_else(|e| e.into_inner());
         t.by_name.insert(agent.to_owned(), thread_id);
         t.by_id.insert(thread_id, agent.to_owned());
-        let _ = std::fs::write(
-            Self::topics_path(),
-            serde_json::to_string_pretty(&t.by_name).unwrap_or_default(),
-        );
+        // Atomic write: tmp + rename to prevent corruption on crash
+        let path = Self::topics_path();
+        let tmp = path.with_extension("json.tmp");
+        if let Ok(data) = serde_json::to_string_pretty(&t.by_name) {
+            if std::fs::write(&tmp, &data).is_ok() {
+                let _ = std::fs::rename(&tmp, &path);
+            }
+        }
     }
 
     fn topics_path() -> std::path::PathBuf {

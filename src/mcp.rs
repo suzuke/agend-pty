@@ -79,7 +79,16 @@ fn main() {
 
         let mut req: serde_json::Value = match serde_json::from_str(trimmed) {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(e) => {
+                let err_resp = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": null,
+                    "error": {"code": -32700, "message": format!("Parse error: {e}")}
+                });
+                writeln!(stdout, "{err_resp}").ok();
+                stdout.flush().ok();
+                continue;
+            }
         };
 
         // Skip notifications (no id → no response expected)

@@ -13,6 +13,25 @@ const MAX_DIRECT_INJECT_LEN: usize = 500;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Initialize ID counter from persisted inbox files to avoid collisions after restart.
+pub fn init_counter() {
+    let dir = paths::run_dir().join("inbox");
+    let mut max_id = 0u64;
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            if entry.path().extension().is_some_and(|e| e == "jsonl") {
+                let msgs: Vec<InboxMessage> = util::read_jsonl(&entry.path());
+                for m in &msgs {
+                    max_id = max_id.max(m.id);
+                }
+            }
+        }
+    }
+    if max_id > 0 {
+        NEXT_ID.store(max_id + 1, Ordering::Relaxed);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InboxMessage {
     pub id: u64,

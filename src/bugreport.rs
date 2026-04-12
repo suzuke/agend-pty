@@ -46,21 +46,26 @@ fn redact_line(line: &str) -> String {
             s = s.replace(&format!("{before}:{after}"), "***REDACTED***");
         }
     }
-    // sk-... API keys (OpenAI, Anthropic)
-    for prefix in &["sk-", "key-", "anthropic-"] {
-        if let Some(start) = s.find(prefix) {
+    // Prefixed API keys / tokens (all occurrences)
+    for prefix in &[
+        "sk-", "key-", "anthropic-", "xoxb-", "xoxp-", "xoxa-", "ghp_", "gho_", "ghs_",
+        "github_pat_",
+    ] {
+        while let Some(start) = s.find(prefix) {
             let rest = &s[start + prefix.len()..];
             let end = rest
                 .find(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
                 .unwrap_or(rest.len());
-            if end >= 20 {
+            if end >= 10 {
                 let token = &s[start..start + prefix.len() + end];
                 s = s.replace(token, "***REDACTED***");
+            } else {
+                break;
             }
         }
     }
-    // Bearer tokens
-    if let Some(start) = s.find("Bearer ") {
+    // Bearer tokens (all occurrences)
+    while let Some(start) = s.find("Bearer ") {
         let rest = &s[start + 7..];
         let end = rest
             .find(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '-' && c != '_')
@@ -68,6 +73,8 @@ fn redact_line(line: &str) -> String {
         if end >= 20 {
             let token = &s[start..start + 7 + end];
             s = s.replace(token, "Bearer ***REDACTED***");
+        } else {
+            break;
         }
     }
     s
