@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! MCP server — identity-injecting bridge to daemon API socket.
 //! Spawned by CLI agents as their MCP server process.
 //! Instance identity via AGEND_INSTANCE_NAME env var.
@@ -6,11 +5,9 @@
 //! Forwards all MCP JSON-RPC to daemon's API socket with `_instance`
 //! field injected. Daemon handles protocol natively.
 
+use agend_pty_poc::paths;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-
-#[path = "paths.rs"]
-mod paths;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

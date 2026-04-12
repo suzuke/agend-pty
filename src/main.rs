@@ -1,32 +1,6 @@
-#![allow(dead_code, unused_imports)]
 //! agend-pty — single binary with subcommands.
-//!
-//! Usage:
-//!   agend-pty daemon [name:command ...]   Start the daemon
-//!   agend-pty attach [agent-name]         Attach to agent terminal
-//!   agend-pty doctor                      Health check
-//!   agend-pty list                        List running agents
-//!   agend-pty inject <agent> <message>    Inject message to agent
-//!   agend-pty shutdown                    Stop running daemon
 
-#[path = "bugreport.rs"]
-mod bugreport;
-#[path = "config.rs"]
-mod config;
-#[path = "demo.rs"]
-mod demo;
-#[path = "doctor.rs"]
-mod doctor;
-#[path = "features.rs"]
-mod features;
-#[path = "git.rs"]
-mod git;
-#[path = "instructions.rs"]
-mod instructions;
-#[path = "paths.rs"]
-mod paths;
-#[path = "quickstart.rs"]
-mod quickstart;
+use agend_pty_poc::{bugreport, config, demo, doctor, features, git, paths, quickstart};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

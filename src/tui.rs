@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 //! agend-tui: connects to a named agent, raw terminal passthrough.
 //!
 //! Usage: agend-tui [agent-name]
@@ -7,13 +6,11 @@
 //!
 //! Ctrl+B d to detach (agent keeps running).
 
+use agend_pty_poc::paths;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
-
-#[path = "paths.rs"]
-mod paths;
 
 const TAG_DATA: u8 = 0;
 const TAG_RESIZE: u8 = 1;

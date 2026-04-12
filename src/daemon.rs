@@ -1,44 +1,10 @@
 #![allow(dead_code, unused_imports)]
 //! agend-daemon: multi-agent PTY manager.
 
-#[path = "api.rs"]
-mod api;
-#[path = "backend.rs"]
-mod backend;
-#[path = "channel.rs"]
-mod channel;
-#[path = "config.rs"]
-mod config;
-#[path = "doctor.rs"]
-mod doctor;
-#[path = "event_log.rs"]
-mod event_log;
-#[path = "features.rs"]
-mod features;
-#[path = "fleet_store.rs"]
-mod fleet_store;
-#[path = "git.rs"]
-mod git;
-#[path = "health.rs"]
-mod health;
-#[path = "inbox.rs"]
-mod inbox;
-#[path = "instructions.rs"]
-mod instructions;
-#[path = "mcp_config.rs"]
-mod mcp_config;
-#[path = "paths.rs"]
-mod paths;
-#[path = "scheduler.rs"]
-mod scheduler;
-#[path = "state.rs"]
-mod state;
-#[path = "telegram.rs"]
-mod telegram;
-#[path = "util.rs"]
-mod util;
-#[path = "vterm.rs"]
-mod vterm;
+use agend_pty_poc::{
+    api, backend, channel, config, event_log, features, fleet_store, git, health, inbox,
+    instructions, mcp_config, paths, scheduler, state, telegram, vterm,
+};
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
