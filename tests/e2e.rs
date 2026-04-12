@@ -521,6 +521,33 @@ fn e2e_all_tools_respond() {
 }
 
 #[test]
+fn e2e_delete_instance() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
+    wait_for_agents(&sock, 2, 15);
+    // Delete bob
+    let r = mcp_call(
+        &sock,
+        "alice",
+        "delete_instance",
+        &serde_json::json!({"instance_name": "bob"}),
+    );
+    assert_eq!(r["ok"].as_bool(), Some(true), "delete failed: {r}");
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("bob"), "expected bob in response: {text}");
+    // Delete non-existent → error
+    let r = mcp_call(
+        &sock,
+        "alice",
+        "delete_instance",
+        &serde_json::json!({"instance_name": "nobody"}),
+    );
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("not found"), "expected not found: {text}");
+    drop(guard);
+}
+
+#[test]
 fn e2e_demo_binary_exists() {
     // Verify the demo subcommand is wired up (--help should list it)
     let output = Command::new(env!("CARGO_BIN_EXE_agend-pty"))
