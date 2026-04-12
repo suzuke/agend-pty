@@ -330,3 +330,48 @@ impl BotApi {
         Ok(result.as_array().cloned().unwrap_or_default())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn topic_map_register_and_lookup() {
+        let mut tm = TopicMap {
+            by_name: HashMap::new(),
+            by_id: HashMap::new(),
+        };
+        tm.by_name.insert("alice".into(), 100);
+        tm.by_id.insert(100, "alice".into());
+        assert_eq!(tm.by_name.get("alice"), Some(&100));
+        assert_eq!(tm.by_id.get(&100), Some(&"alice".to_string()));
+    }
+
+    #[test]
+    fn topic_map_remove() {
+        let mut tm = TopicMap {
+            by_name: HashMap::new(),
+            by_id: HashMap::new(),
+        };
+        tm.by_name.insert("bob".into(), 200);
+        tm.by_id.insert(200, "bob".into());
+        let tid = tm.by_name.remove("bob");
+        assert_eq!(tid, Some(200));
+        tm.by_id.remove(&200);
+        assert!(tm.by_id.is_empty());
+    }
+
+    #[test]
+    fn topic_map_multiple_agents() {
+        let mut tm = TopicMap {
+            by_name: HashMap::new(),
+            by_id: HashMap::new(),
+        };
+        tm.by_name.insert("a".into(), 1);
+        tm.by_name.insert("b".into(), 2);
+        tm.by_id.insert(1, "a".into());
+        tm.by_id.insert(2, "b".into());
+        assert_eq!(tm.by_name.len(), 2);
+        assert_eq!(tm.by_id.get(&2), Some(&"b".to_string()));
+    }
+}

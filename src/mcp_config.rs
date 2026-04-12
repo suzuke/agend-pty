@@ -129,3 +129,36 @@ fn write_codex_mcp(name: &str, mcp_bin_path: &str, mcp_bin_args: &[&str]) -> Res
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wrapper_script_exports_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        let script = write_wrapper_script(tmp.path(), "alice", "/usr/bin/agend-mcp", &[]);
+        let content = std::fs::read_to_string(&script).unwrap();
+        assert!(content.contains("export AGEND_INSTANCE_NAME=\"alice\""));
+        assert!(content.contains("exec \"/usr/bin/agend-mcp\""));
+        assert!(content.starts_with("#!/bin/bash"));
+    }
+
+    #[test]
+    fn wrapper_script_includes_args() {
+        let tmp = tempfile::tempdir().unwrap();
+        let script = write_wrapper_script(tmp.path(), "bob", "/bin/mcp", &["--socket", "/tmp/s"]);
+        let content = std::fs::read_to_string(&script).unwrap();
+        assert!(content.contains("\"--socket\" \"/tmp/s\""));
+    }
+
+    #[test]
+    fn merge_json_key_creates_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("test.json");
+        merge_json_key(&path, "servers", "agend-test", &json!({"cmd": "x"})).unwrap();
+        let content: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(content["servers"]["agend-test"]["cmd"].as_str() == Some("x"));
+    }
+}
