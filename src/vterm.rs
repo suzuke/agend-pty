@@ -54,7 +54,6 @@ impl VTerm {
         self.processor.advance(&mut self.term, data);
     }
 
-    #[allow(dead_code)]
     pub fn resize(&mut self, cols: u16, rows: u16) {
         self.cols = cols;
         self.rows = rows;
