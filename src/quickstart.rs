@@ -73,10 +73,6 @@ fn expand_tilde(path: &str) -> String {
     }
 }
 
-fn home_dir() -> String {
-    std::env::var("HOME").unwrap_or_else(|_| ".".into())
-}
-
 /// Check if a string looks like a Telegram bot token (digits:alphanumeric).
 fn looks_like_bot_token(s: &str) -> bool {
     let Some((num, rest)) = s.split_once(':') else {

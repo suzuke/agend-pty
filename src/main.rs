@@ -71,7 +71,7 @@ fn main() {
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| "fleet-snapshot.json".into());
             if let Err(e) = features::restore(&input) {
-                eprintln!("Error: {e}");
+                eprintln!("Error: {e}\nUsage: agend-pty restore -i <snapshot.json>");
                 std::process::exit(1);
             }
         }

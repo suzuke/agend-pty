@@ -94,9 +94,10 @@ pub fn snapshot(config_path: Option<&Path>, output: &Path) -> Result<(), String>
             ["fleet.yaml", "fleet.yml"]
                 .iter()
                 .map(std::path::PathBuf::from)
+                .chain(std::iter::once(crate::paths::home().join("fleet.yaml")))
                 .find(|p| p.exists())
         })
-        .ok_or("fleet.yaml not found")?;
+        .ok_or("fleet.yaml not found (checked ./fleet.yaml, ~/.agend/fleet.yaml)")?;
     let fleet_yaml = std::fs::read_to_string(&cfg_path).map_err(|e| format!("read: {e}"))?;
     let cfg: config::FleetConfig =
         serde_yml::from_str(&fleet_yaml).map_err(|e| format!("parse: {e}"))?;

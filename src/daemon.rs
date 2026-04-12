@@ -305,9 +305,12 @@ fn spawn_agent(
     let final_command = if !resume_flag.is_empty()
         && !final_command.contains(resume_flag.split_whitespace().next().unwrap_or(""))
     {
-        // Check if agent had a previous session (worktree or working_dir exists with history)
-        let has_session = working_dir.as_ref().map(|wd| wd.exists()).unwrap_or(false);
-        if has_session {
+        // Resume only on respawn (SpawnConfig already exists = had a previous session)
+        let is_respawn = spawn_configs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&name);
+        if is_respawn {
             format!("{final_command} {resume_flag}")
         } else {
             final_command
