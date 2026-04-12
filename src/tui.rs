@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_imports, clippy::unwrap_used)]
+#![allow(dead_code, unused_imports)]
 //! agend-tui: connects to a named agent, raw terminal passthrough.
 //!
 //! Usage: agend-tui [agent-name]
@@ -78,7 +78,7 @@ fn main() {
             eprintln!("Agent '{agent}' not found.");
             let agents = paths::list_agents();
             if agents.is_empty() {
-                eprintln!("No daemon running. Start one with: agend-daemon");
+                eprintln!("No daemon running. Start with: agend-pty daemon");
             } else {
                 eprintln!("Available agents:");
                 for a in agents {
@@ -113,7 +113,7 @@ fn main() {
                 stdout.flush().ok();
             }
         })
-        .unwrap();
+        .expect("spawn output thread");
 
     let mut last_cols = cols;
     let mut last_rows = rows;

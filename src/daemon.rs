@@ -35,6 +35,8 @@ mod scheduler;
 mod state;
 #[path = "telegram.rs"]
 mod telegram;
+#[path = "util.rs"]
+mod util;
 #[path = "vterm.rs"]
 mod vterm;
 
@@ -250,11 +252,11 @@ fn inject_to_pty(writer: &PtyWriter, text: &str, submit_key: &str) {
 }
 
 fn setup_mcp_config(name: &str) -> (std::path::PathBuf, String) {
-    let bridge_path = paths::exe_sibling("agend-mcp");
+    let mcp_bin = paths::exe_sibling("agend-mcp");
     let mcp_config_path = paths::agent_dir(name).join("mcp-config.json");
     let mcp_config = serde_json::json!({
         "mcpServers": { format!("agend-{name}"): {
-            "command": bridge_path.display().to_string(),
+            "command": mcp_bin.display().to_string(),
             "args": [],
             "env": { "AGEND_INSTANCE_NAME": name }
         } }

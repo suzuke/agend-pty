@@ -2,16 +2,16 @@ use serde_json::{json, Value};
 use std::path::Path;
 
 /// Write MCP config for the detected backend.
-/// `bridge_args`: the args to pass to agend-mcp-bridge (e.g. ["--socket", "/path/to/mcp.sock"])
+/// `mcp_bin_args`: the args to pass to agend-mcp (e.g. ["--socket", "/path/to/mcp.sock"])
 pub fn write_mcp_config(
     working_dir: &Path,
     command: &str,
     name: &str,
-    bridge_path: &str,
-    bridge_args: &[&str],
+    mcp_bin_path: &str,
+    mcp_bin_args: &[&str],
 ) {
     let key = format!("agend-{name}");
-    let entry = json!({ "command": bridge_path, "args": bridge_args });
+    let entry = json!({ "command": mcp_bin_path, "args": mcp_bin_args });
     let cmd = command.to_lowercase();
 
     let result = if cmd.contains("claude") {
@@ -32,15 +32,15 @@ pub fn write_mcp_config(
             &entry,
         )
     } else if cmd.contains("opencode") {
-        let mut cmd_array = vec![bridge_path.to_owned()];
-        cmd_array.extend(bridge_args.iter().map(|s| s.to_string()));
+        let mut cmd_array = vec![mcp_bin_path.to_owned()];
+        cmd_array.extend(mcp_bin_args.iter().map(|s| s.to_string()));
         let oc_entry = json!({
             "type": "local",
             "command": cmd_array,
         });
         merge_json_key(&working_dir.join("opencode.json"), "mcp", &key, &oc_entry)
     } else if cmd.contains("codex") {
-        write_codex_mcp(name, bridge_path, bridge_args)
+        write_codex_mcp(name, mcp_bin_path, mcp_bin_args)
     } else {
         Ok(())
     };
@@ -87,7 +87,7 @@ fn merge_json_key(path: &Path, section: &str, key: &str, value: &Value) -> Resul
 }
 
 /// Codex: use `codex mcp add` command (idempotent: remove first, then add).
-fn write_codex_mcp(name: &str, bridge_path: &str, bridge_args: &[&str]) -> Result<(), String> {
+fn write_codex_mcp(name: &str, mcp_bin_path: &str, mcp_bin_args: &[&str]) -> Result<(), String> {
     let key = format!("agend-{name}");
     let codex = "codex"; // assume in PATH
 
@@ -98,8 +98,8 @@ fn write_codex_mcp(name: &str, bridge_path: &str, bridge_args: &[&str]) -> Resul
 
     // Add
     let mut args = vec!["mcp", "add", &key, "--"];
-    args.push(bridge_path);
-    for a in bridge_args {
+    args.push(mcp_bin_path);
+    for a in mcp_bin_args {
         args.push(a);
     }
 

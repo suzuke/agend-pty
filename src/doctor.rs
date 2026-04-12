@@ -55,17 +55,19 @@ pub fn run() {
         }
     }
 
-    // 5. Bridge binary
+    // 5. MCP binary
     let daemon_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|par| par.to_path_buf()))
         .unwrap_or_default();
-    let bridge = daemon_dir.join("agend-mcp-bridge");
-    if bridge.exists() {
-        println!("✅ agend-mcp-bridge found at {}", bridge.display());
+    let mcp_bin = daemon_dir.join("agend-mcp");
+    if mcp_bin.exists() {
+        println!("✅ agend-mcp found at {}", mcp_bin.display());
         ok += 1;
     } else {
-        println!("❌ agend-mcp-bridge not found (should be next to agend-daemon)");
+        println!(
+            "❌ agend-mcp not found (should be next to agend-daemon). Build with: cargo build"
+        );
         fail += 1;
     }
 

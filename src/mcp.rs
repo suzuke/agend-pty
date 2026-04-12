@@ -1,7 +1,11 @@
-#![allow(dead_code, unused_imports, clippy::unwrap_used)]
+#![allow(dead_code)]
 //! MCP server — stdin NDJSON → API socket → stdout NDJSON.
 //! Spawned by CLI agents as their MCP server process.
 //! Instance identity via AGEND_INSTANCE_NAME env var.
+//!
+//! Supports explicit socket path or auto-discovery:
+//!   agend-mcp --socket <path>   (explicit API socket)
+//!   agend-mcp <agent-name>      (discover via active run dir)
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -10,15 +14,37 @@ use std::os::unix::net::UnixStream;
 mod paths;
 
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+
+    // Parse --socket <path> for explicit API socket override
+    let explicit_socket = if args.len() >= 2 && args[0] == "--socket" {
+        Some(std::path::PathBuf::from(&args[1]))
+    } else {
+        None
+    };
+
     let instance = std::env::var("AGEND_INSTANCE_NAME").unwrap_or_else(|_| {
-        std::env::args().nth(1).unwrap_or_else(|| {
-            eprintln!("AGEND_INSTANCE_NAME not set");
+        // Fall back to first positional arg (skip --socket pair)
+        let positional = if explicit_socket.is_some() {
+            args.get(2)
+        } else {
+            args.first()
+        };
+        positional.cloned().unwrap_or_else(|| {
+            eprintln!("Usage: agend-mcp [--socket <path>] <instance-name>");
+            eprintln!("  or set AGEND_INSTANCE_NAME env var");
             std::process::exit(1);
         })
     });
 
     // Find API socket (retry for daemon startup)
-    let api_sock = {
+    let api_sock = if let Some(sock) = explicit_socket {
+        if !sock.exists() {
+            eprintln!("[mcp] socket not found: {}", sock.display());
+            std::process::exit(1);
+        }
+        sock
+    } else {
         let mut attempts = 0;
         loop {
             if let Some(run) = paths::find_active_run_dir() {
@@ -29,7 +55,9 @@ fn main() {
             }
             attempts += 1;
             if attempts > 50 {
-                eprintln!("[mcp] no daemon API socket found after 5s");
+                eprintln!(
+                    "[mcp] no daemon API socket found after 5s. Start with: agend-pty daemon"
+                );
                 std::process::exit(1);
             }
             if attempts % 10 == 0 {
@@ -68,8 +96,13 @@ fn main() {
                 "capabilities": { "tools": { "listChanged": false } },
                 "serverInfo": { "name": "agend", "version": "0.1.0" }
             }),
-            "tools/list" => api_call(&api_sock, "mcp_tools_list", &serde_json::json!({}))
-                .unwrap_or_else(|_| tools_list_fallback()),
+            "tools/list" => match api_call(&api_sock, "mcp_tools_list", &serde_json::json!({})) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("[mcp] tools/list failed: {e}");
+                    serde_json::json!({"tools": []})
+                }
+            },
             "tools/call" => {
                 let tool = req["params"]["name"].as_str().unwrap_or("");
                 let args = &req["params"]["arguments"];
@@ -113,14 +146,4 @@ fn api_call(
     } else {
         Err(resp["error"].as_str().unwrap_or("unknown").to_owned())
     }
-}
-
-fn tools_list_fallback() -> serde_json::Value {
-    serde_json::json!({"tools": [
-        {"name":"reply","description":"Reply to Telegram user.","inputSchema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}},
-        {"name":"send_to_instance","description":"Send message to another agent.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"message":{"type":"string"}},"required":["instance_name","message"]}},
-        {"name":"broadcast","description":"Send to all agents.","inputSchema":{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}},
-        {"name":"list_instances","description":"List running agents.","inputSchema":{"type":"object","properties":{}}},
-        {"name":"inbox","description":"Read inbox messages.","inputSchema":{"type":"object","properties":{"id":{"type":"integer"}}}}
-    ]})
 }

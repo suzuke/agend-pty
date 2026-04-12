@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_imports, clippy::unwrap_used)]
+#![allow(dead_code, unused_imports)]
 //! agend-pty — single binary with subcommands.
 //!
 //! Usage:
@@ -33,7 +33,6 @@ fn main() {
     let cmd = match bin_name {
         "agend-daemon" => "daemon",
         "agend-tui" => "attach",
-        "agend-mcp-bridge" => "mcp-bridge",
         _ => args.get(1).map(|s| s.as_str()).unwrap_or("help"),
     };
 
@@ -51,10 +50,6 @@ fn main() {
         }
         "attach" | "a" => {
             let bin = exe_dir().join("agend-tui");
-            exec_with_args(&bin, &sub_args);
-        }
-        "mcp-bridge" => {
-            let bin = exe_dir().join("agend-mcp-bridge");
             exec_with_args(&bin, &sub_args);
         }
         "doctor" | "doc" => {
@@ -103,7 +98,7 @@ fn main() {
                     Err(e) => eprintln!("Cannot connect to daemon: {e}"),
                 }
             } else {
-                eprintln!("No running daemon. Start one with: agend-pty daemon");
+                eprintln!("No running daemon found. Start with: agend-pty daemon");
             }
         }
         "list" | "ls" => {
@@ -157,7 +152,7 @@ fn main() {
                     Err(e) => eprintln!("Cannot connect to API: {e}"),
                 }
             } else {
-                eprintln!("No running daemon. Start one with: agend-pty daemon");
+                eprintln!("No running daemon found. Start with: agend-pty daemon");
             }
         }
         "cleanup" => {

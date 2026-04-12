@@ -218,19 +218,20 @@ if ! ls ~/.agend/run/*/agents/alice/tui.sock >/dev/null 2>&1; then pass "session
 if ls ~/.agend/run/*/agents/bob/tui.sock >/dev/null 2>&1; then pass "bob still alive"; else fail "bob gone"; fi
 
 echo ""
-echo "=== Test 9: MCP bridge (stdio↔socket) ==="
+echo "=== Test 9: MCP server (stdio↔socket) ==="
 RESULT=$(python3 -c "
 import subprocess, json, time, os, glob
-# Find bob's MCP socket
-socks = glob.glob(os.path.expanduser('~/.agend/run/*/agents/bob/mcp.sock'))
+# Find the API socket
+socks = glob.glob(os.path.expanduser('~/.agend/run/*/api.sock'))
 if not socks:
     print('fail:no_socket')
     exit()
 proc = subprocess.Popen(
-    ['./target/debug/agend-mcp-bridge', '--socket', socks[0]],
-    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    ['./target/debug/agend-mcp', '--socket', socks[0]],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    env={**os.environ, 'AGEND_INSTANCE_NAME': 'bob'}
 )
-# Bridge expects NDJSON on stdin, returns NDJSON on stdout
+# MCP server expects NDJSON on stdin, returns NDJSON on stdout
 req = json.dumps({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2024-11-05','capabilities':{},'clientInfo':{'name':'test'}}})
 proc.stdin.write((req + '\n').encode())
 proc.stdin.flush()

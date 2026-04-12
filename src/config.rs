@@ -88,7 +88,6 @@ impl InstanceConfig {
             return cmd.clone();
         }
         let backend_str = self.backend_or(defaults);
-        // Resolve backend name to actual binary (e.g., "claude-code" → "claude")
         let resolved = resolve_backend_binary(backend_str);
         let mut parts = vec![resolved.clone()];
         if self.skip_permissions && resolved == "claude" {
@@ -119,7 +118,7 @@ impl FleetConfig {
                 return Self::load(p);
             }
         }
-        Err("fleet.yaml not found (checked ./fleet.yaml, ~/.agend/fleet.yaml)".into())
+        Err("fleet.yaml not found. Create one or use: agend-pty quickstart (checked ./fleet.yaml, ~/.agend/fleet.yaml)".into())
     }
 
     pub fn telegram_config(&self) -> Option<(String, i64)> {
@@ -136,7 +135,7 @@ fn dirs() -> PathBuf {
 }
 
 /// Resolve backend name to actual binary command.
-fn resolve_backend_binary(backend: &str) -> String {
+pub fn resolve_backend_binary(backend: &str) -> String {
     match backend {
         "claude-code" | "claude" => "claude".into(),
         "kiro-cli" | "kiro" => "kiro-cli".into(),

@@ -1,8 +1,7 @@
 //! Cron scheduler — uses `cron` crate for expression parsing + JSONL storage.
 
-use crate::paths;
+use crate::{paths, util};
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, Write};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -22,29 +21,6 @@ fn schedules_path() -> std::path::PathBuf {
     paths::run_dir().join("schedules.jsonl")
 }
 
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-fn append(s: &Schedule) {
-    let path = schedules_path();
-    if let Some(p) = path.parent() {
-        std::fs::create_dir_all(p).ok();
-    }
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        if let Ok(line) = serde_json::to_string(s) {
-            let _ = writeln!(f, "{line}");
-        }
-    }
-}
-
 pub fn create_schedule(cron_expr: &str, target: &str, message: &str) -> Result<Schedule, String> {
     // Validate cron expression
     cron::Schedule::from_str(cron_expr).map_err(|e| format!("invalid cron: {e}"))?;
@@ -56,21 +32,12 @@ pub fn create_schedule(cron_expr: &str, target: &str, message: &str) -> Result<S
         enabled: true,
         last_run: 0,
     };
-    append(&s);
+    util::append_jsonl(&schedules_path(), &s);
     Ok(s)
 }
 
 pub fn list_schedules() -> Vec<Schedule> {
-    let path = schedules_path();
-    let file = match std::fs::File::open(&path) {
-        Ok(f) => f,
-        Err(_) => return vec![],
-    };
-    let all: Vec<Schedule> = std::io::BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .filter_map(|l| serde_json::from_str(&l).ok())
-        .collect();
+    let all: Vec<Schedule> = util::read_jsonl(&schedules_path());
     let mut map = std::collections::HashMap::new();
     for s in all {
         map.insert(s.id.clone(), s);
@@ -94,14 +61,14 @@ pub fn update_schedule(
     if let Some(m) = message {
         s.message = m.into();
     }
-    append(&s);
+    util::append_jsonl(&schedules_path(), &s);
     Some(s)
 }
 
 pub fn delete_schedule(id: &str) -> bool {
     if let Some(mut s) = list_schedules().into_iter().find(|s| s.id == id) {
         s.enabled = false;
-        append(&s);
+        util::append_jsonl(&schedules_path(), &s);
         true
     } else {
         false
@@ -128,8 +95,8 @@ pub fn check_due(now_epoch: u64) -> Vec<(String, String, String)> {
 
 pub fn mark_run(id: &str) {
     if let Some(mut s) = list_schedules().into_iter().find(|s| s.id == id) {
-        s.last_run = now_secs();
-        append(&s);
+        s.last_run = util::now_secs();
+        util::append_jsonl(&schedules_path(), &s);
     }
 }
 

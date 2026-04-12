@@ -23,10 +23,6 @@ name = "agend-tui"
 path = "src/tui.rs"
 
 [[bin]]
-name = "agend-mcp-bridge"
-path = "src/mcp_bridge.rs"
-
-[[bin]]
 name = "agend-mcp"
 path = "src/mcp.rs"
 

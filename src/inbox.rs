@@ -3,9 +3,9 @@
 //! Messages stored at ~/.agend/run/<pid>/inbox/{agent_name}.jsonl
 //! One JSON object per line, append-only. POSIX small writes are atomic.
 
-use crate::paths;
+use crate::{paths, util};
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, Write};
+use std::io::BufRead;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -27,13 +27,6 @@ fn inbox_path(agent: &str) -> PathBuf {
     let dir = paths::run_dir().join("inbox");
     std::fs::create_dir_all(&dir).ok();
     dir.join(format!("{agent}.jsonl"))
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 impl InboxStore {
@@ -58,19 +51,9 @@ impl InboxStore {
             id,
             sender: sender.to_owned(),
             text: message.to_owned(),
-            timestamp: now_secs(),
+            timestamp: util::now_secs(),
         };
-        // Append to JSONL file
-        let path = inbox_path(agent);
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-        {
-            if let Ok(line) = serde_json::to_string(&msg) {
-                let _ = writeln!(f, "{line}");
-            }
-        }
+        util::append_jsonl(&inbox_path(agent), &msg);
         let preview: String = message.chars().take(100).collect();
         InjectAction::Notification(format!(
             "[message from {sender}] {preview}... (full message in inbox, use inbox tool with id={id}){submit_key}"

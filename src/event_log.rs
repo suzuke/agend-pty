@@ -1,8 +1,7 @@
 //! Event log — append-only JSONL event stream.
 
-use crate::paths;
+use crate::{paths, util};
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, Write};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
@@ -17,45 +16,20 @@ fn events_path() -> std::path::PathBuf {
     paths::run_dir().join("events.jsonl")
 }
 
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
 pub fn log_event(event_type: &str, agent: &str, details: &str) {
-    let path = events_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
     let event = Event {
-        ts: now_secs(),
+        ts: util::now_secs(),
         event_type: event_type.into(),
         agent: agent.into(),
         details: details.into(),
     };
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        if let Ok(line) = serde_json::to_string(&event) {
-            let _ = writeln!(f, "{line}");
-        }
-    }
+    util::append_jsonl(&events_path(), &event);
 }
 
 pub fn list_events(agent_filter: Option<&str>, type_filter: Option<&str>) -> Vec<Event> {
-    let path = events_path();
-    let file = match std::fs::File::open(&path) {
-        Ok(f) => f,
-        Err(_) => return vec![],
-    };
-    std::io::BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .filter_map(|line| serde_json::from_str::<Event>(&line).ok())
+    let events: Vec<Event> = util::read_jsonl(&events_path());
+    events
+        .into_iter()
         .filter(|e| agent_filter.map(|a| e.agent == a).unwrap_or(true))
         .filter(|e| type_filter.map(|t| e.event_type == t).unwrap_or(true))
         .collect()

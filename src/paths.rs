@@ -29,17 +29,6 @@ pub fn mcp_socket(name: &str) -> PathBuf {
     agent_dir(name).join("mcp.sock")
 }
 
-/// Find MCP socket for an agent (for bridge — searches active daemon).
-pub fn find_agent_mcp_socket(name: &str) -> Option<PathBuf> {
-    let run = find_active_run_dir()?;
-    let sock = run.join("agents").join(name).join("mcp.sock");
-    if sock.exists() {
-        Some(sock)
-    } else {
-        None
-    }
-}
-
 /// Control socket path.
 pub fn ctrl_socket() -> PathBuf {
     run_dir().join("ctrl.sock")

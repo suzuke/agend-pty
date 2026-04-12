@@ -55,12 +55,13 @@ check_mcp() {
     fi
     pass "$name: MCP socket exists"
 
-    # Check MCP bridge handshake
+    # Check MCP handshake via agend-mcp
     local result=$(python3 -c "
-import subprocess, json, select
+import subprocess, json, select, os
 proc = subprocess.Popen(
-    ['./target/debug/agend-mcp-bridge', '$name'],
-    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    ['./target/debug/agend-mcp'],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    env={**os.environ, 'AGEND_INSTANCE_NAME': '$name'}
 )
 req = json.dumps({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2024-11-05','capabilities':{},'clientInfo':{'name':'test'}}})
 proc.stdin.write((req + '\n').encode())
@@ -74,7 +75,7 @@ if select.select([proc.stdout], [], [], 5)[0]:
 else: print('timeout')
 proc.terminate()
 " 2>/dev/null)
-    if [ "$result" = "ok" ]; then pass "$name: MCP bridge handshake"; else fail "$name: MCP bridge ($result)"; fi
+    if [ "$result" = "ok" ]; then pass "$name: MCP handshake"; else fail "$name: MCP ($result)"; fi
 }
 
 cleanup_daemon() {

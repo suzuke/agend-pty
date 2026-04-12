@@ -1,5 +1,4 @@
 #![allow(dead_code)]
-#![allow(clippy::unwrap_used)]
 pub mod api;
 pub mod backend;
 pub mod channel;
@@ -17,6 +16,7 @@ pub mod paths;
 pub mod scheduler;
 pub mod state;
 pub mod telegram;
+pub mod util;
 pub mod vterm;
 
 #[cfg(test)]
@@ -297,7 +297,7 @@ instances:
             tmp.path(),
             "gemini --yolo",
             "test",
-            "/bin/bridge",
+            "/bin/agend-mcp",
             &["--socket", "/tmp/test.sock"],
         );
         assert!(path.exists(), "settings.json should be created");
@@ -319,7 +319,7 @@ instances:
             tmp.path(),
             "gemini",
             "test",
-            "/bin/bridge",
+            "/bin/agend-mcp",
             &["--socket", "/s"],
         );
         let content: serde_json::Value =
@@ -347,7 +347,7 @@ instances:
             tmp.path(),
             "gemini",
             "test",
-            "/bin/bridge",
+            "/bin/agend-mcp",
             &["--socket", "/s"],
         );
         // File should NOT be overwritten
