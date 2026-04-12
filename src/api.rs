@@ -157,10 +157,16 @@ pub fn start(ctx: Arc<DaemonCtx>) {
                     let mut line = String::new();
                     while reader.read_line(&mut line).unwrap_or(0) > 0 {
                         let trimmed = line.trim();
+                        if trimmed.is_empty() {
+                            line.clear();
+                            continue;
+                        }
+                        // Try to parse as JSON
+                        let parsed = serde_json::from_str::<Value>(trimmed);
                         // Detect MCP JSON-RPC (has "jsonrpc" field)
-                        if let Ok(jrpc) = serde_json::from_str::<Value>(trimmed) {
+                        if let Ok(ref jrpc) = parsed {
                             if jrpc.get("jsonrpc").is_some() {
-                                let out = handle_mcp_jsonrpc(&jrpc, &c);
+                                let out = handle_mcp_jsonrpc(jrpc, &c);
                                 if let Some(resp) = out {
                                     let _ = writeln!(writer, "{}", resp);
                                     let _ = writer.flush();
@@ -168,6 +174,14 @@ pub fn start(ctx: Arc<DaemonCtx>) {
                                 line.clear();
                                 continue;
                             }
+                        }
+                        // Invalid JSON → return JSON-RPC parse error if it looked like JSON-RPC attempt
+                        if parsed.is_err() && trimmed.contains("jsonrpc") {
+                            let err_resp = r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}"#;
+                            let _ = writeln!(writer, "{err_resp}");
+                            let _ = writer.flush();
+                            line.clear();
+                            continue;
                         }
                         let resp = match serde_json::from_str::<ApiRequest>(trimmed) {
                             Ok(req) => handle_request(&req, &c),
