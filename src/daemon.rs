@@ -804,8 +804,9 @@ fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("AGEND_LOG")
-                .unwrap_or_else(|_| "agend=info".parse().expect("valid filter")),
+                .unwrap_or_else(|_| "info".parse().expect("valid filter")),
         )
+        .with_target(false)
         .init();
 
     if dry_run {

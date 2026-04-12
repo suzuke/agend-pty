@@ -212,3 +212,91 @@ fn e2e_pid_isolation() {
     let _ = d1.kill();
     let _ = d1.wait();
 }
+
+#[test]
+fn e2e_replace_instance() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
+    wait_for_agents(&sock, 2, 15);
+    // Replace alice with a different command
+    let r = mcp_call(
+        &sock,
+        "bob",
+        "replace_instance",
+        &serde_json::json!({"instance_name": "alice", "backend": "bash"}),
+    );
+    assert_eq!(r["ok"].as_bool(), Some(true));
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("replaced"), "expected replaced: {text}");
+    drop(guard);
+}
+
+#[test]
+fn e2e_schedule_create_list() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
+    wait_for_agents(&sock, 2, 15);
+    // Create a schedule
+    let r = mcp_call(
+        &sock,
+        "alice",
+        "schedule",
+        &serde_json::json!({"action": "create", "cron": "0 * * * * *", "target": "bob", "message": "ping"}),
+    );
+    assert_eq!(r["ok"].as_bool(), Some(true));
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("created"), "expected created: {text}");
+    // List schedules
+    let r = mcp_call(
+        &sock,
+        "alice",
+        "schedule",
+        &serde_json::json!({"action": "list"}),
+    );
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("ping"), "expected schedule in list: {text}");
+    drop(guard);
+}
+
+#[test]
+fn e2e_team_operations() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
+    wait_for_agents(&sock, 2, 15);
+    // Create team
+    let r = mcp_call(
+        &sock,
+        "alice",
+        "team",
+        &serde_json::json!({"action": "create", "name": "devs", "members": ["alice", "bob"]}),
+    );
+    assert_eq!(r["ok"].as_bool(), Some(true));
+    // List teams
+    let r = mcp_call(
+        &sock,
+        "alice",
+        "team",
+        &serde_json::json!({"action": "list"}),
+    );
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("devs"), "expected team: {text}");
+    drop(guard);
+}
+
+#[test]
+fn e2e_demo_binary_exists() {
+    // Verify the demo subcommand is wired up (--help should list it)
+    let output = Command::new(env!("CARGO_BIN_EXE_agend-pty"))
+        .args(["help"])
+        .output()
+        .expect("run help");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("demo"),
+        "help should list demo command: {stdout}"
+    );
+    assert!(
+        stdout.contains("bugreport"),
+        "help should list bugreport command: {stdout}"
+    );
+}
