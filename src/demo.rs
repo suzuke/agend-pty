@@ -1,7 +1,5 @@
 //! Demo mode — spawns mock agents to showcase core features without API keys.
 
-use std::path::PathBuf;
-
 fn demo_fleet_yaml(tmp: &std::path::Path) -> String {
     let echo_cmd =
         r#"bash -c "echo 'Type your question'; while read line; do echo \"Echo: $line\"; done""#;
@@ -30,7 +28,7 @@ pub fn run() {
     let fleet_path = tmp.join("fleet.yaml");
     std::fs::write(&fleet_path, demo_fleet_yaml(&tmp)).ok();
 
-    let daemon = exe_dir().join("agend-daemon");
+    let daemon = crate::paths::exe_sibling("agend-daemon");
     let status = std::process::Command::new(&daemon)
         .args(["--config", &fleet_path.display().to_string()])
         .status();
@@ -43,11 +41,4 @@ pub fn run() {
             std::process::exit(1);
         }
     }
-}
-
-fn exe_dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|par| par.to_path_buf()))
-        .unwrap_or_default()
 }

@@ -43,11 +43,7 @@ fn prompt_nonempty(msg: &str) -> String {
 }
 
 fn which(name: &str) -> Option<PathBuf> {
-    std::env::var("PATH")
-        .ok()?
-        .split(':')
-        .map(|d| PathBuf::from(d).join(name))
-        .find(|p| p.exists())
+    crate::paths::which(name)
 }
 
 fn verify_token(token: &str) -> Result<String, String> {
