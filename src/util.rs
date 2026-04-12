@@ -4,6 +4,16 @@ use serde::Serialize;
 use std::io::{BufRead, Write};
 use std::path::Path;
 
+/// Sanitize an agent/instance name for safe use in file paths.
+/// Only allows alphanumeric, hyphen, underscore. Strips leading hyphens.
+pub fn sanitize_name(name: &str) -> String {
+    let s: String = name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    s.trim_start_matches('-').to_owned()
+}
+
 /// Current time as seconds since UNIX epoch.
 pub fn now_secs() -> u64 {
     std::time::SystemTime::now()

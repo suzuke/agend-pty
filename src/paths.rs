@@ -14,9 +14,10 @@ pub fn run_dir() -> PathBuf {
     home().join("run").join(std::process::id().to_string())
 }
 
-/// Agent socket directory.
+/// Agent socket directory (name sanitized for path safety).
 pub fn agent_dir(name: &str) -> PathBuf {
-    run_dir().join("agents").join(name)
+    let safe = crate::util::sanitize_name(name);
+    run_dir().join("agents").join(safe)
 }
 
 /// TUI socket path for an agent.

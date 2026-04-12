@@ -849,8 +849,9 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                 .as_str()
                 .or_else(|| args["name"].as_str())
                 .unwrap_or("");
+            let name = &crate::util::sanitize_name(name);
             if name.is_empty() {
-                return json!({"content": [{"type": "text", "text": "name required"}], "isError": true});
+                return json!({"content": [{"type": "text", "text": "name required (alphanumeric, hyphens, underscores only)"}], "isError": true});
             }
             let backend = args["backend"].as_str().unwrap_or("claude");
             let model = args["model"].as_str();

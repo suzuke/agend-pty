@@ -26,7 +26,8 @@ pub struct InboxStore;
 fn inbox_path(agent: &str) -> PathBuf {
     let dir = paths::run_dir().join("inbox");
     std::fs::create_dir_all(&dir).ok();
-    dir.join(format!("{agent}.jsonl"))
+    let safe = util::sanitize_name(agent);
+    dir.join(format!("{safe}.jsonl"))
 }
 
 impl InboxStore {
