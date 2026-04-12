@@ -1,6 +1,6 @@
 //! Features — dry-run, snapshot/restore, dependency graph.
 
-use crate::{config, instructions, paths};
+use crate::{config, paths};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -37,8 +37,7 @@ pub fn dry_run(cfg: &config::FleetConfig) {
                 println!("    ❌ dep '{dep}' not found");
             }
         }
-        std::fs::create_dir_all(&wd).ok();
-        instructions::generate(&wd, &cmd, name);
+        // dry_run: validate only, no side effects (no dir creation, no file generation)
     }
     match resolve_order(cfg) {
         Ok(order) => println!("\nOrder: {}", order.join(" → ")),
