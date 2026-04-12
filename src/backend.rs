@@ -186,4 +186,94 @@ mod tests {
         let p = Backend::ClaudeCode.preset();
         assert_eq!(p.mcp_inject_flag, "--mcp-config");
     }
+
+    #[test]
+    fn inject_mcp_claude() {
+        let result =
+            inject_mcp_for_backend("claude", "--mcp-config", "/tmp/mcp.json", "/tmp/prompt.md");
+        assert!(result.contains("--mcp-config /tmp/mcp.json"));
+        assert!(result.contains("--append-system-prompt-file /tmp/prompt.md"));
+    }
+
+    #[test]
+    fn inject_mcp_empty_flag_passthrough() {
+        assert_eq!(
+            inject_mcp_for_backend("gemini --yolo", "", "/x", "/y"),
+            "gemini --yolo"
+        );
+    }
+
+    #[test]
+    fn build_full_command_claude() {
+        let cmd = build_full_command("claude", Some("sonnet"), true, false);
+        assert!(cmd.contains("claude"));
+        assert!(cmd.contains("--dangerously-skip-permissions"));
+        assert!(cmd.contains("--model sonnet"));
+        assert!(!cmd.contains("--continue")); // not respawn
+    }
+
+    #[test]
+    fn build_full_command_claude_respawn() {
+        let cmd = build_full_command("claude", None, true, true);
+        assert!(cmd.contains("--continue")); // respawn adds resume flag
+    }
+
+    #[test]
+    fn build_full_command_unknown_backend() {
+        let cmd = build_full_command("my-tool", Some("gpt-4"), false, false);
+        assert!(cmd.starts_with("my-tool"));
+        assert!(cmd.contains("--model gpt-4"));
+    }
+}
+
+/// Inject MCP config flags into a command string based on backend preset.
+pub fn inject_mcp_for_backend(
+    command: &str,
+    mcp_inject_flag: &str,
+    mcp_config_path: &str,
+    prompt_path: &str,
+) -> String {
+    if mcp_inject_flag.is_empty() {
+        return command.to_owned();
+    }
+    if mcp_inject_flag == "--mcp-config" {
+        format!(
+            "{command} --mcp-config {mcp_config_path} --append-system-prompt-file {prompt_path}"
+        )
+    } else {
+        format!("{command} {mcp_inject_flag} {mcp_config_path}")
+    }
+}
+
+/// Build the full command string with preset args, model, and resume flag.
+pub fn build_full_command(
+    backend: &str,
+    model: Option<&str>,
+    skip_permissions: bool,
+    is_respawn: bool,
+) -> String {
+    let resolved = crate::config::resolve_backend_binary(backend);
+    let mut parts = vec![resolved.clone()];
+    if let Some(b) = Backend::from_command(&resolved) {
+        let preset = b.preset();
+        for arg in preset.args {
+            parts.push(arg.to_string());
+        }
+        if let Some(m) = model {
+            parts.push("--model".into());
+            parts.push(m.into());
+        }
+        if is_respawn && !preset.resume_flag.is_empty() {
+            parts.push(preset.resume_flag.to_string());
+        }
+    } else {
+        if skip_permissions {
+            parts.push("--dangerously-skip-permissions".into());
+        }
+        if let Some(m) = model {
+            parts.push("--model".into());
+            parts.push(m.into());
+        }
+    }
+    parts.join(" ")
 }

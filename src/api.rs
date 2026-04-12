@@ -1282,3 +1282,132 @@ fn handle_mcp_jsonrpc(req: &Value, ctx: &DaemonCtx) -> Option<String> {
     let resp = json!({"jsonrpc": "2.0", "id": id, "result": result});
     Some(resp.to_string())
 }
+
+// ── Extracted tool handlers (testable without DaemonCtx) ────────────────
+
+pub fn handle_decision_tool(
+    action: &str,
+    instance: &str,
+    args: &serde_json::Value,
+) -> serde_json::Value {
+    match action {
+        "post" => {
+            let title = args["title"].as_str().unwrap_or("");
+            let content = args["content"].as_str().unwrap_or("");
+            let d = fleet_store::post_decision(instance, title, content);
+            json!({"content": [{"type": "text", "text": json!({"posted": true, "id": d.id}).to_string()}]})
+        }
+        "list" => {
+            let decisions = fleet_store::list_decisions();
+            let list: Vec<serde_json::Value> = decisions
+                .iter()
+                .map(|d| json!({"id": d.id, "title": d.title, "author": d.author}))
+                .collect();
+            json!({"content": [{"type": "text", "text": json!({"decisions": list}).to_string()}]})
+        }
+        _ => {
+            json!({"content": [{"type": "text", "text": format!("unknown decision action: {action}")}], "isError": true})
+        }
+    }
+}
+
+pub fn handle_task_tool(
+    action: &str,
+    instance: &str,
+    args: &serde_json::Value,
+) -> serde_json::Value {
+    match action {
+        "create" => {
+            let title = args["title"].as_str().unwrap_or("untitled");
+            let desc = args["description"].as_str().unwrap_or("");
+            let assignee = args["assignee"].as_str().unwrap_or("");
+            let t = fleet_store::create_task(instance, title, desc, assignee);
+            json!({"content": [{"type": "text", "text": json!({"created": t.id}).to_string()}]})
+        }
+        "list" => {
+            let tasks = fleet_store::list_tasks();
+            let list: Vec<serde_json::Value> = tasks.iter().map(|t| json!({"id": t.id, "title": t.title, "status": t.status, "assignee": t.assignee})).collect();
+            json!({"content": [{"type": "text", "text": json!({"tasks": list}).to_string()}]})
+        }
+        _ => {
+            json!({"content": [{"type": "text", "text": format!("unknown task action: {action}")}], "isError": true})
+        }
+    }
+}
+
+pub fn handle_team_tool(action: &str, args: &serde_json::Value) -> serde_json::Value {
+    match action {
+        "create" => {
+            let name = args["name"].as_str().unwrap_or("");
+            let members: Vec<String> = args["members"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let t = fleet_store::create_team(name, &members);
+            json!({"content": [{"type": "text", "text": json!({"created": t.name}).to_string()}]})
+        }
+        "list" => {
+            let teams = fleet_store::list_teams();
+            let list: Vec<serde_json::Value> = teams
+                .iter()
+                .map(|t| json!({"name": t.name, "members": t.members}))
+                .collect();
+            json!({"content": [{"type": "text", "text": json!({"teams": list}).to_string()}]})
+        }
+        _ => {
+            json!({"content": [{"type": "text", "text": format!("unknown team action: {action}")}], "isError": true})
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decision_post_returns_id() {
+        let r = handle_decision_tool(
+            "post",
+            "alice",
+            &json!({"title": "test", "content": "body"}),
+        );
+        let text = r["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("\"posted\":true"));
+    }
+
+    #[test]
+    fn decision_unknown_action_errors() {
+        let r = handle_decision_tool("bad", "a", &json!({}));
+        assert!(r["isError"].as_bool() == Some(true));
+    }
+
+    #[test]
+    fn task_create_returns_id() {
+        let r = handle_task_tool("create", "bob", &json!({"title": "fix bug"}));
+        let text = r["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("\"created\""));
+    }
+
+    #[test]
+    fn task_unknown_action_errors() {
+        let r = handle_task_tool("bad", "a", &json!({}));
+        assert!(r["isError"].as_bool() == Some(true));
+    }
+
+    #[test]
+    fn team_create_returns_name() {
+        let r = handle_team_tool("create", &json!({"name": "core", "members": ["a", "b"]}));
+        let text = r["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("core"));
+    }
+
+    #[test]
+    fn team_unknown_action_errors() {
+        let r = handle_team_tool("bad", &json!({}));
+        assert!(r["isError"].as_bool() == Some(true));
+    }
+}

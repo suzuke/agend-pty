@@ -245,24 +245,6 @@ fn setup_prompt(name: &str, registry: &AgentRegistry) -> (std::path::PathBuf, St
     (prompt_path, path_str)
 }
 
-fn inject_mcp_for_backend(
-    command: &str,
-    mcp_inject_flag: &str,
-    mcp_config_path: &str,
-    prompt_path: &str,
-) -> String {
-    if mcp_inject_flag.is_empty() {
-        return command.to_owned();
-    }
-    if mcp_inject_flag == "--mcp-config" {
-        format!(
-            "{command} --mcp-config {mcp_config_path} --append-system-prompt-file {prompt_path}"
-        )
-    } else {
-        format!("{command} {mcp_inject_flag} {mcp_config_path}")
-    }
-}
-
 fn spawn_agent(
     name: String,
     command: String,
@@ -300,7 +282,7 @@ fn spawn_agent(
     let preset = backend::Backend::from_command(&command).map(|b| b.preset());
     let (_, prompt_path_str) = setup_prompt(&name, &registry);
 
-    let final_command = inject_mcp_for_backend(
+    let final_command = backend::inject_mcp_for_backend(
         &command,
         preset.as_ref().map(|p| p.mcp_inject_flag).unwrap_or(""),
         &mcp_config_path_str,
