@@ -273,19 +273,25 @@ pub fn run() {
 
     // ── Step 6: Generate fleet.yaml ──
     println!("[6/6] Generating fleet.yaml...\n");
-    let mut yaml = format!("defaults:\n  backend: {backend_id}\n  worktree: {worktree}\n");
+    let mut fleet = serde_json::json!({
+        "defaults": { "backend": backend_id, "worktree": worktree }
+    });
     if let (Some(_), Some(gid)) = (&channel_token, channel_group) {
-        yaml.push_str(&format!(
-            "\nchannel:\n  bot_token_env: TELEGRAM_BOT_TOKEN\n  group_id: {gid}\n"
-        ));
+        fleet["channel"] = serde_json::json!({
+            "bot_token_env": "TELEGRAM_BOT_TOKEN",
+            "group_id": gid
+        });
     }
-    yaml.push_str("\ninstances:\n");
+    let mut instances = serde_json::Map::new();
     for (name, wd) in &agents {
-        yaml.push_str(&format!("  {name}:\n    working_directory: {wd}\n"));
+        let mut inst = serde_json::json!({"working_directory": wd});
         if backend_id == "claude" {
-            yaml.push_str("    skip_permissions: true\n");
+            inst["skip_permissions"] = serde_json::json!(true);
         }
+        instances.insert(name.clone(), inst);
     }
+    fleet["instances"] = serde_json::Value::Object(instances);
+    let yaml = serde_yaml::to_string(&fleet).unwrap_or_default();
 
     let out_path = PathBuf::from(home_dir()).join(".agend").join("fleet.yaml");
     if let Some(parent) = out_path.parent() {
