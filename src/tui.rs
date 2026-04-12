@@ -179,9 +179,10 @@ fn key_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> Vec<u8> {
     let ctrl = modifiers.contains(KeyModifiers::CONTROL);
     let alt = modifiers.contains(KeyModifiers::ALT);
     match code {
-        KeyCode::Char(c) if ctrl => vec![(c.to_ascii_lowercase() as u8)
-            .wrapping_sub(b'a')
-            .wrapping_add(1)],
+        KeyCode::Char(c) if ctrl && c.is_ascii_alphabetic() => {
+            vec![(c.to_ascii_lowercase() as u8) - b'a' + 1]
+        }
+        KeyCode::Char(_) if ctrl => vec![], // Ctrl+non-alpha: ignore
         KeyCode::Char(c) if alt => {
             let mut v = vec![0x1b];
             let mut b = [0u8; 4];
