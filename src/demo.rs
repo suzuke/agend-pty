@@ -12,18 +12,24 @@ fn demo_fleet_yaml(tmp: &std::path::Path) -> String {
 }
 
 pub fn run() {
-    println!("AgEnD-PTY Demo\n");
-    println!("Launching 2 echo agents (no API key needed)...\n");
+    println!("=== AgEnD-PTY Demo ===");
+    println!("Starting 2 echo agents (no API key needed)...");
+    println!();
+    println!("Once agents are ready, try in another terminal:");
+    println!("  agend-pty attach alice    # Connect to agent TUI");
+    println!("  agend-pty attach bob      # Connect to another agent");
+    println!("  agend-pty status          # Show fleet status");
+    println!("  agend-pty inject alice \"hello world\"  # Send message");
+    println!();
+    println!("Press Ctrl+C to stop the demo.");
+    println!("================================================");
+    println!();
 
     let tmp = std::env::temp_dir().join("agend-demo");
     std::fs::create_dir_all(&tmp).ok();
     let fleet_path = tmp.join("fleet.yaml");
     std::fs::write(&fleet_path, demo_fleet_yaml(&tmp)).ok();
 
-    println!("1. Starting daemon with demo fleet...");
-    println!("   fleet.yaml: {}\n", fleet_path.display());
-
-    // Exec the daemon binary with --config pointing to our demo fleet
     let daemon = exe_dir().join("agend-daemon");
     let status = std::process::Command::new(&daemon)
         .args(["--config", &fleet_path.display().to_string()])
