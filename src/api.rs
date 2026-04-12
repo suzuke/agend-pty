@@ -87,7 +87,20 @@ pub fn start(ctx: Arc<DaemonCtx>) {
                     let mut writer = stream;
                     let mut line = String::new();
                     while reader.read_line(&mut line).unwrap_or(0) > 0 {
-                        let resp = match serde_json::from_str::<ApiRequest>(line.trim()) {
+                        let trimmed = line.trim();
+                        // Detect MCP JSON-RPC (has "jsonrpc" field)
+                        if let Ok(jrpc) = serde_json::from_str::<Value>(trimmed) {
+                            if jrpc.get("jsonrpc").is_some() {
+                                let out = handle_mcp_jsonrpc(&jrpc, &c);
+                                if let Some(resp) = out {
+                                    let _ = writeln!(writer, "{}", resp);
+                                    let _ = writer.flush();
+                                }
+                                line.clear();
+                                continue;
+                            }
+                        }
+                        let resp = match serde_json::from_str::<ApiRequest>(trimmed) {
                             Ok(req) => handle_request(&req, &c),
                             Err(e) => ApiResponse {
                                 ok: false,
@@ -865,4 +878,33 @@ pub fn mcp_tools_list() -> Value {
         {"name":"list_events","description":"List event log.","inputSchema":{"type":"object","properties":{"agent":{"type":"string"},"type":{"type":"string"}}}},
         {"name":"schedule","description":"Cron schedule operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["create","list","delete","update"]},"cron":{"type":"string"},"target":{"type":"string"},"message":{"type":"string"},"id":{"type":"string"},"enabled":{"type":"boolean"}},"required":["action"]}}
     ]})
+}
+
+/// Handle MCP JSON-RPC directly on the API socket (no proxy process needed).
+/// Returns None for notifications (no response expected).
+fn handle_mcp_jsonrpc(req: &Value, ctx: &DaemonCtx) -> Option<String> {
+    let id = req.get("id")?; // notifications have no id
+    let method = req["method"].as_str().unwrap_or("");
+    let instance = req["params"]["_instance"]
+        .as_str()
+        .or_else(|| req["_instance"].as_str())
+        .unwrap_or("unknown");
+
+    let result = match method {
+        "initialize" => json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": { "tools": { "listChanged": false } },
+            "serverInfo": { "name": "agend", "version": env!("CARGO_PKG_VERSION") }
+        }),
+        "tools/list" => mcp_tools_list(),
+        "tools/call" => {
+            let tool = req["params"]["name"].as_str().unwrap_or("");
+            let args = &req["params"]["arguments"];
+            handle_mcp_tool(ctx, instance, tool, args)
+        }
+        "notifications/initialized" | "notifications/cancelled" => return None,
+        _ => return None,
+    };
+    let resp = json!({"jsonrpc": "2.0", "id": id, "result": result});
+    Some(resp.to_string())
 }
