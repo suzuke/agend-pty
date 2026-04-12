@@ -94,15 +94,25 @@ mod tests {
 /// Append a single item as a JSONL line to a file (creates parent dirs if needed).
 pub fn append_jsonl<T: Serialize>(path: &Path, item: &T) {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).ok();
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            tracing::warn!(path = %parent.display(), error = %e, "failed to create dir");
+            return;
+        }
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new()
+    match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
     {
-        if let Ok(line) = serde_json::to_string(item) {
-            let _ = writeln!(f, "{line}");
+        Ok(mut f) => {
+            if let Ok(line) = serde_json::to_string(item) {
+                if let Err(e) = writeln!(f, "{line}") {
+                    tracing::warn!(path = %path.display(), error = %e, "JSONL write failed");
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "JSONL open failed");
         }
     }
 }
