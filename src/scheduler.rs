@@ -41,7 +41,7 @@ pub fn create_schedule(cron_expr: &str, target: &str, message: &str) -> Result<S
         target: target.into(),
         message: message.into(),
         enabled: true,
-        last_run: 0,
+        last_run: util::now_secs(),
     };
     util::append_jsonl(&schedules_path(), &s);
     Ok(s)
