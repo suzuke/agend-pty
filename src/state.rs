@@ -308,11 +308,20 @@ pub fn strip_ansi(s: &str) -> String {
             match chars.peek() {
                 Some('[') => {
                     chars.next();
+                    let mut params = String::new();
+                    let mut final_char = ' ';
                     while let Some(&ch) = chars.peek() {
                         chars.next();
                         if ch.is_ascii_alphabetic() {
+                            final_char = ch;
                             break;
                         }
+                        params.push(ch);
+                    }
+                    // CSI C = cursor forward → replace with space
+                    if final_char == 'C' {
+                        let n = params.parse::<usize>().unwrap_or(1);
+                        for _ in 0..n { out.push(' '); }
                     }
                 }
                 Some(']') => {
