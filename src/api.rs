@@ -287,8 +287,11 @@ fn handle_request(req: &ApiRequest, ctx: &DaemonCtx) -> ApiResponse {
     }
 }
 
+/// MCP tool dispatch — routes tool calls to handlers.
+/// Organized by category: communication, fleet, coordination, git, CI.
 fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) -> Value {
     match tool {
+        // ── Communication ──
         "send_to_instance" => {
             let target = args["instance_name"].as_str().unwrap_or("");
             let message = args["message"].as_str().unwrap_or("");
@@ -429,6 +432,7 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                 json!({"content": [{"type": "text", "text": json!({"messages": list}).to_string()}]})
             }
         }
+        // ── Fleet management ──
         "delete_instance" => {
             let name = args["instance_name"]
                 .as_str()
@@ -474,6 +478,7 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                 json!({"content": [{"type": "text", "text": format!("instance '{name}' not found")}], "isError": true})
             }
         }
+        // ── Coordination ──
         "decision" => {
             let action = args["action"].as_str().unwrap_or("");
             match action {
@@ -621,6 +626,7 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                 std::thread::sleep(Duration::from_secs(2));
             }
         }
+        // ── Git integration ──
         "merge" => {
             let action = args["action"].as_str().unwrap_or("");
             match action {
@@ -977,6 +983,7 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                 "working_directory": wd.map(|p| p.display().to_string())
             }).to_string()}]})
         }
+        // ── CI ──
         "watch_ci" => {
             let repo = args["repo"].as_str().unwrap_or("");
             let pr = args["pr"].as_u64().unwrap_or(0);
