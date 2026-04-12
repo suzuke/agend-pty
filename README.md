@@ -113,7 +113,7 @@ agend-pty shutdown
 - **Merge preview/merge** — preview and squash-merge agent worktree branches
 - **Wait for idle** — block until an agent reaches idle/ready state
 
-### MCP Tools (25)
+### MCP Tools (24)
 
 The daemon exposes these tools to agents via the MCP protocol:
 

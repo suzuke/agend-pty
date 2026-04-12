@@ -3,7 +3,7 @@
 //! Listens on ~/.agend/run/<pid>/api.sock
 //! Protocol: newline-delimited JSON (one request per line, one response per line)
 
-use crate::{channel, event_log, fleet_store, git, inbox, paths, scheduler, state};
+use crate::{channel, event_log, fleet_store, git, health, inbox, paths, scheduler, state};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -34,6 +34,7 @@ pub type AgentWriters = Arc<Mutex<HashMap<String, PtyWriter>>>;
 /// Agent state handle exposed to API layer.
 pub struct AgentStateHandle {
     pub state_machine: Arc<Mutex<state::StateMachine>>,
+    pub health: Arc<Mutex<health::HealthMonitor>>,
     pub working_dir: Option<std::path::PathBuf>,
 }
 pub type AgentStateMap = Arc<Mutex<HashMap<String, AgentStateHandle>>>;
@@ -742,7 +743,18 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(name.to_owned(), info);
-            // Kill old instance (Ctrl+C + EOF)
+            // Reset health monitor so respawn is guaranteed (even if previously Failed)
+            if let Some(handle) = ctx
+                .states
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(name)
+            {
+                if let Ok(mut h) = handle.health.lock() {
+                    h.reset();
+                }
+            }
+            // Kill old instance (Ctrl+C + EOF) — health monitor will respawn with new config
             if let Some(pw) = ctx
                 .writers
                 .lock()
@@ -754,7 +766,6 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                     .unwrap_or_else(|e| e.into_inner())
                     .write_all(b"\x03\x04");
             }
-            // The daemon's health monitor will auto-respawn with the new config
             json!({"content": [{"type": "text", "text": json!({
                 "replaced": name, "command": command, "branch": branch,
                 "working_directory": wd.map(|p| p.display().to_string())

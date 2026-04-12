@@ -493,6 +493,7 @@ fn spawn_agent(
             name.clone(),
             api::AgentStateHandle {
                 state_machine: Arc::clone(&state_machine),
+                health: Arc::clone(&health_monitor),
                 working_dir: working_dir.clone(),
             },
         );
