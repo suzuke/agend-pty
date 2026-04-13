@@ -26,9 +26,8 @@ fn main() {
             args.first()
         };
         positional.cloned().unwrap_or_else(|| {
-            eprintln!("Usage: agend-mcp [--socket <path>] <instance-name>");
-            eprintln!("  or set AGEND_INSTANCE_NAME env var");
-            std::process::exit(1);
+            eprintln!("[mcp] warning: no AGEND_INSTANCE_NAME env or positional arg, running in standalone mode");
+            String::new()
         })
     });
 

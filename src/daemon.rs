@@ -1078,6 +1078,11 @@ fn main() {
             .spawn(move || {
                 while let Ok(info) = spawn_rx.recv() {
                     let name = info.name.clone();
+                    // Clear from deleted set so respawn works for re-created instances
+                    sctx.deleted_names
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&name);
                     asc.lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .insert(name.clone(), info.clone());

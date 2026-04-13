@@ -83,7 +83,7 @@ pub fn remove_mcp_config(working_dir: &Path, command: &str, name: &str) {
             &key,
         ),
         Some(Backend::OpenCode) => remove_json_key(&working_dir.join("opencode.json"), "mcp", &key),
-        Some(Backend::Codex) => remove_codex_mcp(name),
+        Some(Backend::Codex) => remove_codex_mcp(working_dir, name),
         _ => Ok(()),
     };
 }
@@ -159,60 +159,31 @@ fn remove_json_key(path: &Path, section: &str, key: &str) -> Result<(), String> 
     Ok(())
 }
 
-fn remove_codex_mcp(name: &str) -> Result<(), String> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let config_path = std::path::PathBuf::from(&home)
-        .join(".codex")
-        .join("config.toml");
+fn remove_codex_mcp(working_dir: &Path, name: &str) -> Result<(), String> {
+    let config_path = working_dir.join(".codex").join("config.toml");
     if !config_path.exists() {
         return Ok(());
     }
     let key = format!("agend-{name}");
-    let mut content = std::fs::read_to_string(&config_path).map_err(|e| format!("read: {e}"))?;
-    let section_header = format!("[mcp_servers.{}]", key);
-    if let Some(start) = content.find(&section_header) {
-        let end = content[start + section_header.len()..]
-            .find("\n[")
-            .map(|i| start + section_header.len() + i)
-            .unwrap_or(content.len());
-        content = format!(
-            "{}{}",
-            &content[..start],
-            content[end..].trim_start_matches('\n')
-        );
-        std::fs::write(&config_path, content.trim_start_matches('\n'))
-            .map_err(|e| format!("write: {e}"))?;
-    }
-    Ok(())
+    let content = std::fs::read_to_string(&config_path).map_err(|e| format!("read: {e}"))?;
+    let cleaned = remove_toml_section(&content, &format!("[mcp_servers.{}]", key));
+    std::fs::write(&config_path, cleaned).map_err(|e| format!("write: {e}"))
 }
 
 fn write_codex_mcp(
-    _working_dir: &Path,
+    working_dir: &Path,
     name: &str,
     mcp_bin_path: &str,
     mcp_bin_args: &[&str],
 ) -> Result<(), String> {
-    // Write directly to ~/.codex/config.toml (Codex only supports global config)
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let config_dir = std::path::PathBuf::from(&home).join(".codex");
+    let config_dir = working_dir.join(".codex");
     std::fs::create_dir_all(&config_dir).map_err(|e| format!("mkdir: {e}"))?;
     let config_path = config_dir.join("config.toml");
     let key = format!("agend-{name}");
 
     let mut content = std::fs::read_to_string(&config_path).unwrap_or_default();
     // Remove existing section if present
-    let section_header = format!("[mcp_servers.{}]", key);
-    if let Some(start) = content.find(&section_header) {
-        let end = content[start + section_header.len()..]
-            .find("\n[")
-            .map(|i| start + section_header.len() + i)
-            .unwrap_or(content.len());
-        content = format!(
-            "{}{}",
-            &content[..start],
-            content[end..].trim_start_matches('\n')
-        );
-    }
+    content = remove_toml_section(&content, &format!("[mcp_servers.{}]", key));
 
     // Append new section
     let args_toml: Vec<String> = mcp_bin_args.iter().map(|a| format!("\"{}\"", a)).collect();
@@ -223,6 +194,23 @@ fn write_codex_mcp(
     content.push_str(&section);
     std::fs::write(&config_path, content.trim_start_matches('\n'))
         .map_err(|e| format!("write: {e}"))
+}
+
+/// Remove a TOML section by header (e.g. `[mcp_servers.agend-alice]`).
+fn remove_toml_section(content: &str, header: &str) -> String {
+    if let Some(start) = content.find(header) {
+        let end = content[start + header.len()..]
+            .find("\n[")
+            .map(|i| start + header.len() + i)
+            .unwrap_or(content.len());
+        format!(
+            "{}{}",
+            &content[..start],
+            content[end..].trim_start_matches('\n')
+        )
+    } else {
+        content.to_owned()
+    }
 }
 
 #[cfg(test)]
