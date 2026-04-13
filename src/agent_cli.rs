@@ -16,6 +16,17 @@ fn output(value: Value) {
     }
 }
 
+/// Read message from positional arg or stdin.
+fn get_text(text: Option<String>, stdin: bool) -> String {
+    if stdin || text.is_none() {
+        let mut buf = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf).expect("read stdin");
+        buf.trim().to_owned()
+    } else {
+        text.unwrap_or_default()
+    }
+}
+
 fn api_call(method: &str, params: &Value) -> Value {
     let sock = match crate::paths::find_active_run_dir() {
         Some(run) => run.join("api.sock"),
@@ -64,42 +75,71 @@ fn mcp_call(tool: &str, args: &Value) -> Value {
 #[derive(Debug, Subcommand)]
 pub enum AgentCommand {
     /// Send a message to another agent.
-    Send { target: String, message: String },
+    Send {
+        target: String,
+        /// Message text (or use --stdin for piped input).
+        message: Option<String>,
+        /// Read message from stdin.
+        #[arg(long)]
+        stdin: bool,
+    },
     /// Delegate a task to another agent.
     Delegate {
         target: String,
-        task: String,
+        /// Task description (or use --stdin).
+        task: Option<String>,
         #[arg(long)]
         criteria: Option<String>,
         #[arg(long)]
         context: Option<String>,
+        /// Read task from stdin.
+        #[arg(long)]
+        stdin: bool,
     },
     /// Report a result to another agent.
     Report {
         target: String,
-        summary: String,
+        /// Summary (or use --stdin).
+        summary: Option<String>,
         #[arg(long)]
         correlation_id: Option<String>,
         #[arg(long)]
         artifacts: Option<String>,
+        /// Read summary from stdin.
+        #[arg(long)]
+        stdin: bool,
     },
     /// Ask another agent a question.
     Ask {
         target: String,
-        question: String,
+        /// Question (or use --stdin).
+        question: Option<String>,
         #[arg(long)]
         context: Option<String>,
+        /// Read question from stdin.
+        #[arg(long)]
+        stdin: bool,
     },
     /// Broadcast a message to all agents or a team.
     Broadcast {
-        message: String,
+        /// Message (or use --stdin).
+        message: Option<String>,
         #[arg(long)]
         team: Option<String>,
+        /// Read message from stdin.
+        #[arg(long)]
+        stdin: bool,
     },
     /// Drain the inbox.
     Inbox,
     /// Reply in the channel (Telegram).
-    Reply { text: String },
+    Reply {
+        /// Reply text (or use --stdin).
+        text: Option<String>,
+        /// Read text from stdin.
+        #[arg(long)]
+        stdin: bool,
+    },
     /// List running instances.
     #[command(alias = "ls")]
     List,
@@ -238,10 +278,15 @@ pub enum ScheduleCommand {
 
 pub fn run(command: AgentCommand) {
     match command {
-        AgentCommand::Send { target, message } => {
+        AgentCommand::Send {
+            target,
+            message,
+            stdin,
+        } => {
+            let msg = get_text(message, stdin);
             output(mcp_call(
                 "send_to_instance",
-                &json!({"instance_name": target, "message": message}),
+                &json!({"instance_name": target, "message": msg}),
             ));
         }
         AgentCommand::Delegate {
@@ -249,7 +294,9 @@ pub fn run(command: AgentCommand) {
             task,
             criteria,
             context,
+            stdin,
         } => {
+            let task = get_text(task, stdin);
             output(mcp_call(
                 "delegate_task",
                 &json!({"target_instance": target, "task": task, "success_criteria": criteria, "context": context}),
@@ -260,7 +307,9 @@ pub fn run(command: AgentCommand) {
             summary,
             correlation_id,
             artifacts,
+            stdin,
         } => {
+            let summary = get_text(summary, stdin);
             output(mcp_call(
                 "report_result",
                 &json!({"target_instance": target, "summary": summary, "correlation_id": correlation_id, "artifacts": artifacts}),
@@ -270,22 +319,30 @@ pub fn run(command: AgentCommand) {
             target,
             question,
             context,
+            stdin,
         } => {
+            let question = get_text(question, stdin);
             output(mcp_call(
                 "request_information",
                 &json!({"target_instance": target, "question": question, "context": context}),
             ));
         }
-        AgentCommand::Broadcast { message, team } => {
+        AgentCommand::Broadcast {
+            message,
+            team,
+            stdin,
+        } => {
+            let msg = get_text(message, stdin);
             output(mcp_call(
                 "broadcast",
-                &json!({"message": message, "team": team}),
+                &json!({"message": msg, "team": team}),
             ));
         }
         AgentCommand::Inbox => {
             output(mcp_call("inbox", &json!({})));
         }
-        AgentCommand::Reply { text } => {
+        AgentCommand::Reply { text, stdin } => {
+            let text = get_text(text, stdin);
             output(mcp_call("reply", &json!({"text": text})));
         }
         AgentCommand::List => {
