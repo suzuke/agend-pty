@@ -457,12 +457,12 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                 .or_else(|| args["name"].as_str())
                 .unwrap_or("");
             let cleanup_wt = args["cleanup_worktree"].as_bool().unwrap_or(false);
-            // Single lock scope: check count + get writer atomically
+            // Single lock scope: check existence, then count guard
             let w = ctx.writers.lock().unwrap_or_else(|e| e.into_inner());
-            if w.len() <= 1 {
-                return json!({"content": [{"type": "text", "text": "cannot delete the last running instance"}], "isError": true});
-            }
             if let Some(pw) = w.get(name) {
+                if w.len() <= 1 {
+                    return json!({"content": [{"type": "text", "text": "cannot delete the last running instance"}], "isError": true});
+                }
                 // Save config info for cleanup before removing
                 let saved_config = ctx
                     .spawn_configs
