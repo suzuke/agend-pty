@@ -8,9 +8,11 @@ You will receive: `[user:NAME via telegram] text` (human) or `[message from INST
 Reply to humans via `reply` MCP tool. Reply to agents via `send_to_instance`.
 Tools: send_to_instance, broadcast, list_instances, inbox.
 Respond directly to agent messages — do NOT ask permission.
+<!-- /agend-pty -->
 "#;
 
 const AGEND_MARKER: &str = "<!-- agend-pty instructions";
+const AGEND_END_MARKER: &str = "<!-- /agend-pty -->";
 
 /// WARNING: AGEND_TEST_PASSPHRASE is for E2E testing ONLY.
 /// It writes the passphrase to instruction files on disk.
@@ -79,16 +81,28 @@ fn write_with_marker(path: &Path, content: &str) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let existing = if path.exists() {
-        let text = std::fs::read_to_string(path)?;
-        if let Some(start) = text.find(AGEND_MARKER) {
-            text[..start].trim_end().to_string()
-        } else {
-            text
-        }
+        std::fs::read_to_string(path)?
     } else {
         String::new()
     };
-    let new = if existing.is_empty() {
+    let new = if let Some(start) = existing.find(AGEND_MARKER) {
+        let before = existing[..start].trim_end();
+        let after = existing[start..]
+            .find(AGEND_END_MARKER)
+            .map(|i| existing[start + i + AGEND_END_MARKER.len()..].trim_start())
+            .unwrap_or("");
+        let mut result = String::new();
+        if !before.is_empty() {
+            result.push_str(before);
+            result.push_str("\n\n");
+        }
+        result.push_str(content);
+        if !after.is_empty() {
+            result.push_str("\n\n");
+            result.push_str(after);
+        }
+        result
+    } else if existing.is_empty() {
         content.to_string()
     } else {
         format!("{existing}\n\n{content}")
@@ -262,14 +276,41 @@ mod tests {
         let path = tmp.path().join("AGENTS.md");
         std::fs::write(
             &path,
-            "# Header\n\n<!-- agend-pty instructions v0-old -->\nold content",
+            "# Header\n\n<!-- agend-pty instructions v0-old -->\nold content\n<!-- /agend-pty -->",
         )
         .unwrap();
-        write_with_marker(&path, "<!-- agend-pty instructions v1-agend-pty -->\nnew").unwrap();
+        write_with_marker(
+            &path,
+            "<!-- agend-pty instructions v1-agend-pty -->\nnew\n<!-- /agend-pty -->",
+        )
+        .unwrap();
         let result = std::fs::read_to_string(&path).unwrap();
         assert!(result.contains("# Header"));
         assert!(!result.contains("v0-old"));
         assert!(result.contains("v1-agend-pty"));
+    }
+
+    #[test]
+    fn write_with_marker_preserves_content_after_block() {
+        std::env::remove_var("AGEND_TEST_PASSPHRASE");
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("AGENTS.md");
+        std::fs::write(
+            &path,
+            "# Header\n\n<!-- agend-pty instructions v0 -->\nold\n<!-- /agend-pty -->\n\n# User Notes\nDo not delete this.",
+        )
+        .unwrap();
+        write_with_marker(
+            &path,
+            "<!-- agend-pty instructions v1-agend-pty -->\nnew\n<!-- /agend-pty -->",
+        )
+        .unwrap();
+        let result = std::fs::read_to_string(&path).unwrap();
+        assert!(result.contains("# Header"));
+        assert!(result.contains("v1-agend-pty"));
+        assert!(result.contains("# User Notes"));
+        assert!(result.contains("Do not delete this."));
+        assert!(!result.contains("v0"));
     }
 
     #[test]
