@@ -160,11 +160,11 @@ fn int_state_machine_lifecycle() {
     let tmp = tempfile::tempdir().unwrap();
     let script = tmp.path().join("crash_once.sh");
     let flag = tmp.path().join("has_run");
-    // First run: exit 1 (crash). Second run: stay alive (bash prompt = Ready).
+    // First run: exit 1 (crash). Second run: stay alive with prompt matching ready pattern ">".
     std::fs::write(
         &script,
         format!(
-            "#!/bin/bash\nif [ ! -f '{}' ]; then\n  touch '{}'\n  exit 1\nfi\nexec bash\n",
+            "#!/bin/bash\nif [ ! -f '{}' ]; then\n  touch '{}'\n  exit 1\nfi\nexport PS1='> '\nexec bash --norc --noprofile\n",
             flag.display(),
             flag.display()
         ),
@@ -354,19 +354,20 @@ fn int_channel_message_routing() {
     let (guard, sock) = start_daemon(yaml);
     wait_for_agents(&sock, 2, 15);
 
-    // Alice sends message to Bob via send_to_instance MCP tool
+    // Send a long message (>500 chars) so it goes to inbox instead of direct PTY inject
+    let long_msg = "x".repeat(600);
     let r = mcp_call(
         &sock,
         "alice",
         "send_to_instance",
-        &serde_json::json!({"instance_name": "bob", "message": "hello from alice"}),
+        &serde_json::json!({"instance_name": "bob", "message": long_msg}),
     );
     assert!(
         r["ok"].as_bool() == Some(true),
         "send_to_instance should succeed: {r}"
     );
 
-    // Bob should have the message in inbox
+    // Bob should have the message in inbox (long messages are stored there)
     let r = mcp_call(
         &sock,
         "bob",
