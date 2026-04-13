@@ -155,6 +155,7 @@ pub enum AgentCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum TaskCommand {
+    /// Create a new task.
     Create {
         title: String,
         #[arg(long)]
@@ -162,15 +163,17 @@ pub enum TaskCommand {
         #[arg(long)]
         assignee: Option<String>,
     },
+    /// List tasks.
     List,
-    Claim {
-        id: String,
-    },
+    /// Claim a task.
+    Claim { id: String },
+    /// Mark a task as done.
     Done {
         id: String,
         #[arg(long)]
         result: Option<String>,
     },
+    /// Update a task.
     Update {
         id: String,
         #[arg(long)]
@@ -182,11 +185,11 @@ pub enum TaskCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum DecisionCommand {
-    Post {
-        title: String,
-        content: String,
-    },
+    /// Post a new decision.
+    Post { title: String, content: String },
+    /// List decisions.
     List,
+    /// Update a decision.
     Update {
         id: u64,
         #[arg(long)]
@@ -196,24 +199,30 @@ pub enum DecisionCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum TeamCommand {
+    /// Create a team.
     Create { name: String, members: Vec<String> },
+    /// List teams.
     List,
+    /// Delete a team.
     Delete { name: String },
+    /// Update team members.
     Update { name: String, members: Vec<String> },
 }
 
 #[derive(Debug, Subcommand)]
 pub enum ScheduleCommand {
+    /// Create a schedule.
     Create {
         cron: String,
         message: String,
         #[arg(long)]
         target: Option<String>,
     },
+    /// List schedules.
     List,
-    Delete {
-        id: String,
-    },
+    /// Delete a schedule.
+    Delete { id: String },
+    /// Update a schedule.
     Update {
         id: String,
         #[arg(long)]
