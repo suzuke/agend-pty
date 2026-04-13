@@ -457,8 +457,20 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                 .or_else(|| args["name"].as_str())
                 .unwrap_or("");
             let cleanup_wt = args["cleanup_worktree"].as_bool().unwrap_or(false);
+            // Prevent deleting the last running instance
+            let instance_count = ctx.writers.lock().unwrap_or_else(|e| e.into_inner()).len();
+            if instance_count <= 1 {
+                return json!({"content": [{"type": "text", "text": "cannot delete the last running instance"}], "isError": true});
+            }
             let w = ctx.writers.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(pw) = w.get(name) {
+                // Save config info for cleanup before removing
+                let saved_config = ctx
+                    .spawn_configs
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(name)
+                    .cloned();
                 // 1. Suppress respawn BEFORE killing
                 ctx.deleted_names
                     .lock()
@@ -475,6 +487,12 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                     .write_all(b"\x03\x04");
                 drop(w);
                 remove_from_fleet(ctx, name);
+                // 3. Clean up MCP config files in working dir
+                if let Some(ref cfg) = saved_config {
+                    if let Some(ref wd) = cfg.working_dir {
+                        crate::mcp_config::remove_mcp_config(wd, &cfg.command, name);
+                    }
+                }
                 let mut resp = json!({"deleted": name});
                 if cleanup_wt {
                     // Check for uncommitted changes + remove worktree
