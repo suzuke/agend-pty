@@ -182,6 +182,7 @@ fn do_respawn(name: &str, sctx: &SpawnContext) {
                 cfg.working_dir,
                 cfg.worktree,
                 cfg.branch_name,
+                false, // crash respawn: no resume flag
                 ctx,
             );
         })
@@ -251,6 +252,7 @@ fn spawn_agent(
     working_dir: Option<std::path::PathBuf>,
     worktree: bool,
     branch_name: Option<String>,
+    resume: bool,
     ctx: SpawnContext,
 ) {
     let registry = ctx.registry;
@@ -288,21 +290,13 @@ fn spawn_agent(
         &mcp_config_path_str,
         &prompt_path_str,
     );
-    // Add resume flag if backend supports it and this isn't a fresh spawn
+    // Add resume flag only on daemon restart, not crash respawn
     let resume_flag = preset.as_ref().map(|p| p.resume_flag).unwrap_or("");
-    let final_command = if !resume_flag.is_empty()
+    let final_command = if resume
+        && !resume_flag.is_empty()
         && !final_command.contains(resume_flag.split_whitespace().next().unwrap_or(""))
     {
-        // Resume only on respawn (SpawnConfig already exists = had a previous session)
-        let is_respawn = spawn_configs
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains_key(&name);
-        if is_respawn {
-            format!("{final_command} {resume_flag}")
-        } else {
-            final_command
-        }
+        format!("{final_command} {resume_flag}")
     } else {
         final_command
     };
@@ -972,7 +966,7 @@ fn main() {
             std::thread::Builder::new()
                 .name(format!("agent_{n}"))
                 .spawn(move || {
-                    spawn_agent(n, command, wd, gw, gb, sctx);
+                    spawn_agent(n, command, wd, gw, gb, true, sctx);
                 })
                 .ok();
         }
@@ -1081,6 +1075,7 @@ fn main() {
                                 info.working_dir,
                                 info.worktree,
                                 info.branch,
+                                false, // new instance: no resume
                                 ctx,
                             );
                         })
