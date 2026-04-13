@@ -169,6 +169,24 @@ fn main() {
                 println!("Not a git repo.");
             }
         }
+        "agent" => {
+            use clap::Parser;
+            #[derive(Parser)]
+            struct AgentCli {
+                #[command(subcommand)]
+                command: agend_pty_poc::agent_cli::AgentCommand,
+            }
+            // Re-parse from "agend-pty agent <subcommand> ..."
+            let mut cli_args = vec!["agend-pty-agent".to_string()];
+            cli_args.extend(sub_args);
+            match AgentCli::try_parse_from(&cli_args) {
+                Ok(cli) => agend_pty_poc::agent_cli::run(cli.command),
+                Err(e) => {
+                    e.print().ok();
+                    std::process::exit(if e.use_stderr() { 1 } else { 0 });
+                }
+            }
+        }
         "help" | "--help" | "-h" => print_help(),
         "--version" | "-V" => println!("agend-pty {}", env!("CARGO_PKG_VERSION")),
         _ => {
@@ -198,7 +216,8 @@ fn print_help() {
     println!("    cleanup                Remove leftover git worktrees");
     println!("    bugreport              Export diagnostic info to file");
     println!("    doctor                 Check system health");
-    println!("    shutdown               Stop a running daemon\n");
+    println!("    shutdown               Stop a running daemon");
+    println!("    agent <cmd>            Agent CLI (send, reply, list, task, ...)\n");
     println!("OPTIONS:");
     println!("    -h, --help             Print help");
     println!("    -V, --version          Print version");

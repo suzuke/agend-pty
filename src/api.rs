@@ -52,7 +52,7 @@ pub struct SpawnConfigInfo {
 }
 
 /// Persist a new/updated instance to fleet.yaml.
-fn persist_to_fleet(ctx: &DaemonCtx, name: &str, info: &SpawnConfigInfo) {
+pub fn persist_to_fleet(ctx: &DaemonCtx, name: &str, info: &SpawnConfigInfo) {
     if let Some(ref path) = ctx.fleet_config_path {
         let ic = config::InstanceConfig {
             command: Some(info.command.clone()),
@@ -73,7 +73,7 @@ fn persist_to_fleet(ctx: &DaemonCtx, name: &str, info: &SpawnConfigInfo) {
 }
 
 /// Remove an instance from fleet.yaml.
-fn remove_from_fleet(ctx: &DaemonCtx, name: &str) {
+pub fn remove_from_fleet(ctx: &DaemonCtx, name: &str) {
     if let Some(ref path) = ctx.fleet_config_path {
         if let Err(e) = config::FleetConfig::remove_instance(path, name) {
             tracing::warn!(name, error = %e, "failed to remove instance from fleet.yaml");
@@ -1073,7 +1073,7 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
     }
 }
 
-fn inject_message(ctx: &DaemonCtx, sender: &str, target: &str, message: &str) -> ApiResponse {
+pub fn inject_message(ctx: &DaemonCtx, sender: &str, target: &str, message: &str) -> ApiResponse {
     let w = ctx.writers.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(pw) = w.get(target) {
         // Use inbox for smart injection
