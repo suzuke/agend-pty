@@ -17,14 +17,27 @@ fn output(value: Value) {
 }
 
 /// Read message from positional arg or stdin.
-fn get_text(text: Option<String>, stdin: bool) -> String {
-    if stdin || text.is_none() {
-        let mut buf = String::new();
-        std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf).expect("read stdin");
-        buf.trim().to_owned()
+fn get_text(text: Option<String>, stdin_flag: bool) -> String {
+    if let Some(t) = text {
+        if stdin_flag {
+            read_stdin()
+        } else {
+            t
+        }
+    } else if stdin_flag || !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        read_stdin()
     } else {
-        text.unwrap_or_default()
+        eprintln!("error: text argument required (or pipe via --stdin)");
+        std::process::exit(1);
     }
+}
+
+fn read_stdin() -> String {
+    let mut buf = String::new();
+    if std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf).is_err() {
+        output(json!({"error": "failed to read stdin"}));
+    }
+    buf.trim().to_owned()
 }
 
 fn api_call(method: &str, params: &Value) -> Value {
