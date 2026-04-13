@@ -124,11 +124,18 @@ fn wait_for_state(sock: &Path, name: &str, states: &[&str], timeout: u64) -> Str
 
 // ── INT-1: MCP config exists before agent ready ─────────────────────────
 
+/// Bash command that outputs a prompt matching the ready pattern ">".
+fn mock_bash() -> &'static str {
+    "env PS1='> ' bash --norc --noprofile"
+}
+
 #[test]
 fn int_mcp_config_written_on_spawn() {
-    let (guard, sock) = start_daemon(
-        "instances:\n  alice:\n    command: bash\n    working_directory: /tmp/int-mcp-test\n",
+    let yaml = format!(
+        "instances:\n  alice:\n    command: {}\n    working_directory: /tmp/int-mcp-test\n",
+        mock_bash()
     );
+    let (guard, sock) = start_daemon(&yaml);
     std::fs::create_dir_all("/tmp/int-mcp-test").ok();
     wait_for_agents(&sock, 1, 15);
     let r = api_call(&sock, "list", &serde_json::json!({}));
@@ -140,15 +147,16 @@ fn int_mcp_config_written_on_spawn() {
 
 #[test]
 fn int_dependency_ordering() {
-    let yaml = "instances:\n  coordinator:\n    command: bash\n  worker:\n    command: bash\n    depends_on: [coordinator]\n";
-    let (guard, sock) = start_daemon(yaml);
+    let bash = mock_bash();
+    let yaml = format!("instances:\n  coordinator:\n    command: {bash}\n  worker:\n    command: {bash}\n    depends_on: [coordinator]\n");
+    let (guard, sock) = start_daemon(&yaml);
     // Coordinator should appear first
     wait_for_agents(&sock, 1, 10);
     let r = api_call(&sock, "list", &serde_json::json!({}));
     let instances = r["result"]["instances"].as_array().unwrap();
     assert!(instances.iter().any(|v| v.as_str() == Some("coordinator")));
     // Worker should appear after coordinator
-    wait_for_agents(&sock, 2, 15);
+    wait_for_agents(&sock, 2, 20);
     drop(guard);
 }
 
@@ -203,7 +211,7 @@ fn int_health_respawn_and_backoff() {
     std::fs::write(
         &script,
         format!(
-            "#!/bin/bash\nC=0\nif [ -f '{}' ]; then C=$(cat '{}'); fi\nC=$((C+1))\necho $C > '{}'\nif [ $C -le 2 ]; then exit 1; fi\nexec bash\n",
+            "#!/bin/bash\nC=0\nif [ -f '{}' ]; then C=$(cat '{}'); fi\nC=$((C+1))\necho $C > '{}'\nif [ $C -le 2 ]; then exit 1; fi\nexport PS1='> '\nexec bash --norc --noprofile\n",
             counter.display(),
             counter.display(),
             counter.display()
@@ -263,7 +271,8 @@ fn int_worktree_created_for_git_repo() {
         .unwrap();
 
     let yaml = format!(
-        "defaults:\n  worktree: true\ninstances:\n  dev:\n    command: bash\n    working_directory: {}\n",
+        "defaults:\n  worktree: true\ninstances:\n  dev:\n    command: {}\n    working_directory: {}\n",
+        mock_bash(),
         repo.display()
     );
     let cfg_path = tmp.path().join("fleet.yaml");
@@ -297,7 +306,8 @@ fn int_worktree_created_for_git_repo() {
 
 #[test]
 fn int_mcp_binary_roundtrip() {
-    let (guard, sock) = start_daemon("instances:\n  alice:\n    command: bash\n");
+    let yaml = format!("instances:\n  alice:\n    command: {}\n", mock_bash());
+    let (guard, sock) = start_daemon(&yaml);
     wait_for_agents(&sock, 1, 15);
 
     let run_base = sock.parent().unwrap().parent().unwrap();
@@ -350,8 +360,9 @@ fn int_mcp_binary_roundtrip() {
 
 #[test]
 fn int_channel_message_routing() {
-    let yaml = "instances:\n  alice:\n    command: bash\n  bob:\n    command: bash\n";
-    let (guard, sock) = start_daemon(yaml);
+    let bash = mock_bash();
+    let yaml = format!("instances:\n  alice:\n    command: {bash}\n  bob:\n    command: {bash}\n");
+    let (guard, sock) = start_daemon(&yaml);
     wait_for_agents(&sock, 2, 15);
 
     // Send a long message (>500 chars) so it goes to inbox instead of direct PTY inject
