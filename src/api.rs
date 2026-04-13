@@ -103,6 +103,8 @@ pub struct DaemonCtx {
     pub ci_watches: CiWatches,
     /// Path to fleet.yaml — used to persist create/delete/replace instance changes.
     pub fleet_config_path: Option<std::path::PathBuf>,
+    /// Names suppressed from respawn (deleted instances).
+    pub deleted_names: Arc<Mutex<std::collections::HashSet<String>>>,
 }
 
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -457,6 +459,16 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
             let cleanup_wt = args["cleanup_worktree"].as_bool().unwrap_or(false);
             let w = ctx.writers.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(pw) = w.get(name) {
+                // 1. Suppress respawn BEFORE killing
+                ctx.deleted_names
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(name.to_owned());
+                ctx.spawn_configs
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(name);
+                // 2. Now kill
                 let _ = pw
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())

@@ -112,6 +112,7 @@ struct SpawnContext {
     inbox: Arc<inbox::InboxStore>,
     channel_mgr: Arc<Mutex<channel::ChannelManager>>,
     spawn_configs: SpawnConfigs,
+    deleted_names: Arc<Mutex<std::collections::HashSet<String>>>,
 }
 
 /// Handle a HealthAction — called from both PTY read loop and tick thread.
@@ -148,6 +149,15 @@ fn handle_health_action(action: &health::HealthAction, name: &str, sctx: &SpawnC
 }
 
 fn do_respawn(name: &str, sctx: &SpawnContext) {
+    if sctx
+        .deleted_names
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(name)
+    {
+        tracing::info!(agent = %name, "skipping respawn — instance deleted");
+        return;
+    }
     let cfg = match sctx
         .spawn_configs
         .lock()
@@ -261,6 +271,7 @@ fn spawn_agent(
     let inbox_store = ctx.inbox;
     let channel_mgr = ctx.channel_mgr;
     let spawn_configs = ctx.spawn_configs;
+    let deleted_names = ctx.deleted_names;
     let sock = socket_path(&name);
     let _ = std::fs::remove_file(&sock);
 
@@ -460,6 +471,7 @@ fn spawn_agent(
         inbox: Arc::clone(&inbox_store),
         channel_mgr: Arc::clone(&channel_mgr),
         spawn_configs: Arc::clone(&spawn_configs),
+        deleted_names: Arc::clone(&deleted_names),
     };
     let sm = Arc::clone(&state_machine);
     let hm = Arc::clone(&health_monitor);
@@ -850,6 +862,8 @@ fn main() {
     let agent_writers: api::AgentWriters = Arc::new(Mutex::new(HashMap::new()));
     let agent_states: api::AgentStateMap = Arc::new(Mutex::new(HashMap::new()));
     let spawn_configs: SpawnConfigs = Arc::new(Mutex::new(HashMap::new()));
+    let deleted_names: Arc<Mutex<std::collections::HashSet<String>>> =
+        Arc::new(Mutex::new(std::collections::HashSet::new()));
 
     // Warn if multiple instances share working_directory
     {
@@ -961,6 +975,7 @@ fn main() {
                 inbox: Arc::clone(&inbox_store),
                 channel_mgr: Arc::clone(&channel_mgr),
                 spawn_configs: Arc::clone(&spawn_configs),
+                deleted_names: Arc::clone(&deleted_names),
             };
             let n = name.clone();
             std::thread::Builder::new()
@@ -1042,6 +1057,7 @@ fn main() {
         spawn_tx,
         ci_watches: Arc::clone(&ci_watches),
         fleet_config_path: config_path.clone(),
+        deleted_names: Arc::clone(&deleted_names),
     });
     api::start(Arc::clone(&api_ctx));
 
@@ -1054,6 +1070,7 @@ fn main() {
             inbox: Arc::clone(&inbox_store),
             channel_mgr: Arc::clone(&channel_mgr),
             spawn_configs: Arc::clone(&spawn_configs),
+            deleted_names: Arc::clone(&deleted_names),
         };
         let asc = Arc::clone(&api_spawn_configs);
         std::thread::Builder::new()
@@ -1138,6 +1155,7 @@ fn main() {
             inbox: Arc::clone(&inbox_store),
             channel_mgr: Arc::clone(&channel_mgr),
             spawn_configs: Arc::clone(&spawn_configs),
+            deleted_names: Arc::clone(&deleted_names),
         };
         let aw = Arc::clone(&agent_writers);
         let api_ctx_tick = Arc::clone(&api_ctx);
