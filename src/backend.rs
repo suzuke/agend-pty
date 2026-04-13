@@ -20,7 +20,6 @@ pub struct BackendPreset {
     pub typed_inject: bool,
     pub dismiss_patterns: &'static [(&'static str, &'static [u8])],
     pub quit_command: &'static str,
-    pub mcp_inject_flag: &'static str,
     pub resume_flag: &'static str,
     pub ready_timeout_secs: u64,
 }
@@ -43,7 +42,6 @@ impl Backend {
                     ("Yes, proceed", b"\x1b[A\x1b[A\r"),
                 ],
                 quit_command: "/exit",
-                mcp_inject_flag: "--mcp-config",
                 resume_flag: "--continue",
                 ready_timeout_secs: 30,
             },
@@ -56,7 +54,6 @@ impl Backend {
                 typed_inject: false,
                 dismiss_patterns: &[],
                 quit_command: "/quit",
-                mcp_inject_flag: "",
                 resume_flag: "--resume",
                 ready_timeout_secs: 30,
             },
@@ -75,7 +72,6 @@ impl Backend {
                     ("Approaching rate limits", b"\x1b[B\x1b[B\r"),
                 ],
                 quit_command: "/quit",
-                mcp_inject_flag: "",
                 resume_flag: "resume --last",
                 ready_timeout_secs: 30,
             },
@@ -88,7 +84,6 @@ impl Backend {
                 typed_inject: false,
                 dismiss_patterns: &[],
                 quit_command: "exit",
-                mcp_inject_flag: "",
                 resume_flag: "--continue",
                 ready_timeout_secs: 30,
             },
@@ -105,7 +100,6 @@ impl Backend {
                     ("Trust folder", b"\r"),
                 ],
                 quit_command: "/quit",
-                mcp_inject_flag: "",
                 resume_flag: "--resume latest",
                 ready_timeout_secs: 30,
             },
@@ -182,28 +176,6 @@ mod tests {
     }
 
     #[test]
-    fn claude_has_mcp_inject_flag() {
-        let p = Backend::ClaudeCode.preset();
-        assert_eq!(p.mcp_inject_flag, "--mcp-config");
-    }
-
-    #[test]
-    fn inject_mcp_claude() {
-        let result =
-            inject_mcp_for_backend("claude", "--mcp-config", "/tmp/mcp.json", "/tmp/prompt.md");
-        assert!(result.contains("--mcp-config /tmp/mcp.json"));
-        assert!(result.contains("--append-system-prompt-file /tmp/prompt.md"));
-    }
-
-    #[test]
-    fn inject_mcp_empty_flag_passthrough() {
-        assert_eq!(
-            inject_mcp_for_backend("gemini --yolo", "", "/x", "/y"),
-            "gemini --yolo"
-        );
-    }
-
-    #[test]
     fn build_full_command_claude() {
         let cmd = build_full_command("claude", Some("sonnet"), true, false);
         assert!(cmd.contains("claude"));
@@ -223,25 +195,6 @@ mod tests {
         let cmd = build_full_command("my-tool", Some("gpt-4"), false, false);
         assert!(cmd.starts_with("my-tool"));
         assert!(cmd.contains("--model gpt-4"));
-    }
-}
-
-/// Inject MCP config flags into a command string based on backend preset.
-pub fn inject_mcp_for_backend(
-    command: &str,
-    mcp_inject_flag: &str,
-    mcp_config_path: &str,
-    prompt_path: &str,
-) -> String {
-    if mcp_inject_flag.is_empty() {
-        return command.to_owned();
-    }
-    if mcp_inject_flag == "--mcp-config" {
-        format!(
-            "{command} --mcp-config {mcp_config_path} --append-system-prompt-file {prompt_path}"
-        )
-    } else {
-        format!("{command} {mcp_inject_flag} {mcp_config_path}")
     }
 }
 

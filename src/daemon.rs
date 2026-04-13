@@ -3,7 +3,7 @@
 
 use agend_pty_poc::{
     api, backend, channel, config, event_log, features, fleet_store, git, health, inbox,
-    instructions, mcp_config, paths, scheduler, state, telegram, vterm,
+    instructions, paths, scheduler, state, telegram, vterm,
 };
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -212,23 +212,6 @@ fn inject_to_pty(writer: &PtyWriter, text: &str, submit_key: &str) {
         .write_all(msg.as_bytes());
 }
 
-fn setup_mcp_config(name: &str) -> (std::path::PathBuf, String) {
-    let mcp_bin = paths::exe_sibling("agend-mcp");
-    let mcp_config_path = paths::agent_dir(name).join("mcp-config.json");
-    let mcp_config = serde_json::json!({
-        "mcpServers": { format!("agend-{name}"): {
-            "command": mcp_bin.display().to_string(),
-            "args": [],
-            "env": { "AGEND_INSTANCE_NAME": name }
-        } }
-    });
-    if let Ok(json) = serde_json::to_string_pretty(&mcp_config) {
-        agend_pty_poc::util::atomic_write(&mcp_config_path, &json).ok();
-    }
-    let path_str = mcp_config_path.display().to_string();
-    (mcp_config_path, path_str)
-}
-
 fn setup_prompt(name: &str, registry: &AgentRegistry) -> (std::path::PathBuf, String) {
     let prompt_path = paths::agent_dir(name).join("prompt.md");
     let others: Vec<String> = registry
@@ -291,16 +274,10 @@ fn spawn_agent(
         }
     };
 
-    let (_, mcp_config_path_str) = setup_mcp_config(&name);
     let preset = backend::Backend::from_command(&command).map(|b| b.preset());
-    let (_, prompt_path_str) = setup_prompt(&name, &registry);
+    setup_prompt(&name, &registry);
 
-    let final_command = backend::inject_mcp_for_backend(
-        &command,
-        preset.as_ref().map(|p| p.mcp_inject_flag).unwrap_or(""),
-        &mcp_config_path_str,
-        &prompt_path_str,
-    );
+    let final_command = command.clone();
     // Add resume flag only on daemon restart, not crash respawn
     let resume_flag = preset.as_ref().map(|p| p.resume_flag).unwrap_or("");
     let final_command = if resume
@@ -345,19 +322,6 @@ fn spawn_agent(
         cwd
     };
     instructions::generate(&effective_wd, &command, &name);
-    // Write per-backend MCP config (Kiro wrapper, Gemini settings, OpenCode config)
-    let mcp_bridge = paths::exe_sibling("agend-mcp");
-    let mcp_bridge_str = mcp_bridge.display().to_string();
-    let agent_dir = paths::agent_dir(&name);
-    mcp_config::write_mcp_config(
-        &effective_wd,
-        &command,
-        &name,
-        &mcp_bridge_str,
-        &[],
-        &agent_dir,
-    );
-
     let _child = match pair.slave.spawn_command(cmd) {
         Ok(c) => c,
         Err(e) => {
