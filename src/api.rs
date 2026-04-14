@@ -262,11 +262,11 @@ fn handle_request(req: &ApiRequest, ctx: &DaemonCtx) -> ApiResponse {
         }
 
         // ── MCP tool dispatch (called by agend-pty mcp) ──
-        "mcp_call" => {
+        "tool_call" => {
             let instance = req.params["instance"].as_str().unwrap_or("");
             let tool = req.params["tool"].as_str().unwrap_or("");
             let args = &req.params["arguments"];
-            let result = handle_mcp_tool(ctx, instance, tool, args);
+            let result = dispatch_tool(ctx, instance, tool, args);
             ok(result)
         }
 
@@ -276,7 +276,7 @@ fn handle_request(req: &ApiRequest, ctx: &DaemonCtx) -> ApiResponse {
 
 /// MCP tool dispatch — routes tool calls to handlers.
 /// Organized by category: communication, fleet, coordination, git, CI.
-fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) -> Value {
+fn dispatch_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) -> Value {
     match tool {
         // ── Communication ──
         "send_to_instance" => {

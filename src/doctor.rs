@@ -69,21 +69,7 @@ pub fn run() {
         fail += 1;
     }
 
-    // 5. MCP binary
-    let daemon_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|par| par.to_path_buf()))
-        .unwrap_or_default();
-    let mcp_bin = daemon_dir.join("agend-mcp");
-    if mcp_bin.exists() {
-        println!("✓ agend-mcp found");
-        ok += 1;
-    } else {
-        println!("✗ agend-mcp not found. Build with: cargo build");
-        fail += 1;
-    }
-
-    // 6. Telegram token validation
+    // 5. Telegram token validation
     if let Some(ref cfg) = fleet_cfg {
         if let Some(ch) = &cfg.channel {
             let token_env = ch.bot_token_env.as_deref().unwrap_or("TELEGRAM_BOT_TOKEN");

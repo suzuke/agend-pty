@@ -67,10 +67,10 @@ fn api_call(method: &str, params: &Value) -> Value {
     }
 }
 
-fn mcp_call(tool: &str, args: &Value) -> Value {
+fn tool_call(tool: &str, args: &Value) -> Value {
     let instance = std::env::var("AGEND_INSTANCE_NAME").unwrap_or_default();
     let r = api_call(
-        "mcp_call",
+        "tool_call",
         &json!({"instance": instance, "tool": tool, "arguments": args}),
     );
     // Unwrap MCP content wrapper if present
@@ -297,7 +297,7 @@ pub fn run(command: AgentCommand) {
             stdin,
         } => {
             let msg = get_text(message, stdin);
-            output(mcp_call(
+            output(tool_call(
                 "send_to_instance",
                 &json!({"instance_name": target, "message": msg}),
             ));
@@ -310,7 +310,7 @@ pub fn run(command: AgentCommand) {
             stdin,
         } => {
             let task = get_text(task, stdin);
-            output(mcp_call(
+            output(tool_call(
                 "delegate_task",
                 &json!({"target_instance": target, "task": task, "success_criteria": criteria, "context": context}),
             ));
@@ -323,7 +323,7 @@ pub fn run(command: AgentCommand) {
             stdin,
         } => {
             let summary = get_text(summary, stdin);
-            output(mcp_call(
+            output(tool_call(
                 "report_result",
                 &json!({"target_instance": target, "summary": summary, "correlation_id": correlation_id, "artifacts": artifacts}),
             ));
@@ -335,7 +335,7 @@ pub fn run(command: AgentCommand) {
             stdin,
         } => {
             let question = get_text(question, stdin);
-            output(mcp_call(
+            output(tool_call(
                 "request_information",
                 &json!({"target_instance": target, "question": question, "context": context}),
             ));
@@ -346,23 +346,23 @@ pub fn run(command: AgentCommand) {
             stdin,
         } => {
             let msg = get_text(message, stdin);
-            output(mcp_call(
+            output(tool_call(
                 "broadcast",
                 &json!({"message": msg, "team": team}),
             ));
         }
         AgentCommand::Inbox => {
-            output(mcp_call("inbox", &json!({})));
+            output(tool_call("inbox", &json!({})));
         }
         AgentCommand::Reply { text, stdin } => {
             let text = get_text(text, stdin);
-            output(mcp_call("reply", &json!({"text": text})));
+            output(tool_call("reply", &json!({"text": text})));
         }
         AgentCommand::List => {
-            output(mcp_call("list_instances", &json!({})));
+            output(tool_call("list_instances", &json!({})));
         }
         AgentCommand::Describe { name } => {
-            output(mcp_call(
+            output(tool_call(
                 "describe_instance",
                 &json!({"instance_name": name}),
             ));
@@ -374,19 +374,22 @@ pub fn run(command: AgentCommand) {
             working_directory,
             branch,
         } => {
-            output(mcp_call(
+            output(tool_call(
                 "create_instance",
                 &json!({"name": name, "backend": backend, "model": model, "working_directory": working_directory, "branch": branch}),
             ));
         }
         AgentCommand::Start { name } => {
-            output(mcp_call("start_instance", &json!({"instance_name": name})));
+            output(tool_call("start_instance", &json!({"instance_name": name})));
         }
         AgentCommand::Delete { name } => {
-            output(mcp_call("delete_instance", &json!({"instance_name": name})));
+            output(tool_call(
+                "delete_instance",
+                &json!({"instance_name": name}),
+            ));
         }
         AgentCommand::Replace { name, reason } => {
-            output(mcp_call(
+            output(tool_call(
                 "replace_instance",
                 &json!({"instance_name": name, "reason": reason}),
             ));
@@ -396,15 +399,15 @@ pub fn run(command: AgentCommand) {
                 title,
                 description,
                 assignee,
-            } => output(mcp_call(
+            } => output(tool_call(
                 "task",
                 &json!({"action": "create", "title": title, "description": description, "assignee": assignee}),
             )),
-            TaskCommand::List => output(mcp_call("task", &json!({"action": "list"}))),
+            TaskCommand::List => output(tool_call("task", &json!({"action": "list"}))),
             TaskCommand::Claim { id } => {
-                output(mcp_call("task", &json!({"action": "claim", "id": id})))
+                output(tool_call("task", &json!({"action": "claim", "id": id})))
             }
-            TaskCommand::Done { id, result } => output(mcp_call(
+            TaskCommand::Done { id, result } => output(tool_call(
                 "task",
                 &json!({"action": "done", "id": id, "result": result}),
             )),
@@ -412,32 +415,33 @@ pub fn run(command: AgentCommand) {
                 id,
                 status,
                 assignee,
-            } => output(mcp_call(
+            } => output(tool_call(
                 "task",
                 &json!({"action": "update", "id": id, "status": status, "assignee": assignee}),
             )),
         },
         AgentCommand::Decision { command } => match command {
-            DecisionCommand::Post { title, content } => output(mcp_call(
+            DecisionCommand::Post { title, content } => output(tool_call(
                 "decision",
                 &json!({"action": "post", "title": title, "content": content}),
             )),
-            DecisionCommand::List => output(mcp_call("decision", &json!({"action": "list"}))),
-            DecisionCommand::Update { id, content } => output(mcp_call(
+            DecisionCommand::List => output(tool_call("decision", &json!({"action": "list"}))),
+            DecisionCommand::Update { id, content } => output(tool_call(
                 "decision",
                 &json!({"action": "update", "id": id, "content": content}),
             )),
         },
         AgentCommand::Team { command } => match command {
-            TeamCommand::Create { name, members } => output(mcp_call(
+            TeamCommand::Create { name, members } => output(tool_call(
                 "team",
                 &json!({"action": "create", "name": name, "members": members}),
             )),
-            TeamCommand::List => output(mcp_call("team", &json!({"action": "list"}))),
-            TeamCommand::Delete { name } => {
-                output(mcp_call("team", &json!({"action": "delete", "name": name})))
-            }
-            TeamCommand::Update { name, members } => output(mcp_call(
+            TeamCommand::List => output(tool_call("team", &json!({"action": "list"}))),
+            TeamCommand::Delete { name } => output(tool_call(
+                "team",
+                &json!({"action": "delete", "name": name}),
+            )),
+            TeamCommand::Update { name, members } => output(tool_call(
                 "team",
                 &json!({"action": "update", "name": name, "members": members}),
             )),
@@ -447,32 +451,33 @@ pub fn run(command: AgentCommand) {
                 cron,
                 message,
                 target,
-            } => output(mcp_call(
+            } => output(tool_call(
                 "schedule",
                 &json!({"action": "create", "cron": cron, "message": message, "target": target}),
             )),
-            ScheduleCommand::List => output(mcp_call("schedule", &json!({"action": "list"}))),
-            ScheduleCommand::Delete { id } => {
-                output(mcp_call("schedule", &json!({"action": "delete", "id": id})))
-            }
+            ScheduleCommand::List => output(tool_call("schedule", &json!({"action": "list"}))),
+            ScheduleCommand::Delete { id } => output(tool_call(
+                "schedule",
+                &json!({"action": "delete", "id": id}),
+            )),
             ScheduleCommand::Update {
                 id,
                 cron,
                 message,
                 enabled,
-            } => output(mcp_call(
+            } => output(tool_call(
                 "schedule",
                 &json!({"action": "update", "id": id, "cron": cron, "message": message, "enabled": enabled}),
             )),
         },
         AgentCommand::React { emoji, message_id } => {
-            output(mcp_call(
+            output(tool_call(
                 "react",
                 &json!({"emoji": emoji, "message_id": message_id}),
             ));
         }
         AgentCommand::Edit { message_id, text } => {
-            output(mcp_call(
+            output(tool_call(
                 "edit_message",
                 &json!({"message_id": message_id, "text": text}),
             ));
