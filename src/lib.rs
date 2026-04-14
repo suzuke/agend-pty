@@ -13,6 +13,7 @@ pub mod git;
 pub mod health;
 pub mod inbox;
 pub mod instructions;
+pub mod mcp_config;
 pub mod paths;
 pub mod quickstart;
 pub mod scheduler;
@@ -295,6 +296,80 @@ instances:
         // Drain empty inbox returns empty
         assert_eq!(store.drain("test-drain").len(), 0);
         store.clear("test-drain");
+    }
+
+    // ── MCP config merge ────────────────────────────────────────────────
+
+    #[test]
+    fn mcp_config_merge_new_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(".gemini").join("settings.json");
+        mcp_config::write_mcp_config(
+            tmp.path(),
+            "gemini --yolo",
+            "test",
+            "/bin/agend-mcp",
+            &["--socket", "/tmp/test.sock"],
+            tmp.path(),
+        );
+        assert!(path.exists(), "settings.json should be created");
+        let content: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(content["mcpServers"]["agend-test"].is_object());
+    }
+
+    #[test]
+    fn mcp_config_merge_existing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gemini_dir = tmp.path().join(".gemini");
+        std::fs::create_dir_all(&gemini_dir).unwrap();
+        let path = gemini_dir.join("settings.json");
+        // Pre-existing config with user's own MCP server
+        std::fs::write(&path, r#"{"mcpServers":{"my-server":{"command":"foo"}}}"#).unwrap();
+
+        mcp_config::write_mcp_config(
+            tmp.path(),
+            "gemini",
+            "test",
+            "/bin/agend-mcp",
+            &["--socket", "/s"],
+            tmp.path(),
+        );
+        let content: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        // Both keys should exist
+        assert!(
+            content["mcpServers"]["my-server"].is_object(),
+            "user's server preserved"
+        );
+        assert!(
+            content["mcpServers"]["agend-test"].is_object(),
+            "agend server added"
+        );
+    }
+
+    #[test]
+    fn mcp_config_skip_bad_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gemini_dir = tmp.path().join(".gemini");
+        std::fs::create_dir_all(&gemini_dir).unwrap();
+        let path = gemini_dir.join("settings.json");
+        std::fs::write(&path, "{ bad json !!!").unwrap();
+
+        mcp_config::write_mcp_config(
+            tmp.path(),
+            "gemini",
+            "test",
+            "/bin/agend-mcp",
+            &["--socket", "/s"],
+            tmp.path(),
+        );
+        // File should NOT be overwritten
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            content, "{ bad json !!!",
+            "bad file should not be overwritten"
+        );
     }
 
     // ── VTerm screen dump ───────────────────────────────────────────────

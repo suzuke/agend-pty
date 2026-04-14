@@ -160,6 +160,27 @@ pub fn start(ctx: Arc<DaemonCtx>) {
                             continue;
                         }
                         // Try to parse as JSON
+                        let parsed = serde_json::from_str::<Value>(trimmed);
+                        // Detect MCP JSON-RPC (has "jsonrpc" field)
+                        if let Ok(ref jrpc) = parsed {
+                            if jrpc.get("jsonrpc").is_some() {
+                                let out = handle_mcp_jsonrpc(jrpc, &c);
+                                if let Some(resp) = out {
+                                    let _ = writeln!(writer, "{}", resp);
+                                    let _ = writer.flush();
+                                }
+                                line.clear();
+                                continue;
+                            }
+                        }
+                        // Invalid JSON → return JSON-RPC parse error if it looked like JSON-RPC attempt
+                        if parsed.is_err() && trimmed.contains("jsonrpc") {
+                            let err_resp = r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}"#;
+                            let _ = writeln!(writer, "{err_resp}");
+                            let _ = writer.flush();
+                            line.clear();
+                            continue;
+                        }
                         let resp = match serde_json::from_str::<ApiRequest>(trimmed) {
                             Ok(req) => handle_request(&req, &c),
                             Err(e) => ApiResponse {
@@ -262,12 +283,22 @@ fn handle_request(req: &ApiRequest, ctx: &DaemonCtx) -> ApiResponse {
         }
 
         // ── MCP tool dispatch (called by agend-pty mcp) ──
-        "tool_call" => {
+        "mcp_call" => {
             let instance = req.params["instance"].as_str().unwrap_or("");
             let tool = req.params["tool"].as_str().unwrap_or("");
             let args = &req.params["arguments"];
-            let result = dispatch_tool(ctx, instance, tool, args);
+            let result = handle_mcp_tool(ctx, instance, tool, args);
             ok(result)
+        }
+        "mcp_tools_list" => {
+            let instance = req.params["instance"].as_str().unwrap_or("");
+            let role = ctx
+                .states
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(instance)
+                .and_then(|h| h.role.clone());
+            ok(mcp_tools_list_filtered(role.as_deref()))
         }
 
         _ => err(format!("unknown method: {}", req.method)),
@@ -276,7 +307,7 @@ fn handle_request(req: &ApiRequest, ctx: &DaemonCtx) -> ApiResponse {
 
 /// MCP tool dispatch — routes tool calls to handlers.
 /// Organized by category: communication, fleet, coordination, git, CI.
-fn dispatch_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) -> Value {
+fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) -> Value {
     match tool {
         // ── Communication ──
         "send_to_instance" => {
@@ -432,6 +463,13 @@ fn dispatch_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) -> V
                 if w.len() <= 1 {
                     return json!({"content": [{"type": "text", "text": "cannot delete the last running instance"}], "isError": true});
                 }
+                // Save config info for cleanup before removing
+                let saved_config = ctx
+                    .spawn_configs
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(name)
+                    .cloned();
                 // 1. Suppress respawn BEFORE killing
                 ctx.deleted_names
                     .lock()
@@ -448,6 +486,12 @@ fn dispatch_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) -> V
                     .write_all(b"\x03\x04");
                 drop(w);
                 remove_from_fleet(ctx, name);
+                // 3. Clean up MCP config files in working dir
+                if let Some(ref cfg) = saved_config {
+                    if let Some(ref wd) = cfg.working_dir {
+                        crate::mcp_config::remove_mcp_config(wd, &cfg.command, name);
+                    }
+                }
                 let mut resp = json!({"deleted": name});
                 if cleanup_wt {
                     // Check for uncommitted changes + remove worktree
@@ -1059,7 +1103,116 @@ pub fn inject_message(ctx: &DaemonCtx, sender: &str, target: &str, message: &str
     }
 }
 
-/// Check CI status for a PR via `gh` CLI.
+/// Role-based tool categories. Tools not in any category are always included.
+const ROLE_TOOL_MAP: &[(&str, &[&str])] = &[
+    (
+        "worker",
+        &[
+            "reply",
+            "send_to_instance",
+            "report_result",
+            "list_instances",
+            "describe_instance",
+            "inbox",
+            "task",
+            "list_events",
+            "merge",
+        ],
+    ),
+    (
+        "coordinator",
+        &[
+            "reply",
+            "send_to_instance",
+            "broadcast",
+            "request_information",
+            "delegate_task",
+            "report_result",
+            "list_instances",
+            "describe_instance",
+            "create_instance",
+            "delete_instance",
+            "replace_instance",
+            "start_instance",
+            "wait_for_idle",
+            "inbox",
+            "decision",
+            "task",
+            "team",
+            "list_events",
+            "schedule",
+            "merge",
+            "watch_ci",
+        ],
+    ),
+    (
+        "reviewer",
+        &[
+            "reply",
+            "send_to_instance",
+            "report_result",
+            "list_instances",
+            "describe_instance",
+            "inbox",
+            "decision",
+            "task",
+            "list_events",
+            "merge",
+        ],
+    ),
+];
+
+pub fn mcp_tools_list_filtered(role: Option<&str>) -> Value {
+    let all = mcp_tools_list_all();
+    let empty = vec![];
+    let tools = all["tools"].as_array().unwrap_or(&empty);
+    if let Some(role) = role {
+        if let Some((_, allowed)) = ROLE_TOOL_MAP.iter().find(|(r, _)| *r == role) {
+            let filtered: Vec<&Value> = tools
+                .iter()
+                .filter(|t| {
+                    t["name"]
+                        .as_str()
+                        .map(|n| allowed.contains(&n))
+                        .unwrap_or(false)
+                })
+                .collect();
+            return json!({"tools": filtered});
+        }
+    }
+    all
+}
+
+fn mcp_tools_list_all() -> Value {
+    json!({"tools": [
+        {"name":"reply","description":"Reply to a Telegram user.","inputSchema":{"type":"object","properties":{"text":{"type":"string"},"format":{"type":"string","enum":["text","markdown","html"]},"reply_to":{"type":"string"}},"required":["text"]}},
+        {"name":"send_to_instance","description":"Send a message to another agent instance.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"message":{"type":"string"},"request_kind":{"type":"string","enum":["query","task","report","update"]},"requires_reply":{"type":"boolean"},"correlation_id":{"type":"string"}},"required":["instance_name","message"]}},
+        {"name":"request_information","description":"Ask another agent a question.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"question":{"type":"string"},"context":{"type":"string"}},"required":["instance_name","question"]}},
+        {"name":"delegate_task","description":"Delegate a task to another agent.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"task":{"type":"string"},"success_criteria":{"type":"string"},"context":{"type":"string"}},"required":["instance_name","task"]}},
+        {"name":"report_result","description":"Report results back.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"summary":{"type":"string"},"correlation_id":{"type":"string"},"artifacts":{"type":"string"}},"required":["instance_name","summary"]}},
+        {"name":"broadcast","description":"Send to all agents (or team members).","inputSchema":{"type":"object","properties":{"message":{"type":"string"},"team":{"type":"string"}},"required":["message"]}},
+        {"name":"list_instances","description":"List running agents.","inputSchema":{"type":"object","properties":{}}},
+        {"name":"describe_instance","description":"Get agent details.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"}},"required":["instance_name"]}},
+        {"name":"delete_instance","description":"Stop an agent.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"cleanup_worktree":{"type":"boolean"}},"required":["instance_name"]}},
+        {"name":"inbox","description":"Read inbox messages.","inputSchema":{"type":"object","properties":{"id":{"type":"integer"}}}},
+        {"name":"decision","description":"Decision operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["post","list","update"]},"title":{"type":"string"},"content":{"type":"string"},"id":{"type":"integer"}},"required":["action"]}},
+        {"name":"task","description":"Task board operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["create","list","claim","done","update"]},"title":{"type":"string"},"description":{"type":"string"},"id":{"type":"string"},"assignee":{"type":"string"},"status":{"type":"string","enum":["open","claimed","done","blocked"]},"result":{"type":"string"}},"required":["action"]}},
+        {"name":"react","description":"React to a message with emoji.","inputSchema":{"type":"object","properties":{"message_id":{"type":"string"},"emoji":{"type":"string"}},"required":["message_id","emoji"]}},
+        {"name":"edit_message","description":"Edit a sent message.","inputSchema":{"type":"object","properties":{"message_id":{"type":"string"},"text":{"type":"string"}},"required":["message_id","text"]}},
+        {"name":"wait_for_idle","description":"Wait for an agent to become idle.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"timeout_secs":{"type":"integer"}},"required":["instance_name"]}},
+        {"name":"merge","description":"Git merge operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["preview","squash","all"]},"instance_name":{"type":"string"},"message":{"type":"string"}},"required":["action"]}},
+        {"name":"start_instance","description":"Restart a stopped/failed agent.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"}},"required":["instance_name"]}},
+        {"name":"create_instance","description":"Create a new agent instance.","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"working_directory":{"type":"string"},"backend":{"type":"string"},"model":{"type":"string"},"branch":{"type":"string"}},"required":["name"]}},
+        {"name":"replace_instance","description":"Replace an agent with new settings (atomic swap).","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string","description":"Agent to replace"},"backend":{"type":"string"},"model":{"type":"string"},"working_directory":{"type":"string"},"branch":{"type":"string"}},"required":["instance_name"]}},
+        {"name":"team","description":"Team operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["create","list","delete","update"]},"name":{"type":"string"},"members":{"type":"array","items":{"type":"string"}}},"required":["action"]}},
+        {"name":"list_events","description":"List event log.","inputSchema":{"type":"object","properties":{"agent":{"type":"string"},"type":{"type":"string"}}}},
+        {"name":"schedule","description":"Cron schedule operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["create","list","delete","update"]},"cron":{"type":"string"},"target":{"type":"string"},"message":{"type":"string"},"id":{"type":"string"},"enabled":{"type":"boolean"}},"required":["action"]}},
+        {"name":"watch_ci","description":"Start continuous CI monitoring for a PR.","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"owner/repo"},"pr":{"type":"integer","description":"PR number"},"on_failure":{"type":"string","description":"Agent to notify on failure"},"interval_secs":{"type":"integer","description":"Poll interval (default 60, min 30)"}},"required":["repo","pr"]}},
+        {"name":"unwatch_ci","description":"Stop CI monitoring for a PR.","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"owner/repo"},"pr":{"type":"integer","description":"PR number"}},"required":["repo","pr"]}}
+    ]})
+}
+
+/// Check CI status for a PR via `gh` CLI. Returns a summary Value.
 pub fn check_ci_status(repo: &str, pr: u64) -> Value {
     let output = std::process::Command::new("gh")
         .args([
@@ -1093,6 +1246,7 @@ pub fn check_ci_status(repo: &str, pr: u64) -> Value {
 /// Called from daemon tick thread — poll all active CI watches.
 pub fn tick_ci_watches(ctx: &DaemonCtx) {
     let now = crate::util::now_secs();
+    // Collect due watches (short lock)
     let due: Vec<(String, u64, String)> = {
         let mut watches = ctx.ci_watches.lock().unwrap_or_else(|e| e.into_inner());
         let mut result = Vec::new();
@@ -1103,7 +1257,8 @@ pub fn tick_ci_watches(ctx: &DaemonCtx) {
             }
         }
         result
-    };
+    }; // lock released
+       // Check each (no lock held)
     for (repo, pr, on_failure) in &due {
         let status = check_ci_status(repo, *pr);
         if let Some(failures) = status["failures"].as_array() {
@@ -1118,6 +1273,43 @@ pub fn tick_ci_watches(ctx: &DaemonCtx) {
             }
         }
     }
+}
+
+/// Handle MCP JSON-RPC directly on the API socket (no proxy process needed).
+/// Returns None for notifications (no response expected).
+fn handle_mcp_jsonrpc(req: &Value, ctx: &DaemonCtx) -> Option<String> {
+    let id = req.get("id")?; // notifications have no id
+    let method = req["method"].as_str().unwrap_or("");
+    let instance = req["params"]["_instance"]
+        .as_str()
+        .or_else(|| req["_instance"].as_str())
+        .unwrap_or("unknown");
+
+    let result = match method {
+        "initialize" => json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": { "tools": { "listChanged": false } },
+            "serverInfo": { "name": "agend", "version": env!("CARGO_PKG_VERSION") }
+        }),
+        "tools/list" => {
+            let role = ctx
+                .states
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(instance)
+                .and_then(|h| h.role.clone());
+            mcp_tools_list_filtered(role.as_deref())
+        }
+        "tools/call" => {
+            let tool = req["params"]["name"].as_str().unwrap_or("");
+            let args = &req["params"]["arguments"];
+            handle_mcp_tool(ctx, instance, tool, args)
+        }
+        "notifications/initialized" | "notifications/cancelled" => return None,
+        _ => return None,
+    };
+    let resp = json!({"jsonrpc": "2.0", "id": id, "result": result});
+    Some(resp.to_string())
 }
 
 // ── Extracted tool handlers (testable without DaemonCtx) ────────────────
