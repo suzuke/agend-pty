@@ -1,18 +1,21 @@
 //! agend-tui: multi-tab client for the agend daemon.
 //!
-//! Connects to every running agent the daemon advertises and presents them as
-//! tabs in a single terminal window. Only the active tab's screen is rendered;
-//! inactive tabs continue to receive PTY output into a `VTerm` model so that
-//! switching back shows their current state.
+//! Two modes:
+//!   agend-tui          — connect to every running agent, tabbed chrome
+//!   agend-tui <name>   — single agent, raw full-screen (legacy behavior)
+//!
+//! In multi-tab mode only the active tab is rendered to the real screen;
+//! inactive tabs keep feeding their own `VTerm` model so switching back
+//! shows current state. In single-agent mode there is no chrome — the
+//! PTY output flows straight through with no row offset.
 //!
 //! Keybindings (Ctrl+B is the prefix, tmux-style):
-//!   Ctrl+B n        — next tab
-//!   Ctrl+B p        — prev tab
-//!   Ctrl+B 1..9     — jump to tab N
+//!   Ctrl+B n        — next tab            (multi-tab only)
+//!   Ctrl+B p        — prev tab            (multi-tab only)
+//!   Ctrl+B 1..9     — jump to tab N       (multi-tab only)
 //!   Ctrl+B d        — detach
-//!   Ctrl+B <other>  — buffered Ctrl+B + key is forwarded to the active agent
-//!
-//! Any other keypress is forwarded raw to the active agent's PTY.
+//!   Ctrl+B <other>  — pass Ctrl+B + key through to the active agent
+//!                      (including n/p/digits when only one agent is attached)
 
 use agend_pty_poc::paths;
 use agend_pty_poc::vterm::VTerm;
@@ -22,12 +25,14 @@ use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use unicode_width::UnicodeWidthChar;
 
 const TAG_DATA: u8 = 0;
 const TAG_RESIZE: u8 = 1;
 const TAB_BAR_ROWS: u16 = 1;
 const STATUS_BAR_ROWS: u16 = 1;
-const RESERVED_ROWS: u16 = TAB_BAR_ROWS + STATUS_BAR_ROWS;
+const CHROME_ROWS: u16 = TAB_BAR_ROWS + STATUS_BAR_ROWS;
 
 // ── Wire protocol ────────────────────────────────────────────────────────
 
@@ -79,6 +84,7 @@ struct App {
     tabs: Vec<Arc<Tab>>,
     active: AtomicUsize,
     needs_render: AtomicBool,
+    show_chrome: bool,
 }
 
 impl App {
@@ -100,6 +106,18 @@ impl App {
     fn take_render(&self) -> bool {
         self.needs_render.swap(false, Ordering::AcqRel)
     }
+
+    fn render_pending(&self) -> bool {
+        self.needs_render.load(Ordering::Acquire)
+    }
+
+    fn content_offset(&self) -> u16 {
+        if self.show_chrome {
+            TAB_BAR_ROWS
+        } else {
+            0
+        }
+    }
 }
 
 // ── Terminal lifecycle ───────────────────────────────────────────────────
@@ -110,7 +128,6 @@ impl RawModeGuard {
     fn enter() -> Self {
         terminal::enable_raw_mode().expect("enable raw mode");
         let mut out = std::io::stdout();
-        // Enter alt screen + hide cursor transitions (rely on vterm dump for cursor).
         let _ = out.write_all(b"\x1b[?1049h\x1b[2J\x1b[H");
         let _ = out.flush();
         Self
@@ -126,24 +143,28 @@ impl Drop for RawModeGuard {
     }
 }
 
-fn content_rows(total_rows: u16) -> u16 {
-    total_rows.saturating_sub(RESERVED_ROWS).max(1)
+fn content_rows(total_rows: u16, show_chrome: bool) -> u16 {
+    let reserved = if show_chrome { CHROME_ROWS } else { 0 };
+    total_rows.saturating_sub(reserved).max(1)
 }
 
 // ── Dump post-processing ─────────────────────────────────────────────────
 //
-// VTerm::dump_screen emits CUP escapes (`ESC [ <row> ; <col> H`) using its own
-// 1-based coordinates. We render the tab bar on screen row 1, so content must
-// start on screen row 2. Walk the dump and add `offset` to every CUP row.
+// VTerm::dump_screen emits CUP escapes (`ESC [ <row> ; <col> H`) using its
+// own 1-based coordinates. In multi-tab mode we render the tab bar on row 1,
+// so content must start on row 2 — add 1 to every CUP row. In single-agent
+// mode the offset is 0 (no-op rewrite, just copies bytes through).
 
 fn rewrite_cursor(dump: &[u8], offset: u16) -> Vec<u8> {
+    if offset == 0 {
+        return dump.to_vec();
+    }
     let mut out = Vec::with_capacity(dump.len() + 64);
     let mut i = 0;
     while i < dump.len() {
         if dump[i] == 0x1b && i + 1 < dump.len() && dump[i + 1] == b'[' {
             let params_start = i + 2;
             let mut j = params_start;
-            // params (0x30-0x3F) + intermediates (0x20-0x2F)
             while j < dump.len() && (0x20..=0x3F).contains(&dump[j]) {
                 j += 1;
             }
@@ -222,50 +243,43 @@ fn render_status_bar(active: &Tab, tab_count: usize, rows: u16, cols: u16) -> Ve
     out
 }
 
-/// Truncate a string that may contain ANSI CSI escapes to `max_cols` visible
-/// columns. Escapes are copied verbatim (zero visible width). Assumes each
-/// printable char is one column wide.
+/// Truncate a string that may contain ANSI CSI escapes so its visible content
+/// fits within `max_cols` terminal columns. Escape sequences are copied
+/// verbatim (zero visible width). Character width honors East Asian wide / CJK
+/// / emoji via `unicode-width` (wide chars = 2 cols).
 fn truncate_ansi(s: &str, max_cols: usize) -> String {
-    let mut out = String::new();
+    let mut out = String::with_capacity(s.len());
     let mut visible = 0usize;
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
-            let start = i;
-            let mut j = i + 2;
-            while j < bytes.len() && (0x20..=0x3F).contains(&bytes[j]) {
-                j += 1;
+    let mut iter = s.char_indices().peekable();
+    while let Some((idx, ch)) = iter.next() {
+        if ch == '\x1b' {
+            if let Some(&(_, '[')) = iter.peek() {
+                // consume '['
+                iter.next();
+                let start = idx;
+                let mut end_excl = idx + 2; // bytes consumed so far: ESC + [
+                while let Some(&(j, c)) = iter.peek() {
+                    end_excl = j + c.len_utf8();
+                    iter.next();
+                    let byte = c as u32;
+                    if !(0x20u32..=0x3F).contains(&byte) {
+                        // this char is the CSI terminator (or outside range)
+                        break;
+                    }
+                }
+                out.push_str(&s[start..end_excl]);
+                continue;
             }
-            if j < bytes.len() {
-                j += 1;
-            }
-            out.push_str(&s[start..j]);
-            i = j;
-        } else {
-            if visible >= max_cols {
-                break;
-            }
-            let ch_len = utf8_char_len(bytes[i]);
-            let end = (i + ch_len).min(bytes.len());
-            out.push_str(&s[i..end]);
-            visible += 1;
-            i = end;
+            // Lone ESC: treat as 1 visible (shouldn't really happen in our UI).
         }
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if w > 0 && visible + w > max_cols {
+            break;
+        }
+        out.push(ch);
+        visible += w;
     }
     out
-}
-
-fn utf8_char_len(b: u8) -> usize {
-    if b < 0xC0 {
-        1 // ASCII or UTF-8 continuation byte (count as 1 to avoid infinite loop)
-    } else if b < 0xE0 {
-        2
-    } else if b < 0xF0 {
-        3
-    } else {
-        4
-    }
 }
 
 // ── Render orchestration ─────────────────────────────────────────────────
@@ -280,22 +294,24 @@ fn render(app: &App, cols: u16, rows: u16, stdout: &mut std::io::Stdout) -> std:
         let vt = tab.vterm.lock().unwrap_or_else(|e| e.into_inner());
         vt.dump_screen()
     };
-    let shifted = rewrite_cursor(&dump, TAB_BAR_ROWS);
+    let shifted = rewrite_cursor(&dump, app.content_offset());
 
     let mut buf = Vec::with_capacity(shifted.len() + 512);
     buf.extend_from_slice(&shifted);
-    // Overlay chrome with DEC save/restore cursor so the underlying cursor
-    // position (from the shifted dump) survives the tab bar + status bar draw.
-    buf.extend_from_slice(b"\x1b7");
-    buf.extend_from_slice(&render_tab_bar(&app.tabs, idx, cols));
-    buf.extend_from_slice(&render_status_bar(tab, app.tabs.len(), rows, cols));
-    buf.extend_from_slice(b"\x1b8");
+    if app.show_chrome {
+        // Overlay tab bar + status bar with DEC save/restore cursor so the
+        // content cursor position (from the shifted dump) survives the draw.
+        buf.extend_from_slice(b"\x1b7");
+        buf.extend_from_slice(&render_tab_bar(&app.tabs, idx, cols));
+        buf.extend_from_slice(&render_status_bar(tab, app.tabs.len(), rows, cols));
+        buf.extend_from_slice(b"\x1b8");
+    }
     stdout.write_all(&buf)?;
     stdout.flush()
 }
 
 fn broadcast_resize(app: &App, cols: u16, rows: u16) {
-    let content = content_rows(rows);
+    let content = content_rows(rows, app.show_chrome);
     for tab in &app.tabs {
         if let Ok(mut w) = tab.write.lock() {
             if send_resize(&mut *w, cols, content).is_err() {
@@ -389,23 +405,23 @@ fn handle_key(
 ) -> InputAction {
     if *ctrl_b_pressed {
         *ctrl_b_pressed = false;
+        // Detach always; tab navigation only when more than one tab is
+        // attached. Otherwise fall through to pass-through so single-agent
+        // users can still literally send Ctrl+B + {n,p,digit} to the agent.
+        let multi = app.tabs.len() > 1;
         match code {
             KeyCode::Char('d') => return InputAction::Detach,
-            KeyCode::Char('n') => {
+            KeyCode::Char('n') if multi => {
                 let n = app.tabs.len();
-                if n > 1 {
-                    app.set_active((app.active_idx() + 1) % n);
-                }
+                app.set_active((app.active_idx() + 1) % n);
                 return InputAction::Continue;
             }
-            KeyCode::Char('p') => {
+            KeyCode::Char('p') if multi => {
                 let n = app.tabs.len();
-                if n > 1 {
-                    app.set_active((app.active_idx() + n - 1) % n);
-                }
+                app.set_active((app.active_idx() + n - 1) % n);
                 return InputAction::Continue;
             }
-            KeyCode::Char(c) if ('1'..='9').contains(&c) => {
+            KeyCode::Char(c) if multi && ('1'..='9').contains(&c) => {
                 let target = (c as u8 - b'1') as usize;
                 if target < app.tabs.len() {
                     app.set_active(target);
@@ -413,7 +429,7 @@ fn handle_key(
                 return InputAction::Continue;
             }
             _ => {
-                // Pass-through: buffered Ctrl+B (0x02) followed by this key
+                // Pass-through: buffered Ctrl+B (0x02) followed by this key.
                 let mut bytes = vec![0x02];
                 bytes.extend_from_slice(&key_to_bytes(code, modifiers));
                 forward_to_active(app, &bytes);
@@ -434,22 +450,64 @@ fn handle_key(
 
 // ── Entry point ──────────────────────────────────────────────────────────
 
-fn main() {
-    let agents = paths::list_agents();
-    if agents.is_empty() {
-        eprintln!("No agents available.");
-        eprintln!("Is the daemon running? Try: agend-pty daemon");
-        std::process::exit(1);
+enum Mode {
+    MultiTab(Vec<String>),
+    SingleAgent(String),
+}
+
+fn parse_mode() -> Result<Mode, i32> {
+    let mut args = std::env::args().skip(1);
+    match args.next() {
+        Some(name) => {
+            if paths::find_agent_tui_socket(&name).is_none() {
+                eprintln!("Agent '{name}' not found.");
+                let avail = paths::list_agents();
+                if avail.is_empty() {
+                    eprintln!("No daemon running. Start with: agend-pty daemon");
+                } else {
+                    eprintln!("Available agents:");
+                    for a in avail {
+                        eprintln!("  {a}");
+                    }
+                }
+                return Err(1);
+            }
+            Ok(Mode::SingleAgent(name))
+        }
+        None => {
+            let mut all = paths::list_agents();
+            if all.is_empty() {
+                eprintln!("No agents available.");
+                eprintln!("Is the daemon running? Try: agend-pty daemon");
+                return Err(1);
+            }
+            // Sort for deterministic tab ordering — the daemon's agents
+            // directory returns entries in filesystem traversal order.
+            all.sort();
+            Ok(Mode::MultiTab(all))
+        }
     }
+}
+
+fn main() {
+    let mode = match parse_mode() {
+        Ok(m) => m,
+        Err(code) => std::process::exit(code),
+    };
+
+    let (agents, show_chrome) = match mode {
+        Mode::MultiTab(list) => (list, true),
+        Mode::SingleAgent(name) => (vec![name], false),
+    };
 
     let (cols, rows) = terminal::size().unwrap_or((120, 40));
-    let content = content_rows(rows);
+    let content = content_rows(rows, show_chrome);
 
     let mut pending: Vec<PendingTab> = Vec::new();
     for name in &agents {
         match connect_agent(name, cols, content) {
             Some(p) => pending.push(p),
-            None => eprintln!("warn: could not connect to agent '{}', skipping", name),
+            None => eprintln!("warn: could not connect to agent '{name}', skipping"),
         }
     }
     if pending.is_empty() {
@@ -462,6 +520,7 @@ fn main() {
         tabs: all_tabs,
         active: AtomicUsize::new(0),
         needs_render: AtomicBool::new(true),
+        show_chrome,
     });
 
     let _guard = RawModeGuard::enter();
@@ -474,12 +533,22 @@ fn main() {
     let mut last_rows = rows;
     let mut ctrl_b_pressed = false;
     let mut stdout = std::io::stdout();
+    let mut last_activity = Instant::now();
 
     let _ = render(&app, last_cols, last_rows, &mut stdout);
 
     'main: loop {
-        let polled = event::poll(std::time::Duration::from_millis(33)).unwrap_or(false);
+        // Adaptive poll cadence: short when activity is recent (smooth PTY
+        // output), long when idle (keeps CPU near zero during quiet periods).
+        let timeout =
+            if app.render_pending() || last_activity.elapsed() < Duration::from_millis(500) {
+                Duration::from_millis(16)
+            } else {
+                Duration::from_millis(200)
+            };
+        let polled = event::poll(timeout).unwrap_or(false);
         if polled {
+            last_activity = Instant::now();
             match event::read() {
                 Ok(Event::Key(KeyEvent {
                     code, modifiers, ..
@@ -503,11 +572,13 @@ fn main() {
                 broadcast_resize(&app, c, r);
                 last_cols = c;
                 last_rows = r;
+                last_activity = Instant::now();
             }
         }
 
         if app.take_render() {
             let _ = render(&app, last_cols, last_rows, &mut stdout);
+            last_activity = Instant::now();
         }
     }
 
@@ -603,6 +674,14 @@ mod tests {
     }
 
     #[test]
+    fn rewrite_cursor_zero_offset_is_identity() {
+        // Single-agent mode: no rewrite, pure passthrough.
+        let src = b"\x1b[H\x1b[3;7Hxxx\x1b[0m";
+        let out = rewrite_cursor(src, 0);
+        assert_eq!(out, src);
+    }
+
+    #[test]
     fn parse_cup_defaults() {
         assert_eq!(parse_cup(b""), (1, 1));
         assert_eq!(parse_cup(b"7"), (7, 1));
@@ -614,33 +693,68 @@ mod tests {
     fn truncate_ansi_preserves_escapes_and_caps_visible() {
         let s = "\x1b[7mhello world\x1b[0m";
         let t = truncate_ansi(s, 5);
-        // Should contain both escapes + "hello" (5 visible chars)
         assert!(t.starts_with("\x1b[7m"));
         assert!(t.contains("hello"));
         assert!(!t.contains("world"));
     }
 
     #[test]
-    fn content_rows_reserves_space() {
-        assert_eq!(content_rows(40), 38);
-        assert_eq!(content_rows(3), 1);
-        assert_eq!(content_rows(2), 1); // saturating
-        assert_eq!(content_rows(0), 1);
+    fn content_rows_reserves_space_with_chrome() {
+        assert_eq!(content_rows(40, true), 38);
+        assert_eq!(content_rows(3, true), 1);
+        assert_eq!(content_rows(2, true), 1); // saturating
+        assert_eq!(content_rows(0, true), 1);
+    }
+
+    #[test]
+    fn content_rows_no_reservation_without_chrome() {
+        assert_eq!(content_rows(40, false), 40);
+        assert_eq!(content_rows(1, false), 1);
+        assert_eq!(content_rows(0, false), 1);
     }
 
     #[test]
     fn truncate_ansi_zero_cols() {
-        // Only escapes, no visible chars
         let out = truncate_ansi("\x1b[1mhi\x1b[0m", 0);
         assert!(!out.contains('h'));
     }
 
     #[test]
-    fn truncate_ansi_non_ascii_chars() {
-        // CJK char counts as 1 visible (approximation)
+    fn truncate_ansi_cjk_counted_as_two_cols() {
+        // Each CJK char is 2 terminal columns. With max_cols=2, exactly one
+        // character fits.
         let t = truncate_ansi("中文abc", 2);
-        assert!(t.contains("中"));
-        assert!(t.contains("文"));
+        assert!(t.contains("中"), "first CJK should fit: {t:?}");
+        assert!(
+            !t.contains("文"),
+            "second CJK would exceed 2-col budget: {t:?}"
+        );
         assert!(!t.contains("a"));
+    }
+
+    #[test]
+    fn truncate_ansi_cjk_across_wider_budget() {
+        // 6 cols = exactly 3 CJK chars
+        let t = truncate_ansi("中文字abc", 6);
+        assert!(t.contains("中") && t.contains("文") && t.contains("字"));
+        assert!(!t.contains("a"));
+    }
+
+    #[test]
+    fn truncate_ansi_mixed_ascii_and_cjk() {
+        // "ab中" = 1 + 1 + 2 = 4 cols; with budget 3 → "ab" only (3-col
+        // threshold reached before CJK; CJK alone is 2 and 2+2>3)
+        let t = truncate_ansi("ab中cd", 3);
+        assert_eq!(t, "ab");
+    }
+
+    #[test]
+    fn truncate_ansi_escape_passthrough_doesnt_count_cols() {
+        // A string that's mostly escapes + 1 visible char should render that
+        // char even with max_cols=1.
+        let t = truncate_ansi("\x1b[1;31;4mX\x1b[0m", 1);
+        assert!(t.contains('X'));
+        assert!(t.starts_with("\x1b[1;31;4m"));
+        assert!(t.ends_with("\x1b[0m"));
     }
 }
