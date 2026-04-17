@@ -13,6 +13,7 @@ pub mod git;
 pub mod health;
 pub mod inbox;
 pub mod instructions;
+pub mod ipc;
 pub mod mcp_config;
 pub mod paths;
 pub mod quickstart;
