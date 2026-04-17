@@ -3,7 +3,7 @@
 
 use agend_pty_poc::{
     api, backend, channel, config, event_log, features, fleet_store, git, health, inbox,
-    instructions, ipc, mcp_config, paths, scheduler, state, telegram, vterm,
+    instructions, ipc, mcp_config, paths, scheduler, snapshot, state, telegram, vterm,
 };
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -824,6 +824,19 @@ fn main() {
         tracing::warn!("git not found — worktree disabled. Install: brew install git");
     }
 
+    // Log previous fleet snapshot (if any) for restart-awareness. Best-effort:
+    // we don't resurrect state automatically — fleet.yaml / CLI args drive spawn.
+    {
+        let home = paths::home();
+        if let Some(snap) = snapshot::load(&home) {
+            tracing::info!(
+                count = snap.agents.len(),
+                timestamp = %snap.timestamp,
+                "previous fleet snapshot found"
+            );
+        }
+    }
+
     // Parse agents from CLI args or fleet.yaml
     let load_config = || -> Result<config::FleetConfig, String> {
         if let Some(ref p) = config_path {
@@ -1168,9 +1181,11 @@ fn main() {
         };
         let aw = Arc::clone(&agent_writers);
         let api_ctx_tick = Arc::clone(&api_ctx);
+        let sctx_for_snap = tick_sctx.clone();
         std::thread::Builder::new()
             .name("health_tick".into())
             .spawn(move || {
+                let mut last_snapshot_json = String::new();
                 loop {
                     std::thread::sleep(std::time::Duration::from_secs(3));
                     let now = std::time::Instant::now();
@@ -1244,6 +1259,51 @@ fn main() {
                             tracing::info!(schedule_id = %id, target = %target, "scheduled message sent");
                             scheduler::mark_run(&id);
                         }
+                    }
+
+                    // Periodic fleet snapshot (only write when content changed).
+                    let snapshots: Vec<snapshot::AgentSnapshot> = {
+                        let reg_snap = sctx_for_snap
+                            .registry
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        let cfgs = sctx_for_snap
+                            .spawn_configs
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        reg_snap
+                            .iter()
+                            .map(|(name, handle)| {
+                                let agent_state = handle
+                                    .state_machine
+                                    .lock()
+                                    .map(|s| s.state().display_name().to_string())
+                                    .unwrap_or_else(|_| "unknown".into());
+                                let health_state = handle
+                                    .health
+                                    .lock()
+                                    .map(|h| format!("{:?}", h.status()))
+                                    .unwrap_or_else(|_| "unknown".into());
+                                let cfg = cfgs.get(name);
+                                snapshot::AgentSnapshot {
+                                    name: name.clone(),
+                                    backend_command: cfg
+                                        .map(|c| c.command.clone())
+                                        .unwrap_or_default(),
+                                    working_dir: cfg.and_then(|c| {
+                                        c.working_dir.as_ref().map(|p| p.display().to_string())
+                                    }),
+                                    submit_key: handle.submit_key.clone(),
+                                    health_state,
+                                    agent_state,
+                                }
+                            })
+                            .collect()
+                    };
+                    let new_json = serde_json::to_string(&snapshots).unwrap_or_default();
+                    if new_json != last_snapshot_json {
+                        snapshot::save(&paths::home(), &snapshots);
+                        last_snapshot_json = new_json;
                     }
                 }
             })

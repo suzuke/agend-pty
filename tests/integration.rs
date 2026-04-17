@@ -428,3 +428,36 @@ fn int_session_resume_flag() {
         "daemon restart should have --continue: {cmd_respawn}"
     );
 }
+
+// ── INT-9: Fleet snapshot persisted by tick loop ────────────────────────
+
+#[test]
+fn int_fleet_snapshot_written() {
+    let yaml = format!("instances:\n  alice:\n    command: {}\n", mock_bash());
+    let handle = start_daemon(&yaml);
+    wait_for_agents(handle.port, 1, 15);
+
+    // Tick runs every 3s; wait for at least one snapshot write.
+    let snapshot_path = handle.agend_home.join("snapshot.json");
+    let deadline = Instant::now() + Duration::from_secs(12);
+    while !snapshot_path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    assert!(
+        snapshot_path.exists(),
+        "snapshot.json should be written by tick loop"
+    );
+
+    let content = std::fs::read_to_string(&snapshot_path).expect("read snapshot");
+    let snap: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
+    let agents = snap["agents"].as_array().expect("agents array");
+    assert!(
+        agents.iter().any(|a| a["name"].as_str() == Some("alice")),
+        "alice should be in snapshot: {content}"
+    );
+    assert!(
+        !snap["timestamp"].as_str().unwrap_or_default().is_empty(),
+        "timestamp should be set"
+    );
+    drop(handle);
+}
