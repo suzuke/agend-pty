@@ -329,6 +329,69 @@ impl BotApi {
         )?;
         Ok(result.as_array().cloned().unwrap_or_default())
     }
+
+    /// Resolve a file_id to the relative path Telegram stores it under.
+    fn get_file_path(&self, file_id: &str) -> Result<String, String> {
+        let result = self.call("getFile", &json!({"file_id": file_id}))?;
+        result["file_path"]
+            .as_str()
+            .map(String::from)
+            .ok_or_else(|| "no file_path in getFile response".into())
+    }
+
+    /// Stream a file identified by its server-relative `file_path` into `dest`.
+    fn download_file(&self, file_path: &str, dest: &std::path::Path) -> Result<(), String> {
+        let url = format!(
+            "https://api.telegram.org/file/bot{}/{file_path}",
+            self.token
+        );
+        let req = isahc::Request::get(&url)
+            .timeout(Duration::from_secs(60))
+            .body(())
+            .map_err(|e| format!("build: {e}"))?;
+        let mut resp = isahc::send(req).map_err(|e| format!("send: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("download HTTP {}", resp.status()));
+        }
+        let mut file = std::fs::File::create(dest).map_err(|e| format!("create: {e}"))?;
+        std::io::copy(resp.body_mut(), &mut file).map_err(|e| format!("copy: {e}"))?;
+        Ok(())
+    }
+}
+
+/// Download an attachment by Telegram `file_id` into
+/// `~/.agend/downloads/{instance_name}/{filename}`. Returns the local path.
+///
+/// The bot token is read from the fleet config at `config_path` (when known,
+/// so tests and custom daemons work), falling back to `find_and_load()` for
+/// daemons started without an explicit `--config` flag.
+pub fn try_download_attachment(
+    config_path: Option<&std::path::Path>,
+    instance_name: &str,
+    file_id: &str,
+) -> Result<String, String> {
+    let cfg = match config_path {
+        Some(p) => crate::config::FleetConfig::load(p)?,
+        None => crate::config::FleetConfig::find_and_load()?,
+    };
+    let (token, _group_id) = cfg
+        .telegram_config()
+        .ok_or_else(|| "telegram not configured in fleet.yaml".to_string())?;
+
+    let bot = BotApi::new(&token);
+    let file_path = bot.get_file_path(file_id)?;
+
+    let filename = std::path::Path::new(&file_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("attachment");
+    let dir = crate::paths::home()
+        .join("downloads")
+        .join(crate::util::sanitize_name(instance_name));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create dir: {e}"))?;
+    let dest = dir.join(filename);
+    bot.download_file(&file_path, &dest)?;
+    Ok(dest.display().to_string())
 }
 
 #[cfg(test)]
