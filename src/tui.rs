@@ -642,6 +642,7 @@ fn key_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> Vec<u8> {
 // ── Tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

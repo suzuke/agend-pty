@@ -200,6 +200,7 @@ pub fn update_task(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

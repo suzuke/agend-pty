@@ -1,5 +1,7 @@
 //! E2E tests — full daemon lifecycle with mock agents.
 
+#![allow(clippy::unwrap_used)]
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};

@@ -1410,6 +1410,7 @@ pub fn handle_team_tool(action: &str, args: &serde_json::Value) -> serde_json::V
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

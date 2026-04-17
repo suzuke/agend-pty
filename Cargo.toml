@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT"
 
 [lints.clippy]
-unwrap_used = "warn"
+unwrap_used = "deny"
 
 [lib]
 name = "agend_pty_poc"

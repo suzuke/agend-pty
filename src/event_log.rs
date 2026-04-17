@@ -36,6 +36,7 @@ pub fn list_events(agent_filter: Option<&str>, type_filter: Option<&str>) -> Vec
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
