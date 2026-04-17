@@ -460,8 +460,19 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
             // Single lock scope: check existence, then count guard
             let w = ctx.writers.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(pw) = w.get(name) {
+                // Only block deletion of the last agent when a channel adapter
+                // (Telegram/Discord/…) is attached — deleting the last one in
+                // that case would leave the channel with no agents to route
+                // messages to. Headless fleets can drop to zero agents freely.
                 if w.len() <= 1 {
-                    return json!({"content": [{"type": "text", "text": "cannot delete the last running instance"}], "isError": true});
+                    let has_channel = ctx
+                        .channel_mgr
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .has_adapters();
+                    if has_channel {
+                        return json!({"content": [{"type": "text", "text": "cannot delete the last running instance while a channel adapter is attached"}], "isError": true});
+                    }
                 }
                 // Save config info for cleanup before removing
                 let saved_config = ctx

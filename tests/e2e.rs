@@ -536,6 +536,38 @@ fn e2e_delete_instance() {
     drop(guard);
 }
 
+/// Headless fleets (no channel adapter) are allowed to delete down to zero
+/// agents — the channel-guard only applies when a Telegram/Discord/... adapter
+/// is attached and would be left routing to nothing.
+#[test]
+fn e2e_delete_last_instance_headless_ok() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
+    wait_for_agents(&sock, 2, 15);
+    // 2 → 1
+    let r = mcp_call(
+        &sock,
+        "alice",
+        "delete_instance",
+        &serde_json::json!({"instance_name": "bob"}),
+    );
+    assert_eq!(r["ok"].as_bool(), Some(true), "delete bob failed: {r}");
+    // 1 → 0: headless fleets must allow deleting the last agent.
+    let r = mcp_call(
+        &sock,
+        "alice",
+        "delete_instance",
+        &serde_json::json!({"instance_name": "alice"}),
+    );
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(
+        !text.contains("cannot delete the last"),
+        "headless fleet should allow last-instance delete, got: {text}"
+    );
+    assert!(text.contains("alice"), "expected alice in response: {text}");
+    drop(guard);
+}
+
 #[test]
 fn e2e_demo_binary_exists() {
     // Verify the demo subcommand is wired up (--help should list it)
