@@ -670,11 +670,11 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                     .get(target)
                     .and_then(|h| h.state_machine.lock().ok().map(|s| s.state()));
                 match agent_state {
-                    Some(s @ (state::AgentState::Ready | state::AgentState::Idle)) => {
-                        break json!({"content": [{"type": "text", "text": json!({"idle": true, "state": format!("{s:?}")}).to_string()}]})
+                    Some(s) if s.is_passive() => {
+                        break json!({"content": [{"type": "text", "text": json!({"idle": true, "state": s.display_name()}).to_string()}]})
                     }
-                    Some(s @ (state::AgentState::Crashed | state::AgentState::Errored)) => {
-                        break json!({"content": [{"type": "text", "text": format!("agent '{target}' is {s:?}")}], "isError": true})
+                    Some(s) if s == state::AgentState::Crashed || s.is_permanent_error() => {
+                        break json!({"content": [{"type": "text", "text": format!("agent '{target}' is {}", s.display_name())}], "isError": true})
                     }
                     None => {
                         break json!({"content": [{"type": "text", "text": format!("instance '{target}' not found")}], "isError": true})

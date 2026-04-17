@@ -44,6 +44,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 libc = "0.2"
 isahc = "1"
 unicode-width = "0.2"
+regex = "1"
 
 [dev-dependencies]
 yaml-edit = "0.2"

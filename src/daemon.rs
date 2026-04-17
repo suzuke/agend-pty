@@ -296,7 +296,8 @@ fn spawn_agent(
     };
 
     let (_, mcp_config_path_str) = setup_mcp_config(&name);
-    let preset = backend::Backend::from_command(&command).map(|b| b.preset());
+    let detected_backend = backend::Backend::from_command(&command);
+    let preset = detected_backend.as_ref().map(|b| b.preset());
     let (_, prompt_path_str) = setup_prompt(&name, &registry);
 
     let final_command = backend::inject_mcp_for_backend(
@@ -412,7 +413,10 @@ fn spawn_agent(
                 Arc::clone(&existing.health),
             )
         } else {
-            let state_patterns = state::StatePatterns::from_backend(ready_pattern);
+            let state_patterns = match detected_backend.as_ref() {
+                Some(b) => state::StatePatterns::for_backend(b),
+                None => state::StatePatterns::fallback(ready_pattern),
+            };
             (
                 Arc::new(Mutex::new(state::StateMachine::new(state_patterns))),
                 Arc::new(Mutex::new(health::HealthMonitor::new())),
@@ -510,7 +514,6 @@ fn spawn_agent(
                                     let a = h.on_state_change(
                                         new_state,
                                         s.consecutive_errors(),
-                                        s.last_error_kind(),
                                         now,
                                     );
                                     tracing::warn!(agent = %n, action = ?a, "health action");
@@ -586,7 +589,6 @@ fn spawn_agent(
                                         let action = h.on_state_change(
                                             new_state,
                                             s.consecutive_errors(),
-                                            s.last_error_kind(),
                                             std::time::Instant::now(),
                                         );
                                         if action != health::HealthAction::None {
@@ -947,14 +949,7 @@ fn main() {
                 let all_ready = dep_layers[layer_idx - 1].iter().all(|name| {
                     reg.get(name)
                         .and_then(|h| h.state_machine.lock().ok())
-                        .map(|s| {
-                            matches!(
-                                s.state(),
-                                state::AgentState::Ready
-                                    | state::AgentState::Busy
-                                    | state::AgentState::Idle
-                            )
-                        })
+                        .map(|s| s.state().is_live())
                         .unwrap_or(false)
                 });
                 drop(reg);
@@ -1203,7 +1198,6 @@ fn main() {
                                     let action = h.on_state_change(
                                         new_state,
                                         s.consecutive_errors(),
-                                        s.last_error_kind(),
                                         now,
                                     );
                                     if action != health::HealthAction::None {
