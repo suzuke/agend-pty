@@ -521,6 +521,42 @@ fn e2e_all_tools_respond() {
 }
 
 #[test]
+fn e2e_download_attachment_errors_cleanly() {
+    // MOCK_FLEET has no `channel:` section, so download_attachment should
+    // report "telegram not configured" rather than 500/crash.
+    let tmp = tempfile::tempdir().unwrap();
+    let (guard, port) = start_daemon(MOCK_FLEET, tmp.path());
+    wait_for_agents(port, 2, 15);
+
+    // Missing file_id → explicit error.
+    let r = mcp_call(
+        port,
+        "alice",
+        "download_attachment",
+        &serde_json::json!({}),
+    );
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("missing"), "expected missing file_id: {text}");
+    assert_eq!(r["result"]["isError"].as_bool(), Some(true));
+
+    // file_id present but no channel configured → "not configured".
+    let r = mcp_call(
+        port,
+        "alice",
+        "download_attachment",
+        &serde_json::json!({"file_id": "BAAAAAAAAAAAAAAAAAA"}),
+    );
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(
+        text.contains("not configured"),
+        "expected telegram not configured: {text}"
+    );
+    assert_eq!(r["result"]["isError"].as_bool(), Some(true));
+
+    drop(guard);
+}
+
+#[test]
 fn e2e_checkout_and_release_repo() {
     // Build a real git repo to check out.
     let repo_tmp = tempfile::tempdir().unwrap();

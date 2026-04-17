@@ -590,6 +590,22 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                 json!({"content": [{"type": "text", "text": format!("instance '{name}' not found")}], "isError": true})
             }
         }
+        // ── Telegram attachment download ──
+        "download_attachment" => {
+            let file_id = args["file_id"].as_str().unwrap_or("");
+            if file_id.is_empty() {
+                return json!({"content": [{"type": "text", "text": "missing 'file_id'"}], "isError": true});
+            }
+            let owner = args["instance_name"].as_str().unwrap_or(instance);
+            match crate::telegram::try_download_attachment(
+                ctx.fleet_config_path.as_deref(),
+                owner,
+                file_id,
+            ) {
+                Ok(path) => json!({"content": [{"type": "text", "text": json!({"path": path}).to_string()}]}),
+                Err(e) => json!({"content": [{"type": "text", "text": format!("download_attachment: {e}")}], "isError": true}),
+            }
+        }
         // ── Repo checkout (mount another repo as read-only worktree) ──
         "checkout_repo" => handle_checkout_repo(ctx, instance, args),
         "release_repo" => {
@@ -1311,6 +1327,7 @@ fn mcp_tools_list_all() -> Value {
         {"name":"watch_ci","description":"Start continuous CI monitoring for a PR.","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"owner/repo"},"pr":{"type":"integer","description":"PR number"},"on_failure":{"type":"string","description":"Agent to notify on failure"},"interval_secs":{"type":"integer","description":"Poll interval (default 60, min 30)"}},"required":["repo","pr"]}},
         {"name":"unwatch_ci","description":"Stop CI monitoring for a PR.","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"owner/repo"},"pr":{"type":"integer","description":"PR number"}},"required":["repo","pr"]}},
         {"name":"deploy_template","description":"Batch-spawn a group of instances from a named template in fleet.yaml.","inputSchema":{"type":"object","properties":{"template":{"type":"string","description":"Template key under `templates:` in fleet.yaml"},"name":{"type":"string","description":"Deployment name (instance prefix, defaults to template)"},"directory":{"type":"string","description":"Shared working directory for spawned instances"},"branch":{"type":"string","description":"Git branch to create worktrees from"}},"required":["template"]}},
+        {"name":"download_attachment","description":"Download a Telegram file attachment by file_id. Returns local path.","inputSchema":{"type":"object","properties":{"file_id":{"type":"string"},"instance_name":{"type":"string","description":"Owner of the download (defaults to caller)"}},"required":["file_id"]}},
         {"name":"checkout_repo","description":"Mount another repo as a read-only detached worktree.","inputSchema":{"type":"object","properties":{"source":{"type":"string","description":"Agent name, absolute path, or ~/... path"},"branch":{"type":"string"},"instance_name":{"type":"string","description":"Owner of the mount (defaults to caller)"}},"required":["source","branch"]}},
         {"name":"release_repo","description":"Remove a previously checked-out worktree.","inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}},
         {"name":"teardown_deployment","description":"Tear down a previously-deployed group of instances.","inputSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}},
