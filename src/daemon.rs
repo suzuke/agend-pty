@@ -565,6 +565,8 @@ fn spawn_agent(
                 health: Arc::clone(&health_monitor),
                 working_dir: working_dir.clone(),
                 role: None, // Set from fleet config after spawn
+                display_name: None,
+                description: None,
             },
         );
 

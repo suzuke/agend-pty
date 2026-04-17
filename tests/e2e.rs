@@ -503,12 +503,248 @@ fn e2e_all_tools_respond() {
             "react",
             serde_json::json!({"message_id": "0", "emoji": "👍"}),
         ),
+        (
+            "set_display_name",
+            serde_json::json!({"instance_name": "alice", "display_name": "Alice Researcher"}),
+        ),
+        (
+            "set_description",
+            serde_json::json!({"instance_name": "alice", "description": "leads exploration"}),
+        ),
     ];
 
     for (tool, args) in &tools {
         let r = mcp_call(port, "alice", tool, args);
         assert_eq!(r["ok"].as_bool(), Some(true), "tool '{tool}' failed: {r}");
     }
+    drop(guard);
+}
+
+#[test]
+fn e2e_checkout_and_release_repo() {
+    // Build a real git repo to check out.
+    let repo_tmp = tempfile::tempdir().unwrap();
+    for args in [
+        &["init"][..],
+        &["config", "user.email", "test@test.com"][..],
+        &["config", "user.name", "Test"][..],
+    ] {
+        Command::new("git")
+            .args(args)
+            .current_dir(repo_tmp.path())
+            .output()
+            .unwrap();
+    }
+    std::fs::write(repo_tmp.path().join("README.md"), "# src").unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(repo_tmp.path())
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(repo_tmp.path())
+        .output()
+        .unwrap();
+    let branch = String::from_utf8(
+        Command::new("git")
+            .args(["symbolic-ref", "--short", "HEAD"])
+            .current_dir(repo_tmp.path())
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let (guard, port) = start_daemon(MOCK_FLEET, tmp.path());
+    wait_for_agents(port, 2, 15);
+
+    // Success path: checkout by absolute path.
+    let r = mcp_call(
+        port,
+        "alice",
+        "checkout_repo",
+        &serde_json::json!({
+            "source": repo_tmp.path().display().to_string(),
+            "branch": branch,
+        }),
+    );
+    assert_eq!(r["ok"].as_bool(), Some(true), "checkout failed: {r}");
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    let path = serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| v["path"].as_str().map(String::from))
+        .unwrap_or_default();
+    assert!(!path.is_empty(), "no path in response: {text}");
+    assert!(std::path::Path::new(&path).exists(), "worktree missing");
+
+    // Release.
+    let r = mcp_call(
+        port,
+        "alice",
+        "release_repo",
+        &serde_json::json!({"path": path.clone()}),
+    );
+    assert_eq!(r["ok"].as_bool(), Some(true), "release failed: {r}");
+    assert!(!std::path::Path::new(&path).exists(), "worktree not removed");
+
+    // Error paths.
+    let r = mcp_call(
+        port,
+        "alice",
+        "checkout_repo",
+        &serde_json::json!({"source": "/tmp/nonexistent-xyz", "branch": "../evil"}),
+    );
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("invalid"), "expected invalid: {text}");
+
+    let r = mcp_call(
+        port,
+        "alice",
+        "checkout_repo",
+        &serde_json::json!({"source": "ghost-agent", "branch": branch}),
+    );
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(
+        text.contains("not a known agent") || text.contains("checkout_repo"),
+        "expected agent-not-found: {text}"
+    );
+
+    drop(guard);
+}
+
+const TEMPLATE_FLEET: &str = r#"
+instances:
+  seed:
+    command: "bash"
+templates:
+  crew:
+    instances:
+      alpha:
+        command: "bash"
+      beta:
+        command: "bash"
+"#;
+
+#[test]
+fn e2e_deploy_template_and_teardown() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (guard, port) = start_daemon(TEMPLATE_FLEET, tmp.path());
+    // Wait for the seed agent so we have a sender for mcp_call.
+    wait_for_agents(port, 1, 15);
+
+    // deploy_template → spawns "myteam-alpha" and "myteam-beta"
+    let r = mcp_call(
+        port,
+        "seed",
+        "deploy_template",
+        &serde_json::json!({"template": "crew", "name": "myteam"}),
+    );
+    assert_eq!(r["ok"].as_bool(), Some(true), "deploy_template: {r}");
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("myteam-alpha"), "missing alpha: {text}");
+    assert!(text.contains("myteam-beta"), "missing beta: {text}");
+
+    // Wait for the two new agents to appear (seed + 2 = 3 total).
+    wait_for_agents(port, 3, 15);
+
+    // list_deployments → contains myteam
+    let r = mcp_call(port, "seed", "list_deployments", &serde_json::json!({}));
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("myteam"), "list_deployments missing myteam: {text}");
+
+    // teardown_deployment → removes them
+    let r = mcp_call(
+        port,
+        "seed",
+        "teardown_deployment",
+        &serde_json::json!({"name": "myteam"}),
+    );
+    assert_eq!(r["ok"].as_bool(), Some(true), "teardown: {r}");
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("myteam-alpha"), "missing alpha in teardown: {text}");
+
+    // After tombstone, list_deployments shouldn't show myteam.
+    let r = mcp_call(port, "seed", "list_deployments", &serde_json::json!({}));
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(!text.contains("myteam"), "myteam should be gone: {text}");
+
+    // Errors: unknown template + unknown deployment name
+    let r = mcp_call(
+        port,
+        "seed",
+        "deploy_template",
+        &serde_json::json!({"template": "nonexistent"}),
+    );
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("not found"), "expected not found: {text}");
+
+    let r = mcp_call(
+        port,
+        "seed",
+        "teardown_deployment",
+        &serde_json::json!({"name": "ghost"}),
+    );
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("not found"), "expected not found: {text}");
+
+    drop(guard);
+}
+
+#[test]
+fn e2e_set_display_name_and_description_roundtrip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (guard, port) = start_daemon(MOCK_FLEET, tmp.path());
+    wait_for_agents(port, 2, 15);
+
+    // set_display_name on alice
+    let r = mcp_call(
+        port,
+        "alice",
+        "set_display_name",
+        &serde_json::json!({"instance_name": "alice", "display_name": "Alice R."}),
+    );
+    assert_eq!(r["ok"].as_bool(), Some(true), "set_display_name: {r}");
+
+    // set_description on alice
+    let r = mcp_call(
+        port,
+        "alice",
+        "set_description",
+        &serde_json::json!({"instance_name": "alice", "description": "lead explorer"}),
+    );
+    assert_eq!(r["ok"].as_bool(), Some(true), "set_description: {r}");
+
+    // describe_instance echoes them back
+    let r = mcp_call(
+        port,
+        "alice",
+        "describe_instance",
+        &serde_json::json!({"instance_name": "alice"}),
+    );
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(
+        text.contains("\"display_name\":\"Alice R.\""),
+        "missing display_name: {text}"
+    );
+    assert!(
+        text.contains("\"description\":\"lead explorer\""),
+        "missing description: {text}"
+    );
+
+    // Error on unknown instance
+    let r = mcp_call(
+        port,
+        "alice",
+        "set_display_name",
+        &serde_json::json!({"instance_name": "ghost", "display_name": "x"}),
+    );
+    let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("not found"), "expected not found: {text}");
+
     drop(guard);
 }
 

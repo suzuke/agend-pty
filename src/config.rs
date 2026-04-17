@@ -12,6 +12,11 @@ pub struct FleetConfig {
     pub instances: HashMap<String, InstanceConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel: Option<ChannelConfig>,
+    /// Named templates that can be instantiated as a group via `deploy_template`.
+    /// Each template maps to a raw YAML value so schemas can evolve without
+    /// churning this struct.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub templates: Option<HashMap<String, serde_yml::Value>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

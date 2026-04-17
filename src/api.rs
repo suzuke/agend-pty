@@ -38,6 +38,8 @@ pub struct AgentStateHandle {
     pub health: Arc<Mutex<health::HealthMonitor>>,
     pub working_dir: Option<std::path::PathBuf>,
     pub role: Option<String>,
+    pub display_name: Option<String>,
+    pub description: Option<String>,
 }
 pub type AgentStateMap = Arc<Mutex<HashMap<String, AgentStateHandle>>>;
 
@@ -368,7 +370,57 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                 .unwrap_or("");
             let w = ctx.writers.lock().unwrap_or_else(|e| e.into_inner());
             if w.contains_key(name) {
-                json!({"content": [{"type": "text", "text": json!({"name": name, "status": "running"}).to_string()}]})
+                let states = ctx.states.lock().unwrap_or_else(|e| e.into_inner());
+                let (role, display_name, description, working_dir) = states
+                    .get(name)
+                    .map(|h| {
+                        (
+                            h.role.clone(),
+                            h.display_name.clone(),
+                            h.description.clone(),
+                            h.working_dir
+                                .as_ref()
+                                .map(|p| p.display().to_string()),
+                        )
+                    })
+                    .unwrap_or((None, None, None, None));
+                let info = json!({
+                    "name": name,
+                    "status": "running",
+                    "role": role,
+                    "display_name": display_name,
+                    "description": description,
+                    "working_dir": working_dir,
+                });
+                json!({"content": [{"type": "text", "text": info.to_string()}]})
+            } else {
+                json!({"content": [{"type": "text", "text": format!("instance '{name}' not found")}], "isError": true})
+            }
+        }
+        "set_display_name" => {
+            let name = args["instance_name"]
+                .as_str()
+                .or_else(|| args["name"].as_str())
+                .unwrap_or(instance);
+            let value = args["display_name"].as_str().map(|s| s.to_string());
+            let mut states = ctx.states.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(handle) = states.get_mut(name) {
+                handle.display_name = value.clone();
+                json!({"content": [{"type": "text", "text": json!({"ok": true, "instance": name, "display_name": value}).to_string()}]})
+            } else {
+                json!({"content": [{"type": "text", "text": format!("instance '{name}' not found")}], "isError": true})
+            }
+        }
+        "set_description" => {
+            let name = args["instance_name"]
+                .as_str()
+                .or_else(|| args["name"].as_str())
+                .unwrap_or(instance);
+            let value = args["description"].as_str().map(|s| s.to_string());
+            let mut states = ctx.states.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(handle) = states.get_mut(name) {
+                handle.description = value.clone();
+                json!({"content": [{"type": "text", "text": json!({"ok": true, "instance": name, "description": value}).to_string()}]})
             } else {
                 json!({"content": [{"type": "text", "text": format!("instance '{name}' not found")}], "isError": true})
             }
@@ -537,6 +589,38 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
             } else {
                 json!({"content": [{"type": "text", "text": format!("instance '{name}' not found")}], "isError": true})
             }
+        }
+        // ── Repo checkout (mount another repo as read-only worktree) ──
+        "checkout_repo" => handle_checkout_repo(ctx, instance, args),
+        "release_repo" => {
+            let path = args["path"].as_str().unwrap_or("");
+            if path.is_empty() {
+                return json!({"content": [{"type": "text", "text": "missing 'path'"}], "isError": true});
+            }
+            match git::release_repo(std::path::Path::new(path)) {
+                Ok(()) => json!({"content": [{"type": "text", "text": json!({"released": path}).to_string()}]}),
+                Err(e) => json!({"content": [{"type": "text", "text": format!("release_repo: {e}")}], "isError": true}),
+            }
+        }
+        // ── Deployments (batch spawn from fleet.yaml templates) ──
+        "deploy_template" => handle_deploy_template(ctx, args),
+        "teardown_deployment" => handle_teardown_deployment(ctx, args),
+        "list_deployments" => {
+            let all = crate::deployments::list();
+            let list: Vec<Value> = all
+                .iter()
+                .map(|d| {
+                    json!({
+                        "name": d.name,
+                        "template": d.template,
+                        "instances": d.instances,
+                        "team": d.team,
+                        "directory": d.directory,
+                        "timestamp": d.timestamp,
+                    })
+                })
+                .collect();
+            json!({"content": [{"type": "text", "text": json!({"deployments": list}).to_string()}]})
         }
         // ── Coordination ──
         "decision" => {
@@ -1208,6 +1292,8 @@ fn mcp_tools_list_all() -> Value {
         {"name":"broadcast","description":"Send to all agents (or team members).","inputSchema":{"type":"object","properties":{"message":{"type":"string"},"team":{"type":"string"}},"required":["message"]}},
         {"name":"list_instances","description":"List running agents.","inputSchema":{"type":"object","properties":{}}},
         {"name":"describe_instance","description":"Get agent details.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"}},"required":["instance_name"]}},
+        {"name":"set_display_name","description":"Set a human-friendly display name for an agent.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"display_name":{"type":"string"}},"required":["display_name"]}},
+        {"name":"set_description","description":"Set a short description for an agent's role/purpose.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"description":{"type":"string"}},"required":["description"]}},
         {"name":"delete_instance","description":"Stop an agent.","inputSchema":{"type":"object","properties":{"instance_name":{"type":"string"},"cleanup_worktree":{"type":"boolean"}},"required":["instance_name"]}},
         {"name":"inbox","description":"Read inbox messages.","inputSchema":{"type":"object","properties":{"id":{"type":"integer"}}}},
         {"name":"decision","description":"Decision operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["post","list","update"]},"title":{"type":"string"},"content":{"type":"string"},"id":{"type":"integer"}},"required":["action"]}},
@@ -1223,7 +1309,12 @@ fn mcp_tools_list_all() -> Value {
         {"name":"list_events","description":"List event log.","inputSchema":{"type":"object","properties":{"agent":{"type":"string"},"type":{"type":"string"}}}},
         {"name":"schedule","description":"Cron schedule operations.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["create","list","delete","update"]},"cron":{"type":"string"},"target":{"type":"string"},"message":{"type":"string"},"id":{"type":"string"},"enabled":{"type":"boolean"}},"required":["action"]}},
         {"name":"watch_ci","description":"Start continuous CI monitoring for a PR.","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"owner/repo"},"pr":{"type":"integer","description":"PR number"},"on_failure":{"type":"string","description":"Agent to notify on failure"},"interval_secs":{"type":"integer","description":"Poll interval (default 60, min 30)"}},"required":["repo","pr"]}},
-        {"name":"unwatch_ci","description":"Stop CI monitoring for a PR.","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"owner/repo"},"pr":{"type":"integer","description":"PR number"}},"required":["repo","pr"]}}
+        {"name":"unwatch_ci","description":"Stop CI monitoring for a PR.","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"owner/repo"},"pr":{"type":"integer","description":"PR number"}},"required":["repo","pr"]}},
+        {"name":"deploy_template","description":"Batch-spawn a group of instances from a named template in fleet.yaml.","inputSchema":{"type":"object","properties":{"template":{"type":"string","description":"Template key under `templates:` in fleet.yaml"},"name":{"type":"string","description":"Deployment name (instance prefix, defaults to template)"},"directory":{"type":"string","description":"Shared working directory for spawned instances"},"branch":{"type":"string","description":"Git branch to create worktrees from"}},"required":["template"]}},
+        {"name":"checkout_repo","description":"Mount another repo as a read-only detached worktree.","inputSchema":{"type":"object","properties":{"source":{"type":"string","description":"Agent name, absolute path, or ~/... path"},"branch":{"type":"string"},"instance_name":{"type":"string","description":"Owner of the mount (defaults to caller)"}},"required":["source","branch"]}},
+        {"name":"release_repo","description":"Remove a previously checked-out worktree.","inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}},
+        {"name":"teardown_deployment","description":"Tear down a previously-deployed group of instances.","inputSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}},
+        {"name":"list_deployments","description":"List active deployments.","inputSchema":{"type":"object","properties":{}}}
     ]})
 }
 
@@ -1325,6 +1416,239 @@ fn handle_mcp_jsonrpc(req: &Value, ctx: &DaemonCtx) -> Option<String> {
     };
     let resp = json!({"jsonrpc": "2.0", "id": id, "result": result});
     Some(resp.to_string())
+}
+
+// ── Repo checkout helper ───────────────────────────────────────────────
+
+/// Mount another repo as a read-only detached worktree.
+/// `source` is either an absolute path, `~/...`, or an agent name —
+/// in the latter case the agent's `working_dir` is used.
+fn handle_checkout_repo(ctx: &DaemonCtx, _caller: &str, args: &Value) -> Value {
+    let source = args["source"].as_str().unwrap_or("");
+    let branch = args["branch"].as_str().unwrap_or("");
+    let instance = args["instance_name"]
+        .as_str()
+        .or_else(|| args["name"].as_str())
+        .unwrap_or(_caller);
+    if source.is_empty() {
+        return json!({"content": [{"type": "text", "text": "missing 'source'"}], "isError": true});
+    }
+    if branch.is_empty() {
+        return json!({"content": [{"type": "text", "text": "missing 'branch'"}], "isError": true});
+    }
+    if !git::validate_branch(branch) {
+        return json!({"content": [{"type": "text", "text": format!("invalid branch '{branch}'")}], "isError": true});
+    }
+
+    let source_path = if let Some(rest) = source.strip_prefix("~/") {
+        let home = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("/"));
+        home.join(rest)
+    } else if source.starts_with('/') {
+        std::path::PathBuf::from(source)
+    } else {
+        // Treat as an agent name — look up its working directory.
+        let wd = ctx
+            .states
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(source)
+            .and_then(|h| h.working_dir.clone());
+        match wd {
+            Some(p) => p,
+            None => {
+                return json!({"content": [{"type": "text", "text": format!("'{source}' is not a known agent name or absolute path")}], "isError": true});
+            }
+        }
+    };
+
+    match git::checkout_repo(&paths::home(), instance, &source_path, branch) {
+        Ok(path) => json!({"content": [{"type": "text", "text": json!({
+            "path": path.display().to_string(),
+            "source": source_path.display().to_string(),
+            "branch": branch,
+        }).to_string()}]}),
+        Err(e) => json!({"content": [{"type": "text", "text": format!("checkout_repo: {e}")}], "isError": true}),
+    }
+}
+
+// ── Deployment helpers ─────────────────────────────────────────────────
+
+/// Spawn a named group of instances from a `templates:` entry in fleet.yaml.
+/// Args: `{template: str, name?: str, directory?: str, branch?: str}`.
+fn handle_deploy_template(ctx: &DaemonCtx, args: &Value) -> Value {
+    let template = match args["template"].as_str() {
+        Some(t) if !t.is_empty() => t,
+        _ => {
+            return json!({"content": [{"type": "text", "text": "missing 'template'"}], "isError": true});
+        }
+    };
+    let deploy_name = args["name"].as_str().unwrap_or(template).to_string();
+    let directory = args["directory"].as_str().unwrap_or("").to_string();
+    let branch = args["branch"].as_str();
+
+    // Load fleet.yaml and look up the named template. Prefer the path the
+    // daemon was launched with (ctx.fleet_config_path) so tests and custom
+    // configs work; fall back to find_and_load for daemons started without
+    // an explicit --config flag.
+    let cfg = match ctx
+        .fleet_config_path
+        .as_deref()
+        .map(config::FleetConfig::load)
+        .unwrap_or_else(config::FleetConfig::find_and_load)
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return json!({"content": [{"type": "text", "text": format!("fleet.yaml: {e}")}], "isError": true});
+        }
+    };
+    let templates = match cfg.templates.as_ref() {
+        Some(t) => t,
+        None => {
+            return json!({"content": [{"type": "text", "text": "no 'templates:' section in fleet.yaml"}], "isError": true});
+        }
+    };
+    let tpl = match templates.get(template) {
+        Some(t) => t,
+        None => {
+            return json!({"content": [{"type": "text", "text": format!("template '{template}' not found")}], "isError": true});
+        }
+    };
+    let instances_def = match tpl.get("instances").and_then(|v| v.as_mapping()) {
+        Some(m) => m,
+        None => {
+            return json!({"content": [{"type": "text", "text": format!("template '{template}' has no 'instances'")}], "isError": true});
+        }
+    };
+
+    let dir_path = if directory.is_empty() {
+        None
+    } else {
+        Some(std::path::PathBuf::from(&directory))
+    };
+
+    let mut created: Vec<String> = Vec::new();
+    for (name_val, inst_val) in instances_def {
+        let Some(suffix) = name_val.as_str() else {
+            continue;
+        };
+        let inst_name = format!("{deploy_name}-{suffix}");
+        let sanitized = crate::util::sanitize_name(&inst_name);
+        if sanitized.is_empty() {
+            continue;
+        }
+        let backend_name = inst_val
+            .get("backend")
+            .and_then(|v| v.as_str())
+            .unwrap_or("claude");
+        let command = inst_val
+            .get("command")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| {
+                let resolved = config::resolve_backend_binary(backend_name);
+                let mut parts = vec![resolved.clone()];
+                if let Some(b) = crate::backend::Backend::from_command(&resolved) {
+                    for a in b.preset().args {
+                        parts.push(a.to_string());
+                    }
+                }
+                parts.join(" ")
+            });
+
+        let working_dir = dir_path.clone();
+        let info = SpawnConfigInfo {
+            name: sanitized.clone(),
+            command: command.clone(),
+            working_dir,
+            worktree: true,
+            branch: branch.map(String::from),
+        };
+        persist_to_fleet(ctx, &sanitized, &info);
+        if ctx.spawn_tx.send(info).is_ok() {
+            created.push(sanitized);
+        }
+    }
+
+    if created.is_empty() {
+        return json!({"content": [{"type": "text", "text": format!("template '{template}' produced no instances")}], "isError": true});
+    }
+
+    let team_name = if created.len() > 1 {
+        let members: Vec<String> = created.clone();
+        fleet_store::create_team(&deploy_name, &members);
+        Some(deploy_name.as_str())
+    } else {
+        None
+    };
+
+    crate::deployments::record(
+        &deploy_name,
+        template,
+        &created,
+        team_name,
+        &directory,
+    );
+
+    json!({"content": [{"type": "text", "text": json!({
+        "deployed": deploy_name,
+        "template": template,
+        "instances": created,
+    }).to_string()}]})
+}
+
+/// Tear down a previously-deployed group: kill instances, remove team,
+/// tombstone the deployment record.
+fn handle_teardown_deployment(ctx: &DaemonCtx, args: &Value) -> Value {
+    let name = match args["name"].as_str() {
+        Some(n) if !n.is_empty() => n,
+        _ => {
+            return json!({"content": [{"type": "text", "text": "missing 'name'"}], "isError": true});
+        }
+    };
+    let dep = match crate::deployments::find(name) {
+        Some(d) => d,
+        None => {
+            return json!({"content": [{"type": "text", "text": format!("deployment '{name}' not found")}], "isError": true});
+        }
+    };
+
+    let mut killed: Vec<String> = Vec::new();
+    for inst in &dep.instances {
+        // Suppress respawn, drop spawn config, signal the PTY.
+        ctx.deleted_names
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(inst.clone());
+        ctx.spawn_configs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(inst);
+        if let Some(pw) = ctx
+            .writers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(inst)
+        {
+            let _ = pw
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .write_all(b"\x03\x04");
+        }
+        remove_from_fleet(ctx, inst);
+        killed.push(inst.clone());
+    }
+
+    if let Some(ref team) = dep.team {
+        fleet_store::delete_team(team);
+    }
+    crate::deployments::tombstone(name);
+
+    json!({"content": [{"type": "text", "text": json!({
+        "torn_down": name,
+        "instances": killed,
+    }).to_string()}]})
 }
 
 // ── Extracted tool handlers (testable without DaemonCtx) ────────────────
