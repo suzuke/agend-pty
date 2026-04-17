@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT"
 
 [lints.clippy]
-unwrap_used = "warn"
+unwrap_used = "deny"
 
 [lib]
 name = "agend_pty_poc"
@@ -44,6 +44,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 libc = "0.2"
 isahc = "1"
 unicode-width = "0.2"
+regex = "1"
 
 [dev-dependencies]
 yaml-edit = "0.2"

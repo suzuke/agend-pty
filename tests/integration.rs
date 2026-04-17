@@ -2,23 +2,26 @@
 #![allow(clippy::unwrap_used)]
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
+use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-fn find_api_socket(run_base: &Path) -> Option<PathBuf> {
+/// Scan a `run/` base for any daemon directory that advertises an `api.port`.
+fn find_api_port(run_base: &Path) -> Option<(PathBuf, u16)> {
     for e in std::fs::read_dir(run_base).ok()?.flatten() {
-        let sock = e.path().join("api.sock");
-        if sock.exists() {
-            return Some(sock);
+        let run = e.path();
+        if let Ok(s) = std::fs::read_to_string(run.join("api.port")) {
+            if let Ok(port) = s.trim().parse::<u16>() {
+                return Some((run, port));
+            }
         }
     }
     None
 }
 
-fn api_call(sock: &Path, method: &str, params: &serde_json::Value) -> serde_json::Value {
-    let mut s = UnixStream::connect(sock).expect("connect");
+fn api_call(port: u16, method: &str, params: &serde_json::Value) -> serde_json::Value {
+    let mut s = TcpStream::connect(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).expect("connect");
     s.set_read_timeout(Some(Duration::from_secs(5))).ok();
     writeln!(
         s,
@@ -32,9 +35,9 @@ fn api_call(sock: &Path, method: &str, params: &serde_json::Value) -> serde_json
     serde_json::from_str(line.trim()).unwrap_or_default()
 }
 
-fn mcp_call(sock: &Path, inst: &str, tool: &str, args: &serde_json::Value) -> serde_json::Value {
+fn mcp_call(port: u16, inst: &str, tool: &str, args: &serde_json::Value) -> serde_json::Value {
     api_call(
-        sock,
+        port,
         "mcp_call",
         &serde_json::json!({"instance": inst, "tool": tool, "arguments": args}),
     )
@@ -51,36 +54,52 @@ impl Drop for DaemonGuard {
     }
 }
 
-fn start_daemon(fleet_yaml: &str) -> (DaemonGuard, PathBuf) {
-    // Use short path to avoid Unix socket SUN_LEN limit (104 bytes on macOS)
+#[allow(dead_code)]
+struct DaemonHandle {
+    guard: DaemonGuard,
+    port: u16,
+    run_dir: PathBuf,
+    agend_home: PathBuf,
+    fleet_yaml: PathBuf,
+}
+
+fn start_daemon(fleet_yaml: &str) -> DaemonHandle {
+    // Short base path keeps fleet artifacts tidy on macOS.
     let short_dir = PathBuf::from(format!("/tmp/agt-{}", std::process::id()));
     std::fs::create_dir_all(&short_dir).unwrap();
     let tmp = tempfile::tempdir_in(&short_dir).unwrap();
     let cfg = tmp.path().join("fleet.yaml");
     std::fs::write(&cfg, fleet_yaml).unwrap();
+    let agend_home = tmp.path().join(".agend");
     let child = Command::new(env!("CARGO_BIN_EXE_agend-daemon"))
         .args(["--config", cfg.to_str().unwrap()])
-        .env("AGEND_HOME", tmp.path().join(".agend"))
+        .env("AGEND_HOME", &agend_home)
         .env("AGEND_LOG", "error")
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn daemon");
-    let run_base = tmp.path().join(".agend").join("run");
+    let run_base = agend_home.join("run");
     let deadline = Instant::now() + Duration::from_secs(15);
-    let api_sock = loop {
-        if let Some(sock) = find_api_socket(&run_base) {
-            break sock;
+    let (run_dir, port) = loop {
+        if let Some((r, p)) = find_api_port(&run_base) {
+            break (r, p);
         }
-        assert!(Instant::now() < deadline, "API socket didn't appear");
+        assert!(Instant::now() < deadline, "API port didn't appear");
         std::thread::sleep(Duration::from_millis(300));
     };
-    (DaemonGuard { child, _tmp: tmp }, api_sock)
+    DaemonHandle {
+        guard: DaemonGuard { child, _tmp: tmp },
+        port,
+        run_dir,
+        agend_home,
+        fleet_yaml: cfg,
+    }
 }
 
-fn wait_for_agents(sock: &Path, count: usize, timeout: u64) {
+fn wait_for_agents(port: u16, count: usize, timeout: u64) {
     let deadline = Instant::now() + Duration::from_secs(timeout);
     loop {
-        let r = api_call(sock, "list", &serde_json::json!({}));
+        let r = api_call(port, "list", &serde_json::json!({}));
         if r["result"]["instances"]
             .as_array()
             .map(|a| a.len())
@@ -94,8 +113,8 @@ fn wait_for_agents(sock: &Path, count: usize, timeout: u64) {
     }
 }
 
-fn agent_state(sock: &Path, name: &str) -> String {
-    let r = api_call(sock, "status", &serde_json::json!({}));
+fn agent_state(port: u16, name: &str) -> String {
+    let r = api_call(port, "status", &serde_json::json!({}));
     r["result"]["agents"]
         .as_array()
         .and_then(|agents| {
@@ -107,10 +126,10 @@ fn agent_state(sock: &Path, name: &str) -> String {
         .unwrap_or_default()
 }
 
-fn wait_for_state(sock: &Path, name: &str, states: &[&str], timeout: u64) -> String {
+fn wait_for_state(port: u16, name: &str, states: &[&str], timeout: u64) -> String {
     let deadline = Instant::now() + Duration::from_secs(timeout);
     loop {
-        let st = agent_state(sock, name);
+        let st = agent_state(port, name);
         if states.iter().any(|s| st == *s) {
             return st;
         }
@@ -135,12 +154,12 @@ fn int_mcp_config_written_on_spawn() {
         "instances:\n  alice:\n    command: {}\n    working_directory: /tmp/int-mcp-test\n",
         mock_bash()
     );
-    let (guard, sock) = start_daemon(&yaml);
+    let handle = start_daemon(&yaml);
     std::fs::create_dir_all("/tmp/int-mcp-test").ok();
-    wait_for_agents(&sock, 1, 15);
-    let r = api_call(&sock, "list", &serde_json::json!({}));
+    wait_for_agents(handle.port, 1, 15);
+    let r = api_call(handle.port, "list", &serde_json::json!({}));
     assert!(r["ok"].as_bool() == Some(true));
-    drop(guard);
+    drop(handle);
 }
 
 // ── INT-2: Dependency ordering ──────────────────────────────────────────
@@ -149,15 +168,15 @@ fn int_mcp_config_written_on_spawn() {
 fn int_dependency_ordering() {
     let bash = mock_bash();
     let yaml = format!("instances:\n  coordinator:\n    command: {bash}\n  worker:\n    command: {bash}\n    depends_on: [coordinator]\n");
-    let (guard, sock) = start_daemon(&yaml);
+    let handle = start_daemon(&yaml);
     // Coordinator should appear first
-    wait_for_agents(&sock, 1, 10);
-    let r = api_call(&sock, "list", &serde_json::json!({}));
+    wait_for_agents(handle.port, 1, 10);
+    let r = api_call(handle.port, "list", &serde_json::json!({}));
     let instances = r["result"]["instances"].as_array().unwrap();
     assert!(instances.iter().any(|v| v.as_str() == Some("coordinator")));
     // Worker should appear after coordinator
-    wait_for_agents(&sock, 2, 20);
-    drop(guard);
+    wait_for_agents(handle.port, 2, 20);
+    drop(handle);
 }
 
 // ── INT-3: State machine lifecycle ──────────────────────────────────────
@@ -187,17 +206,17 @@ fn int_state_machine_lifecycle() {
         "instances:\n  crasher:\n    command: {}\n",
         script.display()
     );
-    let (guard, sock) = start_daemon(&yaml);
-    wait_for_agents(&sock, 1, 15);
+    let handle = start_daemon(&yaml);
+    wait_for_agents(handle.port, 1, 15);
     // After crash + respawn, agent should reach Ready or Idle
-    let st = wait_for_state(&sock, "crasher", &["Ready", "Idle"], 20);
+    let st = wait_for_state(handle.port, "crasher", &["Ready", "Idle"], 20);
     assert!(
         st == "Ready" || st == "Idle",
         "expected Ready/Idle after respawn, got {st}"
     );
     // Flag file should exist (proves first run happened and crashed)
     assert!(flag.exists(), "crash_once flag should exist");
-    drop(guard);
+    drop(handle);
 }
 
 // ── INT-4: Health monitor respawn + backoff ─────────────────────────────
@@ -227,7 +246,7 @@ fn int_health_respawn_and_backoff() {
         "instances:\n  respawner:\n    command: {}\n",
         script.display()
     );
-    let (guard, _sock) = start_daemon(&yaml);
+    let handle = start_daemon(&yaml);
     // Wait for agent to stabilize after multiple crashes + respawns
     std::thread::sleep(Duration::from_secs(15));
     let count: u32 = std::fs::read_to_string(&counter)
@@ -237,7 +256,7 @@ fn int_health_respawn_and_backoff() {
         .unwrap_or(0);
     // Should have spawned at least 2 times (crash + respawn)
     assert!(count >= 2, "expected >=2 spawns, got {count}");
-    drop(guard);
+    drop(handle);
 }
 
 // ── INT-5: Worktree creation ────────────────────────────────────────────
@@ -307,15 +326,12 @@ fn int_worktree_created_for_git_repo() {
 #[test]
 fn int_mcp_binary_roundtrip() {
     let yaml = format!("instances:\n  alice:\n    command: {}\n", mock_bash());
-    let (guard, sock) = start_daemon(&yaml);
-    wait_for_agents(&sock, 1, 15);
-
-    let run_base = sock.parent().unwrap().parent().unwrap();
-    let agend_home = run_base.parent().unwrap();
+    let handle = start_daemon(&yaml);
+    wait_for_agents(handle.port, 1, 15);
 
     let mut mcp = Command::new(env!("CARGO_BIN_EXE_agend-mcp"))
         .env("AGEND_INSTANCE_NAME", "alice")
-        .env("AGEND_HOME", agend_home)
+        .env("AGEND_HOME", &handle.agend_home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -353,7 +369,7 @@ fn int_mcp_binary_roundtrip() {
 
     let _ = mcp.kill();
     let _ = mcp.wait();
-    drop(guard);
+    drop(handle);
 }
 
 // ── INT-7: Channel message routing (send_to_instance) ───────────────────
@@ -362,13 +378,13 @@ fn int_mcp_binary_roundtrip() {
 fn int_channel_message_routing() {
     let bash = mock_bash();
     let yaml = format!("instances:\n  alice:\n    command: {bash}\n  bob:\n    command: {bash}\n");
-    let (guard, sock) = start_daemon(&yaml);
-    wait_for_agents(&sock, 2, 15);
+    let handle = start_daemon(&yaml);
+    wait_for_agents(handle.port, 2, 15);
 
     // Send a long message (>500 chars) so it goes to inbox instead of direct PTY inject
     let long_msg = "x".repeat(600);
     let r = mcp_call(
-        &sock,
+        handle.port,
         "alice",
         "send_to_instance",
         &serde_json::json!({"instance_name": "bob", "message": long_msg}),
@@ -380,7 +396,7 @@ fn int_channel_message_routing() {
 
     // Bob should have the message in inbox (long messages are stored there)
     let r = mcp_call(
-        &sock,
+        handle.port,
         "bob",
         "inbox",
         &serde_json::json!({"action": "list"}),
@@ -392,7 +408,7 @@ fn int_channel_message_routing() {
         text.contains("alice"),
         "inbox should contain message from alice: {text}"
     );
-    drop(guard);
+    drop(handle);
 }
 
 // ── INT-8: Session resume flag ──────────────────────────────────────────
@@ -413,4 +429,75 @@ fn int_session_resume_flag() {
         cmd_respawn.contains("--continue"),
         "daemon restart should have --continue: {cmd_respawn}"
     );
+}
+
+// ── INT-9: Fleet snapshot persisted by tick loop ────────────────────────
+
+#[test]
+fn int_fleet_snapshot_written() {
+    let yaml = format!("instances:\n  alice:\n    command: {}\n", mock_bash());
+    let handle = start_daemon(&yaml);
+    wait_for_agents(handle.port, 1, 15);
+
+    // Tick runs every 3s; wait for at least one snapshot write.
+    let snapshot_path = handle.agend_home.join("snapshot.json");
+    let deadline = Instant::now() + Duration::from_secs(12);
+    while !snapshot_path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    assert!(
+        snapshot_path.exists(),
+        "snapshot.json should be written by tick loop"
+    );
+
+    let content = std::fs::read_to_string(&snapshot_path).expect("read snapshot");
+    let snap: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
+    let agents = snap["agents"].as_array().expect("agents array");
+    assert!(
+        agents.iter().any(|a| a["name"].as_str() == Some("alice")),
+        "alice should be in snapshot: {content}"
+    );
+    assert!(
+        !snap["timestamp"].as_str().unwrap_or_default().is_empty(),
+        "timestamp should be set"
+    );
+    drop(handle);
+}
+
+#[test]
+fn int_fleet_hot_reload_adds_instance() {
+    // Hot-reload tick runs every 5 * 3s = 15s. Start with one agent, then add
+    // another to fleet.yaml and wait for the reload loop to spawn it.
+    let yaml = format!("instances:\n  alice:\n    command: {}\n", mock_bash());
+    let handle = start_daemon(&yaml);
+    wait_for_agents(handle.port, 1, 15);
+
+    // Mutate fleet.yaml: add bob. Sleep briefly to ensure mtime advances
+    // past the file-creation mtime captured at watcher construction.
+    std::thread::sleep(Duration::from_millis(1100));
+    let new_yaml = format!(
+        "instances:\n  alice:\n    command: {}\n  bob:\n    command: {}\n",
+        mock_bash(),
+        mock_bash()
+    );
+    std::fs::write(&handle.fleet_yaml, &new_yaml).expect("rewrite fleet.yaml");
+
+    // Up to 30s for reload poll (15s interval) + spawn + ready.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let r = api_call(handle.port, "list", &serde_json::json!({}));
+        let names: Vec<String> = r["result"]["instances"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|i| i.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        if names.iter().any(|n| n == "bob") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "bob did not appear after reload; currently: {names:?}"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    drop(handle);
 }

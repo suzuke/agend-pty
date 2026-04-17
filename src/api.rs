@@ -1,14 +1,15 @@
 //! API socket — JSON request/response for fleet management + MCP tool dispatch.
 //!
-//! Listens on ~/.agend/run/<pid>/api.sock
+//! Listens on a TCP loopback port advertised via `~/.agend/run/<pid>/api.port`.
 //! Protocol: newline-delimited JSON (one request per line, one response per line)
 
-use crate::{channel, config, event_log, fleet_store, git, health, inbox, paths, scheduler, state};
+use crate::{
+    channel, config, event_log, fleet_store, git, health, inbox, ipc, paths, scheduler, state,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixListener;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -114,22 +115,20 @@ const MAX_CONNECTIONS: usize = 64;
 
 /// Start the API socket server in a new thread.
 pub fn start(ctx: Arc<DaemonCtx>) {
-    let sock = paths::run_dir().join("api.sock");
-    let _ = std::fs::remove_file(&sock);
-    let listener = match UnixListener::bind(&sock) {
+    let run = paths::run_dir();
+    let listener = match ipc::bind_loopback() {
         Ok(l) => l,
         Err(e) => {
             tracing::error!(error = %e, "API bind error");
             return;
         }
     };
-    // Restrict socket to owner only (0600)
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600)).ok();
+    let port = ipc::local_port(&listener);
+    if let Err(e) = ipc::write_port(&run, ipc::API_NAME, port) {
+        tracing::error!(error = %e, "API port-file write failed");
+        return;
     }
-    tracing::info!(path = %sock.display(), "API listening");
+    tracing::info!(port, "API listening");
 
     std::thread::Builder::new()
         .name("api_server".into())
@@ -670,11 +669,11 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                     .get(target)
                     .and_then(|h| h.state_machine.lock().ok().map(|s| s.state()));
                 match agent_state {
-                    Some(s @ (state::AgentState::Ready | state::AgentState::Idle)) => {
-                        break json!({"content": [{"type": "text", "text": json!({"idle": true, "state": format!("{s:?}")}).to_string()}]})
+                    Some(s) if s.is_passive() => {
+                        break json!({"content": [{"type": "text", "text": json!({"idle": true, "state": s.display_name()}).to_string()}]})
                     }
-                    Some(s @ (state::AgentState::Crashed | state::AgentState::Errored)) => {
-                        break json!({"content": [{"type": "text", "text": format!("agent '{target}' is {s:?}")}], "isError": true})
+                    Some(s) if s == state::AgentState::Crashed || s.is_permanent_error() => {
+                        break json!({"content": [{"type": "text", "text": format!("agent '{target}' is {}", s.display_name())}], "isError": true})
                     }
                     None => {
                         break json!({"content": [{"type": "text", "text": format!("instance '{target}' not found")}], "isError": true})
@@ -1410,6 +1409,7 @@ pub fn handle_team_tool(action: &str, args: &serde_json::Value) -> serde_json::V
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

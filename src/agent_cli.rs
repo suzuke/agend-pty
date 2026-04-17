@@ -4,7 +4,8 @@
 use clap::Subcommand;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
+
+use crate::ipc;
 
 fn output(value: Value) {
     println!(
@@ -41,13 +42,13 @@ fn read_stdin() -> String {
 }
 
 fn api_call(method: &str, params: &Value) -> Value {
-    let sock = match crate::paths::find_active_run_dir() {
-        Some(run) => run.join("api.sock"),
+    let run = match crate::paths::find_active_run_dir() {
+        Some(r) => r,
         None => {
             return json!({"error": "daemon not running"});
         }
     };
-    match UnixStream::connect(&sock) {
+    match ipc::connect_named(&run, ipc::API_NAME) {
         Ok(mut s) => {
             s.set_read_timeout(Some(std::time::Duration::from_secs(30)))
                 .ok();

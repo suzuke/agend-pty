@@ -3,13 +3,13 @@
 
 use agend_pty_poc::{
     api, backend, channel, config, event_log, features, fleet_store, git, health, inbox,
-    instructions, mcp_config, paths, scheduler, state, telegram, vterm,
+    instructions, ipc, mcp_config, paths, reload, scheduler, snapshot, state, telegram, vterm,
 };
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -199,8 +199,107 @@ fn do_respawn(name: &str, sctx: &SpawnContext) {
         .ok();
 }
 
-fn socket_path(name: &str) -> std::path::PathBuf {
-    paths::tui_socket(name)
+/// Agent working directory that holds the TUI port file + related artifacts.
+fn agent_run_dir(name: &str) -> std::path::PathBuf {
+    paths::agent_dir(name)
+}
+
+/// Apply a reloaded fleet.yaml to running daemon state.
+/// - Added instances: spawned via spawn_agent (no dependency ordering — best effort).
+/// - Role / max_session_hours changes: applied in-place.
+/// - Removed / command_changed: logged only (safety: user must explicitly delete/replace).
+fn apply_fleet_reload(
+    new_cfg: &config::FleetConfig,
+    known_digest: &Arc<Mutex<HashMap<String, reload::InstanceDigest>>>,
+    sctx: &SpawnContext,
+    agent_states: &api::AgentStateMap,
+    spawn_configs: &SpawnConfigs,
+) {
+    let new_digest = reload::digest_from_config(new_cfg);
+    let current = {
+        let g = known_digest.lock().unwrap_or_else(|e| e.into_inner());
+        g.clone()
+    };
+    let diff = reload::compute_diff(&current, &new_digest);
+    if diff.is_empty() {
+        return;
+    }
+    tracing::info!(
+        added = ?diff.added,
+        removed = ?diff.removed,
+        command_changed = ?diff.command_changed,
+        role_changed = ?diff.role_changed,
+        session_hours_changed = ?diff.session_hours_changed,
+        "fleet.yaml reload"
+    );
+
+    // Spawn added instances.
+    for name in &diff.added {
+        let Some(ic) = new_cfg.instances.get(name) else {
+            continue;
+        };
+        let command = ic.build_command(&new_cfg.defaults);
+        let wd = Some(ic.effective_working_dir(&new_cfg.defaults, name));
+        let worktree = ic.worktree_enabled(&new_cfg.defaults);
+        let branch = ic.branch.clone();
+        std::fs::create_dir_all(paths::agent_dir(name)).ok();
+        let ctx = sctx.clone();
+        let name_owned = name.clone();
+        std::thread::Builder::new()
+            .name(format!("reload_spawn_{name_owned}"))
+            .spawn(move || {
+                spawn_agent(name_owned, command, wd, worktree, branch, false, ctx);
+            })
+            .ok();
+    }
+
+    // Warn on removed / command changes. No automatic teardown for safety.
+    for name in &diff.removed {
+        tracing::warn!(agent = %name, "instance removed from fleet.yaml — use `agend-pty delete` to stop runtime");
+    }
+    for name in &diff.command_changed {
+        tracing::warn!(agent = %name, "command changed in fleet.yaml — use `agend-pty replace` to respawn");
+    }
+
+    // Apply role changes in-place.
+    for name in &diff.role_changed {
+        let Some(ic) = new_cfg.instances.get(name) else {
+            continue;
+        };
+        if let Some(handle) = agent_states
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(name)
+        {
+            handle.role = ic.role.clone();
+            tracing::info!(agent = %name, role = ?ic.role, "role updated from fleet.yaml");
+        }
+    }
+
+    // Apply session_hours changes in-place on the health monitor.
+    for name in &diff.session_hours_changed {
+        let Some(ic) = new_cfg.instances.get(name) else {
+            continue;
+        };
+        let hours = ic.max_session_hours.or(new_cfg.defaults.max_session_hours);
+        if let Some(sc) = spawn_configs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+        {
+            if let Ok(mut hm) = sc.health.lock() {
+                match hours {
+                    Some(h) => hm.set_max_session_hours(h),
+                    None => hm.clear_max_session_hours(),
+                }
+                tracing::info!(agent = %name, hours = ?hours, "session timer updated from fleet.yaml");
+            }
+        }
+    }
+
+    // Commit new digest only after applying — so a partial failure retries.
+    let mut g = known_digest.lock().unwrap_or_else(|e| e.into_inner());
+    *g = new_digest;
 }
 
 /// Unified PTY write — appends submit_key and writes atomically.
@@ -275,9 +374,9 @@ fn spawn_agent(
     // Ensure agent_dir exists — the reaper removes it after PTY close, so
     // a respawn path would otherwise try to bind the TUI socket into a
     // non-existent directory and fail with ENOENT.
-    let _ = std::fs::create_dir_all(paths::agent_dir(&name));
-    let sock = socket_path(&name);
-    let _ = std::fs::remove_file(&sock);
+    let agent_dir = paths::agent_dir(&name);
+    let _ = std::fs::create_dir_all(&agent_dir);
+    ipc::remove_port(&agent_dir, "tui");
 
     let (cols, rows) = crossterm::terminal::size().unwrap_or((DEFAULT_COLS, DEFAULT_ROWS));
 
@@ -296,7 +395,8 @@ fn spawn_agent(
     };
 
     let (_, mcp_config_path_str) = setup_mcp_config(&name);
-    let preset = backend::Backend::from_command(&command).map(|b| b.preset());
+    let detected_backend = backend::Backend::from_command(&command);
+    let preset = detected_backend.as_ref().map(|b| b.preset());
     let (_, prompt_path_str) = setup_prompt(&name, &registry);
 
     let final_command = backend::inject_mcp_for_backend(
@@ -412,7 +512,10 @@ fn spawn_agent(
                 Arc::clone(&existing.health),
             )
         } else {
-            let state_patterns = state::StatePatterns::from_backend(ready_pattern);
+            let state_patterns = match detected_backend.as_ref() {
+                Some(b) => state::StatePatterns::for_backend(b),
+                None => state::StatePatterns::fallback(ready_pattern),
+            };
             (
                 Arc::new(Mutex::new(state::StateMachine::new(state_patterns))),
                 Arc::new(Mutex::new(health::HealthMonitor::new())),
@@ -510,7 +613,6 @@ fn spawn_agent(
                                     let a = h.on_state_change(
                                         new_state,
                                         s.consecutive_errors(),
-                                        s.last_error_kind(),
                                         now,
                                     );
                                     tracing::warn!(agent = %n, action = ?a, "health action");
@@ -586,7 +688,6 @@ fn spawn_agent(
                                         let action = h.on_state_change(
                                             new_state,
                                             s.consecutive_errors(),
-                                            s.last_error_kind(),
                                             std::time::Instant::now(),
                                         );
                                         if action != health::HealthAction::None {
@@ -617,14 +718,19 @@ fn spawn_agent(
         .ok();
 
     // TUI socket server (blocks this thread)
-    let listener = match UnixListener::bind(&sock) {
+    let listener = match ipc::bind_loopback() {
         Ok(l) => l,
         Err(e) => {
-            tracing::error!(agent = %name, path = %sock.display(), error = %e, "failed to bind TUI socket");
+            tracing::error!(agent = %name, error = %e, "failed to bind TUI port");
             return;
         }
     };
-    tracing::info!(agent = %name, path = %sock.display(), command = %command, "TUI socket ready");
+    let port = ipc::local_port(&listener);
+    if let Err(e) = ipc::write_port(&agent_dir, "tui", port) {
+        tracing::error!(agent = %name, error = %e, "failed to advertise TUI port");
+        return;
+    }
+    tracing::info!(agent = %name, port, command = %command, "TUI listening");
 
     channel_mgr
         .lock()
@@ -778,16 +884,15 @@ fn main() {
     }
 
     if args.first().map(|s| s.as_str()) == Some("--shutdown") {
-        // Find active daemon's ctrl socket
+        // Find active daemon's ctrl port
         if let Some(run) = paths::find_active_run_dir() {
-            let ctrl = run.join("ctrl.sock");
-            match UnixStream::connect(&ctrl) {
+            match ipc::connect_named(&run, ipc::CTRL_NAME) {
                 Ok(mut s) => {
                     let _ = s.write_all(b"shutdown");
                     tracing::info!("shutdown signal sent");
                 }
                 Err(e) => {
-                    tracing::error!(path = %ctrl.display(), error = %e, "cannot connect to ctrl socket")
+                    tracing::error!(error = %e, "cannot connect to ctrl port")
                 }
             }
         } else {
@@ -815,6 +920,19 @@ fn main() {
     tracing::info!("lock acquired");
     if !git::has_git() {
         tracing::warn!("git not found — worktree disabled. Install: brew install git");
+    }
+
+    // Log previous fleet snapshot (if any) for restart-awareness. Best-effort:
+    // we don't resurrect state automatically — fleet.yaml / CLI args drive spawn.
+    {
+        let home = paths::home();
+        if let Some(snap) = snapshot::load(&home) {
+            tracing::info!(
+                count = snap.agents.len(),
+                timestamp = %snap.timestamp,
+                "previous fleet snapshot found"
+            );
+        }
     }
 
     // Parse agents from CLI args or fleet.yaml
@@ -947,14 +1065,7 @@ fn main() {
                 let all_ready = dep_layers[layer_idx - 1].iter().all(|name| {
                     reg.get(name)
                         .and_then(|h| h.state_machine.lock().ok())
-                        .map(|s| {
-                            matches!(
-                                s.state(),
-                                state::AgentState::Ready
-                                    | state::AgentState::Busy
-                                    | state::AgentState::Idle
-                            )
-                        })
+                        .map(|s| s.state().is_live())
                         .unwrap_or(false)
                 });
                 drop(reg);
@@ -1154,6 +1265,20 @@ fn main() {
             .ok();
     }
 
+    // Resolve fleet.yaml path for hot-reload watching.
+    // If CLI args were given instead of a config file, reload is disabled.
+    let reload_path: Option<std::path::PathBuf> = config_path
+        .clone()
+        .or_else(|| if args.is_empty() { config::FleetConfig::find_path() } else { None });
+    let known_digest: Arc<Mutex<HashMap<String, reload::InstanceDigest>>> = {
+        let initial = if let Ok(cfg) = load_config() {
+            reload::digest_from_config(&cfg)
+        } else {
+            HashMap::new()
+        };
+        Arc::new(Mutex::new(initial))
+    };
+
     // Health tick thread — drives time-based state transitions + health actions
     {
         let reg = Arc::clone(&registry);
@@ -1168,12 +1293,37 @@ fn main() {
         };
         let aw = Arc::clone(&agent_writers);
         let api_ctx_tick = Arc::clone(&api_ctx);
+        let sctx_for_snap = tick_sctx.clone();
+        let sctx_for_reload = tick_sctx.clone();
+        let reload_path_for_tick = reload_path.clone();
+        let known_digest_tick = Arc::clone(&known_digest);
+        let agent_states_for_reload = Arc::clone(&agent_states);
+        let spawn_configs_for_reload = Arc::clone(&spawn_configs);
         std::thread::Builder::new()
             .name("health_tick".into())
             .spawn(move || {
+                let mut last_snapshot_json = String::new();
+                let mut watcher = reload_path_for_tick.map(reload::FleetWatcher::new);
+                let mut reload_counter: u32 = 0;
                 loop {
                     std::thread::sleep(std::time::Duration::from_secs(3));
                     let now = std::time::Instant::now();
+
+                    // Poll fleet.yaml for changes every ~15s (5 ticks).
+                    reload_counter = reload_counter.wrapping_add(1);
+                    if reload_counter.is_multiple_of(5) {
+                        if let Some(w) = watcher.as_mut() {
+                            if let Some(new_cfg) = w.check() {
+                                apply_fleet_reload(
+                                    &new_cfg,
+                                    &known_digest_tick,
+                                    &sctx_for_reload,
+                                    &agent_states_for_reload,
+                                    &spawn_configs_for_reload,
+                                );
+                            }
+                        }
+                    }
 
                     // Snapshot agent names + their Arc handles to avoid holding registry lock
                     let agents: Vec<AgentTickInfo> = {
@@ -1203,7 +1353,6 @@ fn main() {
                                     let action = h.on_state_change(
                                         new_state,
                                         s.consecutive_errors(),
-                                        s.last_error_kind(),
                                         now,
                                     );
                                     if action != health::HealthAction::None {
@@ -1246,31 +1395,87 @@ fn main() {
                             scheduler::mark_run(&id);
                         }
                     }
+
+                    // Periodic fleet snapshot (only write when content changed).
+                    let snapshots: Vec<snapshot::AgentSnapshot> = {
+                        let reg_snap = sctx_for_snap
+                            .registry
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        let cfgs = sctx_for_snap
+                            .spawn_configs
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        reg_snap
+                            .iter()
+                            .map(|(name, handle)| {
+                                let agent_state = handle
+                                    .state_machine
+                                    .lock()
+                                    .map(|s| s.state().display_name().to_string())
+                                    .unwrap_or_else(|_| "unknown".into());
+                                let health_state = handle
+                                    .health
+                                    .lock()
+                                    .map(|h| format!("{:?}", h.status()))
+                                    .unwrap_or_else(|_| "unknown".into());
+                                let cfg = cfgs.get(name);
+                                snapshot::AgentSnapshot {
+                                    name: name.clone(),
+                                    backend_command: cfg
+                                        .map(|c| c.command.clone())
+                                        .unwrap_or_default(),
+                                    working_dir: cfg.and_then(|c| {
+                                        c.working_dir.as_ref().map(|p| p.display().to_string())
+                                    }),
+                                    submit_key: handle.submit_key.clone(),
+                                    health_state,
+                                    agent_state,
+                                }
+                            })
+                            .collect()
+                    };
+                    let new_json = serde_json::to_string(&snapshots).unwrap_or_default();
+                    if new_json != last_snapshot_json {
+                        snapshot::save(&paths::home(), &snapshots);
+                        last_snapshot_json = new_json;
+                    }
                 }
             })
             .ok();
     }
 
+    // Control port for shutdown
+    let run_dir_for_ctrl = paths::run_dir();
+    let listener = match ipc::bind_loopback() {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to bind ctrl port");
+            paths::cleanup();
+            std::process::exit(1);
+        }
+    };
+    let ctrl_port = ipc::local_port(&listener);
+    if let Err(e) = ipc::write_port(&run_dir_for_ctrl, ipc::CTRL_NAME, ctrl_port) {
+        tracing::error!(error = %e, "failed to advertise ctrl port");
+        paths::cleanup();
+        std::process::exit(1);
+    }
+
     // Graceful shutdown on Ctrl+C
-    let ctrl_sock = paths::ctrl_socket();
-    let ctrl_sock2 = ctrl_sock.clone();
     ctrlc::set_handler(move || {
         SHUTTING_DOWN.store(true, Ordering::Relaxed);
         tracing::info!("shutting down...");
-        if let Ok(mut s) = UnixStream::connect(&ctrl_sock2) {
+        if let Ok(mut s) = ipc::connect_port(ctrl_port) {
             let _ = s.write_all(b"shutdown");
         }
     })
     .ok();
 
-    // Control socket for shutdown
-    let _ = std::fs::remove_file(&ctrl_sock);
-    if let Ok(listener) = UnixListener::bind(&ctrl_sock) {
-        tracing::info!("use `agend-daemon --shutdown` or Ctrl+C to stop");
-        if let Ok((mut stream, _)) = listener.accept() {
-            let mut buf = [0u8; 64];
-            let _ = stream.read(&mut buf);
-        }
+    tracing::info!("use `agend-daemon --shutdown` or Ctrl+C to stop");
+    if let Ok((mut stream, _)) = listener.accept() {
+        let mut buf = [0u8; 64];
+        let _ = stream.read(&mut buf);
     }
 
     tracing::info!("cleaning up...");

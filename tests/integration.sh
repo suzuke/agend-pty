@@ -24,18 +24,19 @@ cargo run --quiet --bin agend-daemon -- alice:bash bob:bash 2>/tmp/agend-test.lo
 DAEMON_PID=$!
 sleep 2
 
-if ls ~/.agend/run/*/ctrl.sock >/dev/null 2>&1; then pass "daemon started"; else fail "daemon not started"; fi
-if ls ~/.agend/run/*/agents/alice/tui.sock >/dev/null 2>&1; then pass "alice socket"; else fail "alice socket"; fi
-if ls ~/.agend/run/*/agents/bob/tui.sock >/dev/null 2>&1; then pass "bob socket"; else fail "bob socket"; fi
-if ls ~/.agend/run/*/api.sock >/dev/null 2>&1; then pass "api socket"; else fail "api socket"; fi
+if ls ~/.agend/run/*/ctrl.port >/dev/null 2>&1; then pass "daemon started"; else fail "daemon not started"; fi
+if ls ~/.agend/run/*/agents/alice/tui.port >/dev/null 2>&1; then pass "alice port file"; else fail "alice port file"; fi
+if ls ~/.agend/run/*/agents/bob/tui.port >/dev/null 2>&1; then pass "bob port file"; else fail "bob port file"; fi
+if ls ~/.agend/run/*/api.port >/dev/null 2>&1; then pass "api port file"; else fail "api port file"; fi
 
 echo ""
 echo "=== Test 2: TUI connect + VTerm dump ==="
 RESULT=$(python3 -c "
 import socket, struct, os, glob
-socks = glob.glob(os.path.expanduser('~/.agend/run/*/agents/alice/tui.sock'))
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect(socks[0])
+ports = glob.glob(os.path.expanduser('~/.agend/run/*/agents/alice/tui.port'))
+port = int(open(ports[0]).read().strip())
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.connect(('127.0.0.1', port))
 s.settimeout(3)
 tag = s.recv(1)
 hdr = s.recv(4)
@@ -49,9 +50,10 @@ echo ""
 echo "=== Test 3: TUI send command + receive output ==="
 RESULT=$(python3 -c "
 import socket, struct, os, glob, time
-socks = glob.glob(os.path.expanduser('~/.agend/run/*/agents/alice/tui.sock'))
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect(socks[0])
+ports = glob.glob(os.path.expanduser('~/.agend/run/*/agents/alice/tui.port'))
+port = int(open(ports[0]).read().strip())
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.connect(('127.0.0.1', port))
 s.settimeout(3)
 # Read screen dump
 s.recv(1); hdr = s.recv(4); length = struct.unpack('>I', hdr)[0]
@@ -74,59 +76,54 @@ s.close()
 if [ "$RESULT" = "ok" ]; then pass "command round-trip"; else fail "command round-trip: $RESULT"; fi
 
 echo ""
-echo "=== Test 4: MCP handshake + tools ==="
+echo "=== Test 4: MCP handshake + tools (via agend-mcp bridge) ==="
 RESULT=$(python3 -c "
-import socket, json, os, glob
-socks = glob.glob(os.path.expanduser('~/.agend/run/*/agents/alice/mcp.sock'))
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect(socks[0])
-s.settimeout(5)
-def call(method, params=None, id=1):
-    req = {'jsonrpc': '2.0', 'id': id, 'method': method}
-    if params: req['params'] = params
-    body = json.dumps(req)
-    s.send(f'Content-Length: {len(body)}\r\n\r\n{body}'.encode())
-    h = b''
-    while b'\r\n\r\n' not in h: h += s.recv(1)
-    cl = int([l for l in h.decode().split('\r\n') if 'Content-Length' in l][0].split(':')[1].strip())
-    return json.loads(s.recv(cl))
-r = call('initialize', {'protocolVersion': '2024-11-05', 'capabilities': {}, 'clientInfo': {'name': 'test'}})
+import subprocess, json, select, os
+proc = subprocess.Popen(
+    ['./target/debug/agend-mcp'],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    env={**os.environ, 'AGEND_INSTANCE_NAME': 'alice'}
+)
+def call(req):
+    proc.stdin.write((json.dumps(req) + '\n').encode())
+    proc.stdin.flush()
+    if not select.select([proc.stdout], [], [], 5)[0]: return None
+    return json.loads(proc.stdout.readline().decode().strip())
+r = call({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2024-11-05','capabilities':{},'clientInfo':{'name':'test'}}})
 assert r['result']['serverInfo']['name'] == 'agend'
-r = call('tools/list', id=2)
+r = call({'jsonrpc':'2.0','id':2,'method':'tools/list'})
 tools = [t['name'] for t in r['result']['tools']]
 assert 'send_to_instance' in tools
 assert 'inbox' in tools
 print('ok:' + ','.join(tools))
-s.close()
+proc.terminate()
 " 2>&1)
 if echo "$RESULT" | grep -q "ok:"; then pass "MCP handshake + tools ($RESULT)"; else fail "MCP: $RESULT"; fi
 
 echo ""
 echo "=== Test 5: Inter-agent messaging ==="
 RESULT=$(python3 -c "
-import socket, json, os, glob, struct, time
-# Send from alice to bob via MCP
-socks = glob.glob(os.path.expanduser('~/.agend/run/*/agents/alice/mcp.sock'))
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect(socks[0])
-s.settimeout(5)
-def call(method, params=None, id=1):
-    req = {'jsonrpc': '2.0', 'id': id, 'method': method}
-    if params: req['params'] = params
-    body = json.dumps(req)
-    s.send(f'Content-Length: {len(body)}\r\n\r\n{body}'.encode())
-    h = b''
-    while b'\r\n\r\n' not in h: h += s.recv(1)
-    cl = int([l for l in h.decode().split('\r\n') if 'Content-Length' in l][0].split(':')[1].strip())
-    return json.loads(s.recv(cl))
-call('initialize', {'protocolVersion': '2024-11-05', 'capabilities': {}, 'clientInfo': {'name': 'test'}})
-r = call('tools/call', {'name': 'send_to_instance', 'arguments': {'instance_name': 'bob', 'message': 'INTER_AGENT_MSG'}}, id=2)
-s.close()
+import subprocess, json, select, os, socket, struct, glob, time
+# Send from alice to bob via agend-mcp
+proc = subprocess.Popen(
+    ['./target/debug/agend-mcp'],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    env={**os.environ, 'AGEND_INSTANCE_NAME': 'alice'}
+)
+def call(req):
+    proc.stdin.write((json.dumps(req) + '\n').encode())
+    proc.stdin.flush()
+    if not select.select([proc.stdout], [], [], 5)[0]: return None
+    return json.loads(proc.stdout.readline().decode().strip())
+call({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2024-11-05','capabilities':{},'clientInfo':{'name':'test'}}})
+call({'jsonrpc':'2.0','id':2,'method':'tools/call','params':{'name':'send_to_instance','arguments':{'instance_name':'bob','message':'INTER_AGENT_MSG'}}})
+proc.terminate()
 # Check bob's scrollback
 time.sleep(0.5)
-socks = glob.glob(os.path.expanduser('~/.agend/run/*/agents/bob/tui.sock'))
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect(socks[0])
+ports = glob.glob(os.path.expanduser('~/.agend/run/*/agents/bob/tui.port'))
+port = int(open(ports[0]).read().strip())
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.connect(('127.0.0.1', port))
 s.settimeout(3)
 s.recv(1); hdr = s.recv(4); length = struct.unpack('>I', hdr)[0]
 data = s.recv(length).decode('utf-8', errors='replace')
@@ -136,12 +133,13 @@ s.close()
 if [ "$RESULT" = "ok" ]; then pass "inter-agent messaging"; else fail "inter-agent: $RESULT"; fi
 
 echo ""
-echo "=== Test 6: API socket ==="
+echo "=== Test 6: API port ==="
 RESULT=$(python3 -c "
 import socket, json, os, glob
-socks = glob.glob(os.path.expanduser('~/.agend/run/*/api.sock'))
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect(socks[0])
+ports = glob.glob(os.path.expanduser('~/.agend/run/*/api.port'))
+port = int(open(ports[0]).read().strip())
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.connect(('127.0.0.1', port))
 s.settimeout(5)
 s.send(json.dumps({'method': 'list'}).encode() + b'\n')
 r = json.loads(s.recv(4096))
@@ -153,60 +151,55 @@ assert r['ok']
 print('ok')
 s.close()
 " 2>&1)
-if [ "$RESULT" = "ok" ]; then pass "API socket"; else fail "API: $RESULT"; fi
+if [ "$RESULT" = "ok" ]; then pass "API port"; else fail "API: $RESULT"; fi
 
 echo ""
 echo "=== Test 7: Inbox (long message) ==="
 RESULT=$(python3 -c "
-import socket, json, os, glob
-# Send long message alice→bob
-socks = glob.glob(os.path.expanduser('~/.agend/run/*/agents/alice/mcp.sock'))
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect(socks[0])
-s.settimeout(5)
-def call(method, params=None, id=1):
-    req = {'jsonrpc': '2.0', 'id': id, 'method': method}
-    if params: req['params'] = params
-    body = json.dumps(req)
-    s.send(f'Content-Length: {len(body)}\r\n\r\n{body}'.encode())
-    h = b''
-    while b'\r\n\r\n' not in h: h += s.recv(1)
-    cl = int([l for l in h.decode().split('\r\n') if 'Content-Length' in l][0].split(':')[1].strip())
-    return json.loads(s.recv(cl))
-call('initialize', {'protocolVersion': '2024-11-05', 'capabilities': {}, 'clientInfo': {'name': 'test'}})
-call('tools/call', {'name': 'send_to_instance', 'arguments': {'instance_name': 'bob', 'message': 'X' * 600}}, id=2)
-s.close()
+import subprocess, json, select, os
+# Send long message alice→bob via agend-mcp
+proc = subprocess.Popen(
+    ['./target/debug/agend-mcp'],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    env={**os.environ, 'AGEND_INSTANCE_NAME': 'alice'}
+)
+def call(req):
+    proc.stdin.write((json.dumps(req) + '\n').encode())
+    proc.stdin.flush()
+    if not select.select([proc.stdout], [], [], 5)[0]: return None
+    return json.loads(proc.stdout.readline().decode().strip())
+call({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2024-11-05','capabilities':{},'clientInfo':{'name':'test'}}})
+call({'jsonrpc':'2.0','id':2,'method':'tools/call','params':{'name':'send_to_instance','arguments':{'instance_name':'bob','message':'X'*600}}})
+proc.terminate()
 # Read bob's inbox
-socks = glob.glob(os.path.expanduser('~/.agend/run/*/agents/bob/mcp.sock'))
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect(socks[0])
-s.settimeout(5)
-call('initialize', {'protocolVersion': '2024-11-05', 'capabilities': {}, 'clientInfo': {'name': 'test'}})
-r = call('tools/call', {'name': 'inbox', 'arguments': {'id': 1}}, id=2)
+proc = subprocess.Popen(
+    ['./target/debug/agend-mcp'],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    env={**os.environ, 'AGEND_INSTANCE_NAME': 'bob'}
+)
+def call2(req):
+    proc.stdin.write((json.dumps(req) + '\n').encode())
+    proc.stdin.flush()
+    if not select.select([proc.stdout], [], [], 5)[0]: return None
+    return json.loads(proc.stdout.readline().decode().strip())
+call2({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2024-11-05','capabilities':{},'clientInfo':{'name':'test'}}})
+r = call2({'jsonrpc':'2.0','id':2,'method':'tools/call','params':{'name':'inbox','arguments':{'id':1}}})
+proc.terminate()
 text = r['result']['content'][0]['text']
 assert len(text) > 500
 print('ok')
-s.close()
 " 2>&1)
 if [ "$RESULT" = "ok" ]; then pass "inbox long message"; else fail "inbox: $RESULT"; fi
 
 echo ""
 echo "=== Test 8: Session reaper ==="
-RESULT=$(python3 -c "
-import socket, struct, os, glob, time
-socks = glob.glob(os.path.expanduser('~/.agend/run/*/agents/alice/tui.sock'))
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect(socks[0])
-s.settimeout(3)
-s.recv(1); s.recv(4); s.recv(struct.unpack('>I', s.recv(4))[0])  # drain
-# wrong: need to read tag first for drain. let me just drain the screen dump properly
-" 2>&1 || true)
 # Send exit to alice
 python3 -c "
 import socket, struct, os, glob
-socks = glob.glob(os.path.expanduser('~/.agend/run/*/agents/alice/tui.sock'))
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect(socks[0])
+ports = glob.glob(os.path.expanduser('~/.agend/run/*/agents/alice/tui.port'))
+port = int(open(ports[0]).read().strip())
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.connect(('127.0.0.1', port))
 s.settimeout(3)
 tag = s.recv(1); hdr = s.recv(4); length = struct.unpack('>I', hdr)[0]; s.recv(length)
 cmd = b'exit\r'
@@ -214,20 +207,21 @@ s.send(b'\x00' + struct.pack('>I', len(cmd)) + cmd)
 s.close()
 " 2>/dev/null
 sleep 2
-if ! ls ~/.agend/run/*/agents/alice/tui.sock >/dev/null 2>&1; then pass "session reaped (alice removed)"; else fail "session not reaped"; fi
-if ls ~/.agend/run/*/agents/bob/tui.sock >/dev/null 2>&1; then pass "bob still alive"; else fail "bob gone"; fi
+if ! ls ~/.agend/run/*/agents/alice/tui.port >/dev/null 2>&1; then pass "session reaped (alice removed)"; else fail "session not reaped"; fi
+if ls ~/.agend/run/*/agents/bob/tui.port >/dev/null 2>&1; then pass "bob still alive"; else fail "bob gone"; fi
 
 echo ""
-echo "=== Test 9: MCP server (stdio↔socket) ==="
+echo "=== Test 9: MCP server (stdio↔TCP) ==="
 RESULT=$(python3 -c "
-import subprocess, json, time, os, glob
-# Find the API socket
-socks = glob.glob(os.path.expanduser('~/.agend/run/*/api.sock'))
-if not socks:
-    print('fail:no_socket')
+import subprocess, json, time, os, glob, select
+# Find the API port
+ports = glob.glob(os.path.expanduser('~/.agend/run/*/api.port'))
+if not ports:
+    print('fail:no_port')
     exit()
+port = open(ports[0]).read().strip()
 proc = subprocess.Popen(
-    ['./target/debug/agend-mcp', '--socket', socks[0]],
+    ['./target/debug/agend-mcp', '--port', port],
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     env={**os.environ, 'AGEND_INSTANCE_NAME': 'bob'}
 )
@@ -236,7 +230,6 @@ req = json.dumps({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protoc
 proc.stdin.write((req + '\n').encode())
 proc.stdin.flush()
 # Read NDJSON response line
-import select
 if select.select([proc.stdout], [], [], 5)[0]:
     line = proc.stdout.readline().decode().strip()
     if line:
@@ -255,7 +248,7 @@ echo ""
 echo "=== Test 10: Graceful shutdown ==="
 cargo run --quiet --bin agend-daemon -- --shutdown 2>/dev/null
 sleep 2
-if ! ls ~/.agend/run/*/ctrl.sock >/dev/null 2>&1; then pass "shutdown + cleanup"; else fail "cleanup incomplete"; fi
+if ! ls ~/.agend/run/*/ctrl.port >/dev/null 2>&1; then pass "shutdown + cleanup"; else fail "cleanup incomplete"; fi
 
 echo ""
 echo "════════════════════════════════"

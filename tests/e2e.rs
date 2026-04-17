@@ -1,23 +1,28 @@
 //! E2E tests — full daemon lifecycle with mock agents.
 
+#![allow(clippy::unwrap_used)]
+
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
+use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::Duration;
 
-fn find_api_socket(run_base: &Path) -> Option<PathBuf> {
+fn find_api_port(run_base: &Path) -> Option<(PathBuf, u16)> {
     for e in std::fs::read_dir(run_base).ok()?.flatten() {
-        let sock = e.path().join("api.sock");
-        if sock.exists() {
-            return Some(sock);
+        let run = e.path();
+        let port_file = run.join("api.port");
+        if let Ok(s) = std::fs::read_to_string(&port_file) {
+            if let Ok(port) = s.trim().parse::<u16>() {
+                return Some((run, port));
+            }
         }
     }
     None
 }
 
-fn api_call(sock: &Path, method: &str, params: &serde_json::Value) -> serde_json::Value {
-    let mut s = UnixStream::connect(sock).expect("connect");
+fn api_call(port: u16, method: &str, params: &serde_json::Value) -> serde_json::Value {
+    let mut s = TcpStream::connect(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).expect("connect");
     s.set_read_timeout(Some(Duration::from_secs(5))).ok();
     let req = serde_json::json!({"method": method, "params": params});
     writeln!(s, "{}", req).expect("write");
@@ -28,22 +33,22 @@ fn api_call(sock: &Path, method: &str, params: &serde_json::Value) -> serde_json
 }
 
 fn mcp_call(
-    sock: &Path,
+    port: u16,
     instance: &str,
     tool: &str,
     args: &serde_json::Value,
 ) -> serde_json::Value {
     api_call(
-        sock,
+        port,
         "mcp_call",
         &serde_json::json!({"instance": instance, "tool": tool, "arguments": args}),
     )
 }
 
-fn wait_for_agents(sock: &Path, count: usize, timeout_secs: u64) {
+fn wait_for_agents(port: u16, count: usize, timeout_secs: u64) {
     let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
     loop {
-        let resp = api_call(sock, "list", &serde_json::json!({}));
+        let resp = api_call(port, "list", &serde_json::json!({}));
         if resp["result"]["instances"]
             .as_array()
             .map(|a| a.len())
@@ -72,7 +77,7 @@ impl Drop for DaemonGuard {
     }
 }
 
-fn start_daemon(fleet_yaml: &str, tmp: &Path) -> (DaemonGuard, PathBuf) {
+fn start_daemon(fleet_yaml: &str, tmp: &Path) -> (DaemonGuard, u16) {
     let cfg = tmp.join("fleet.yaml");
     std::fs::write(&cfg, fleet_yaml).unwrap();
     let child = Command::new(env!("CARGO_BIN_EXE_agend-daemon"))
@@ -82,20 +87,19 @@ fn start_daemon(fleet_yaml: &str, tmp: &Path) -> (DaemonGuard, PathBuf) {
         .spawn()
         .expect("spawn daemon");
     let run_base = tmp.join(".agend").join("run");
+    // Build guard up-front so a timeout panic still reaps the child.
+    let guard = DaemonGuard {
+        child,
+        run_dir: run_base.clone(),
+    };
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
-        if let Some(sock) = find_api_socket(&run_base) {
-            return (
-                DaemonGuard {
-                    child,
-                    run_dir: run_base,
-                },
-                sock,
-            );
+        if let Some((_run, port)) = find_api_port(&run_base) {
+            return (guard, port);
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "API socket didn't appear"
+            "API port didn't appear"
         );
         std::thread::sleep(Duration::from_millis(300));
     }
@@ -114,13 +118,13 @@ instances:
 #[test]
 fn e2e_daemon_startup_and_list() {
     let tmp = tempfile::tempdir().unwrap();
-    let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
-    wait_for_agents(&sock, 2, 15);
-    let resp = api_call(&sock, "list", &serde_json::json!({}));
+    let (guard, port) = start_daemon(MOCK_FLEET, tmp.path());
+    wait_for_agents(port, 2, 15);
+    let resp = api_call(port, "list", &serde_json::json!({}));
     assert_eq!(resp["ok"].as_bool(), Some(true), "list failed: {resp}");
     let instances = resp["result"]["instances"]
         .as_array()
-        .expect(&format!("bad response: {resp}"));
+        .unwrap_or_else(|| panic!("bad response: {resp}"));
     assert!(
         instances.len() >= 2,
         "expected >=2 agents, got {}: {resp}",
@@ -132,10 +136,10 @@ fn e2e_daemon_startup_and_list() {
 #[test]
 fn e2e_inject_message() {
     let tmp = tempfile::tempdir().unwrap();
-    let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
-    wait_for_agents(&sock, 2, 15);
+    let (guard, port) = start_daemon(MOCK_FLEET, tmp.path());
+    wait_for_agents(port, 2, 15);
     let resp = api_call(
-        &sock,
+        port,
         "inject",
         &serde_json::json!({"instance": "alice", "message": "hello", "sender": "test"}),
     );
@@ -146,17 +150,17 @@ fn e2e_inject_message() {
 #[test]
 fn e2e_decisions_and_tasks() {
     let tmp = tempfile::tempdir().unwrap();
-    let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
-    wait_for_agents(&sock, 2, 15);
+    let (guard, port) = start_daemon(MOCK_FLEET, tmp.path());
+    wait_for_agents(port, 2, 15);
     let r = mcp_call(
-        &sock,
+        port,
         "alice",
         "decision",
         &serde_json::json!({"action": "post", "title": "test", "content": "body"}),
     );
     assert_eq!(r["ok"].as_bool(), Some(true));
     let r = mcp_call(
-        &sock,
+        port,
         "alice",
         "decision",
         &serde_json::json!({"action": "list"}),
@@ -164,14 +168,14 @@ fn e2e_decisions_and_tasks() {
     let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
     assert!(text.contains("test"));
     let r = mcp_call(
-        &sock,
+        port,
         "alice",
         "task",
         &serde_json::json!({"action": "create", "title": "fix bug"}),
     );
     assert_eq!(r["ok"].as_bool(), Some(true));
     let r = mcp_call(
-        &sock,
+        port,
         "alice",
         "task",
         &serde_json::json!({"action": "list"}),
@@ -196,16 +200,15 @@ fn e2e_pid_isolation() {
             .spawn()
             .expect("spawn d1");
         let run_base = agend_home.join("run");
+        // Build guard up-front so a timeout panic still reaps the child.
+        let guard = DaemonGuard {
+            child,
+            run_dir: run_base.clone(),
+        };
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
-            if let Some(sock) = find_api_socket(&run_base) {
-                break (
-                    DaemonGuard {
-                        child,
-                        run_dir: run_base,
-                    },
-                    sock,
-                );
+            if let Some(sock) = find_api_port(&run_base) {
+                break (guard, sock);
             }
             assert!(
                 std::time::Instant::now() < deadline,
@@ -232,11 +235,11 @@ fn e2e_pid_isolation() {
 #[test]
 fn e2e_replace_instance() {
     let tmp = tempfile::tempdir().unwrap();
-    let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
-    wait_for_agents(&sock, 2, 15);
+    let (guard, port) = start_daemon(MOCK_FLEET, tmp.path());
+    wait_for_agents(port, 2, 15);
     // Replace alice with a different command
     let r = mcp_call(
-        &sock,
+        port,
         "bob",
         "replace_instance",
         &serde_json::json!({"instance_name": "alice", "backend": "bash"}),
@@ -245,14 +248,14 @@ fn e2e_replace_instance() {
     let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
     assert!(text.contains("replaced"), "expected replaced: {text}");
     // Verify agent is still in the list after replace
-    let r = api_call(&sock, "list", &serde_json::json!({}));
+    let r = api_call(port, "list", &serde_json::json!({}));
     let instances = r["result"]["instances"].as_array().expect("list");
     let names: Vec<&str> = instances.iter().filter_map(|v| v.as_str()).collect();
     // alice may have been removed by kill and not yet respawned, but bob should be there
     assert!(names.contains(&"bob"), "bob should be in list: {names:?}");
     // Inject message to verify agent is functional
     let r = api_call(
-        &sock,
+        port,
         "inject",
         &serde_json::json!({"instance": "bob", "message": "test after replace", "sender": "test"}),
     );
@@ -263,11 +266,11 @@ fn e2e_replace_instance() {
 #[test]
 fn e2e_schedule_create_list() {
     let tmp = tempfile::tempdir().unwrap();
-    let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
-    wait_for_agents(&sock, 2, 15);
+    let (guard, port) = start_daemon(MOCK_FLEET, tmp.path());
+    wait_for_agents(port, 2, 15);
     // Create a schedule
     let r = mcp_call(
-        &sock,
+        port,
         "alice",
         "schedule",
         &serde_json::json!({"action": "create", "cron": "0 * * * * *", "target": "bob", "message": "ping"}),
@@ -277,7 +280,7 @@ fn e2e_schedule_create_list() {
     assert!(text.contains("created"), "expected created: {text}");
     // List schedules
     let r = mcp_call(
-        &sock,
+        port,
         "alice",
         "schedule",
         &serde_json::json!({"action": "list"}),
@@ -295,11 +298,11 @@ fn e2e_schedule_create_list() {
 #[test]
 fn e2e_team_operations() {
     let tmp = tempfile::tempdir().unwrap();
-    let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
-    wait_for_agents(&sock, 2, 15);
+    let (guard, port) = start_daemon(MOCK_FLEET, tmp.path());
+    wait_for_agents(port, 2, 15);
     // Create team
     let r = mcp_call(
-        &sock,
+        port,
         "alice",
         "team",
         &serde_json::json!({"action": "create", "name": "devs", "members": ["alice", "bob"]}),
@@ -307,7 +310,7 @@ fn e2e_team_operations() {
     assert_eq!(r["ok"].as_bool(), Some(true));
     // List teams
     let r = mcp_call(
-        &sock,
+        port,
         "alice",
         "team",
         &serde_json::json!({"action": "list"}),
@@ -320,11 +323,11 @@ fn e2e_team_operations() {
 #[test]
 fn e2e_cross_agent_messaging() {
     let tmp = tempfile::tempdir().unwrap();
-    let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
-    wait_for_agents(&sock, 2, 15);
+    let (guard, port) = start_daemon(MOCK_FLEET, tmp.path());
+    wait_for_agents(port, 2, 15);
     // Send message from alice to bob via send_to_instance
     let r = mcp_call(
-        &sock,
+        port,
         "alice",
         "send_to_instance",
         &serde_json::json!({"instance_name": "bob", "message": "hello from alice"}),
@@ -335,7 +338,7 @@ fn e2e_cross_agent_messaging() {
     assert!(text.contains("bob"), "expected target bob: {text}");
     // Send message from bob to alice
     let r = mcp_call(
-        &sock,
+        port,
         "bob",
         "send_to_instance",
         &serde_json::json!({"instance_name": "alice", "message": "reply from bob"}),
@@ -343,7 +346,7 @@ fn e2e_cross_agent_messaging() {
     assert_eq!(r["ok"].as_bool(), Some(true));
     // Verify sending to non-existent agent fails
     let r = mcp_call(
-        &sock,
+        port,
         "alice",
         "send_to_instance",
         &serde_json::json!({"instance_name": "charlie", "message": "hello"}),
@@ -359,11 +362,11 @@ fn e2e_cross_agent_messaging() {
 #[test]
 fn e2e_create_instance_actually_spawns() {
     let tmp = tempfile::tempdir().unwrap();
-    let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
-    wait_for_agents(&sock, 2, 15);
+    let (guard, port) = start_daemon(MOCK_FLEET, tmp.path());
+    wait_for_agents(port, 2, 15);
     // Create a new bash agent via MCP tool
     let r = mcp_call(
-        &sock,
+        port,
         "alice",
         "create_instance",
         &serde_json::json!({"name": "charlie", "backend": "bash", "working_directory": "/tmp/agend-e2e-charlie"}),
@@ -374,7 +377,7 @@ fn e2e_create_instance_actually_spawns() {
     // Wait for charlie to actually appear in the agent list
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
-        let resp = api_call(&sock, "list", &serde_json::json!({}));
+        let resp = api_call(port, "list", &serde_json::json!({}));
         let instances = resp["result"]["instances"]
             .as_array()
             .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
@@ -390,7 +393,7 @@ fn e2e_create_instance_actually_spawns() {
     }
     // Inject a message to charlie to verify it's functional
     let r = api_call(
-        &sock,
+        port,
         "inject",
         &serde_json::json!({"instance": "charlie", "message": "hello charlie", "sender": "test"}),
     );
@@ -405,11 +408,11 @@ fn e2e_create_instance_actually_spawns() {
 #[test]
 fn e2e_start_instance_validates() {
     let tmp = tempfile::tempdir().unwrap();
-    let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
-    wait_for_agents(&sock, 2, 15);
+    let (guard, port) = start_daemon(MOCK_FLEET, tmp.path());
+    wait_for_agents(port, 2, 15);
     // start_instance on running agent → error "already running"
     let r = mcp_call(
-        &sock,
+        port,
         "alice",
         "start_instance",
         &serde_json::json!({"instance_name": "alice"}),
@@ -421,7 +424,7 @@ fn e2e_start_instance_validates() {
     );
     // start_instance on unknown agent → error "no config"
     let r = mcp_call(
-        &sock,
+        port,
         "alice",
         "start_instance",
         &serde_json::json!({"instance_name": "nonexistent"}),
@@ -434,8 +437,8 @@ fn e2e_start_instance_validates() {
 #[test]
 fn e2e_all_tools_respond() {
     let tmp = tempfile::tempdir().unwrap();
-    let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
-    wait_for_agents(&sock, 2, 15);
+    let (guard, port) = start_daemon(MOCK_FLEET, tmp.path());
+    wait_for_agents(port, 2, 15);
 
     // Test every MCP tool returns ok=true (not error, not silent failure)
     let tools: Vec<(&str, serde_json::Value)> = vec![
@@ -503,7 +506,7 @@ fn e2e_all_tools_respond() {
     ];
 
     for (tool, args) in &tools {
-        let r = mcp_call(&sock, "alice", tool, args);
+        let r = mcp_call(port, "alice", tool, args);
         assert_eq!(r["ok"].as_bool(), Some(true), "tool '{tool}' failed: {r}");
     }
     drop(guard);
@@ -512,11 +515,11 @@ fn e2e_all_tools_respond() {
 #[test]
 fn e2e_delete_instance() {
     let tmp = tempfile::tempdir().unwrap();
-    let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
-    wait_for_agents(&sock, 2, 15);
+    let (guard, port) = start_daemon(MOCK_FLEET, tmp.path());
+    wait_for_agents(port, 2, 15);
     // Delete bob
     let r = mcp_call(
-        &sock,
+        port,
         "alice",
         "delete_instance",
         &serde_json::json!({"instance_name": "bob"}),
@@ -526,7 +529,7 @@ fn e2e_delete_instance() {
     assert!(text.contains("bob"), "expected bob in response: {text}");
     // Delete non-existent → error
     let r = mcp_call(
-        &sock,
+        port,
         "alice",
         "delete_instance",
         &serde_json::json!({"instance_name": "nobody"}),
@@ -542,11 +545,11 @@ fn e2e_delete_instance() {
 #[test]
 fn e2e_delete_last_instance_headless_ok() {
     let tmp = tempfile::tempdir().unwrap();
-    let (guard, sock) = start_daemon(MOCK_FLEET, tmp.path());
-    wait_for_agents(&sock, 2, 15);
+    let (guard, port) = start_daemon(MOCK_FLEET, tmp.path());
+    wait_for_agents(port, 2, 15);
     // 2 → 1
     let r = mcp_call(
-        &sock,
+        port,
         "alice",
         "delete_instance",
         &serde_json::json!({"instance_name": "bob"}),
@@ -554,7 +557,7 @@ fn e2e_delete_last_instance_headless_ok() {
     assert_eq!(r["ok"].as_bool(), Some(true), "delete bob failed: {r}");
     // 1 → 0: headless fleets must allow deleting the last agent.
     let r = mcp_call(
-        &sock,
+        port,
         "alice",
         "delete_instance",
         &serde_json::json!({"instance_name": "alice"}),

@@ -112,6 +112,7 @@ pub fn mark_run(id: &str) {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

@@ -200,6 +200,7 @@ pub fn update_task(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -335,7 +336,7 @@ mod tests {
     #[test]
     fn get_team_members_returns_none_for_deleted() {
         // Deleted team has empty members — get_team_members should return None
-        let teams = vec![
+        let teams = [
             Team {
                 name: "active".into(),
                 members: vec!["a".into()],

@@ -13,16 +13,20 @@ pub mod git;
 pub mod health;
 pub mod inbox;
 pub mod instructions;
+pub mod ipc;
 pub mod mcp_config;
 pub mod paths;
 pub mod quickstart;
+pub mod reload;
 pub mod scheduler;
+pub mod snapshot;
 pub mod state;
 pub mod telegram;
 pub mod util;
 pub mod vterm;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use channel::ChannelAdapter;
@@ -309,7 +313,7 @@ instances:
             "gemini --yolo",
             "test",
             "/bin/agend-mcp",
-            &["--socket", "/tmp/test.sock"],
+            &["--port", "12345"],
             tmp.path(),
         );
         assert!(path.exists(), "settings.json should be created");
@@ -332,7 +336,7 @@ instances:
             "gemini",
             "test",
             "/bin/agend-mcp",
-            &["--socket", "/s"],
+            &["--port", "1"],
             tmp.path(),
         );
         let content: serde_json::Value =
@@ -361,7 +365,7 @@ instances:
             "gemini",
             "test",
             "/bin/agend-mcp",
-            &["--socket", "/s"],
+            &["--port", "1"],
             tmp.path(),
         );
         // File should NOT be overwritten
@@ -637,10 +641,8 @@ instances:
         let action = health::HealthAction::Restart;
 
         // Normal: action should proceed
-        if !TEST_FLAG.load(Ordering::Relaxed) {
-            if action == health::HealthAction::Restart {
-                actions_taken += 1;
-            }
+        if !TEST_FLAG.load(Ordering::Relaxed) && action == health::HealthAction::Restart {
+            actions_taken += 1;
         }
         assert_eq!(actions_taken, 1, "action should proceed when flag is false");
 
@@ -848,17 +850,16 @@ instances:
     }
 
     #[test]
-    fn paths_tui_socket_ends_with_tui_sock() {
-        let sock = paths::tui_socket("alice");
-        assert!(sock.to_str().unwrap().ends_with("tui.sock"));
-        assert!(sock.to_str().unwrap().contains("alice"));
+    fn paths_tui_port_file_ends_with_tui_port() {
+        let p = paths::tui_port_file("alice");
+        assert!(p.to_str().unwrap().ends_with("tui.port"));
+        assert!(p.to_str().unwrap().contains("alice"));
     }
 
     #[test]
-    fn paths_mcp_socket_ends_with_mcp_sock() {
-        let sock = paths::mcp_socket("bob");
-        assert!(sock.to_str().unwrap().ends_with("mcp.sock"));
-        assert!(sock.to_str().unwrap().contains("bob"));
+    fn paths_api_and_ctrl_port_files_end_in_port() {
+        assert!(paths::api_port_file().to_str().unwrap().ends_with("api.port"));
+        assert!(paths::ctrl_port_file().to_str().unwrap().ends_with("ctrl.port"));
     }
 
     #[test]

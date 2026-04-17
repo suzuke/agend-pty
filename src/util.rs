@@ -76,6 +76,7 @@ pub fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Vec<T> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -276,6 +277,7 @@ pub fn read_tagged_frame(r: &mut impl std::io::Read) -> std::io::Result<(u8, Vec
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod framing_tests {
     use super::*;
     use std::io::Cursor;

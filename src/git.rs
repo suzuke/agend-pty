@@ -196,6 +196,7 @@ pub fn cleanup_worktrees(repo_dir: &Path) -> usize {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

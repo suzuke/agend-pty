@@ -214,6 +214,7 @@ fn remove_toml_section(content: &str, header: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

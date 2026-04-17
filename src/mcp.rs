@@ -2,25 +2,30 @@
 //! Spawned by CLI agents as their MCP server process.
 //! Instance identity via AGEND_INSTANCE_NAME env var.
 //!
-//! Forwards all MCP JSON-RPC to daemon's API socket with `_instance`
+//! Forwards all MCP JSON-RPC to daemon's API loopback port with `_instance`
 //! field injected. Daemon handles protocol natively.
 
-use agend_pty_poc::paths;
+use agend_pty_poc::{ipc, paths};
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    // Parse --socket <path> for explicit API socket override
-    let explicit_socket = if args.len() >= 2 && args[0] == "--socket" {
-        Some(std::path::PathBuf::from(&args[1]))
+    // Parse --port <port> for explicit API port override
+    let explicit_port: Option<u16> = if args.len() >= 2 && args[0] == "--port" {
+        match args[1].parse() {
+            Ok(p) => Some(p),
+            Err(_) => {
+                eprintln!("[mcp] invalid --port value: {}", args[1]);
+                std::process::exit(1);
+            }
+        }
     } else {
         None
     };
 
     let instance = std::env::var("AGEND_INSTANCE_NAME").unwrap_or_else(|_| {
-        let positional = if explicit_socket.is_some() {
+        let positional = if explicit_port.is_some() {
             args.get(2)
         } else {
             args.first()
@@ -31,31 +36,24 @@ fn main() {
         })
     });
 
-    // Find API socket (retry for daemon startup)
-    let api_sock = if let Some(sock) = explicit_socket {
-        if !sock.exists() {
-            eprintln!("[mcp] socket not found: {}", sock.display());
-            std::process::exit(1);
-        }
-        sock
+    // Resolve API port (retry for daemon startup when not explicit).
+    let api_port: u16 = if let Some(p) = explicit_port {
+        p
     } else {
         let mut attempts = 0;
         loop {
             if let Some(run) = paths::find_active_run_dir() {
-                let sock = run.join("api.sock");
-                if sock.exists() {
-                    break sock;
+                if let Some(port) = ipc::read_port(&run, ipc::API_NAME) {
+                    break port;
                 }
             }
             attempts += 1;
             if attempts > 50 {
-                eprintln!(
-                    "[mcp] no daemon API socket found after 5s. Start with: agend-pty daemon"
-                );
+                eprintln!("[mcp] no daemon API port found after 5s. Start with: agend-pty daemon");
                 std::process::exit(1);
             }
             if attempts % 10 == 0 {
-                eprintln!("[mcp] waiting for daemon API socket...");
+                eprintln!("[mcp] waiting for daemon API port...");
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
@@ -99,8 +97,8 @@ fn main() {
         // Inject instance identity so daemon knows who's calling
         req["_instance"] = serde_json::json!(instance);
 
-        // Forward to daemon API socket (which handles MCP JSON-RPC natively)
-        let resp = match forward_jsonrpc(&api_sock, &req) {
+        // Forward to daemon API port (which handles MCP JSON-RPC natively)
+        let resp = match forward_jsonrpc(api_port, &req) {
             Ok(r) => r,
             Err(e) => serde_json::json!({
                 "jsonrpc": "2.0", "id": id,
@@ -113,11 +111,8 @@ fn main() {
     }
 }
 
-fn forward_jsonrpc(
-    sock: &std::path::Path,
-    req: &serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let mut stream = UnixStream::connect(sock).map_err(|e| format!("connect: {e}"))?;
+fn forward_jsonrpc(port: u16, req: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let mut stream = ipc::connect_port(port).map_err(|e| format!("connect: {e}"))?;
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(30)))
         .ok();

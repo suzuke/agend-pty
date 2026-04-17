@@ -17,12 +17,12 @@
 //!   Ctrl+B <other>  — pass Ctrl+B + key through to the active agent
 //!                      (including n/p/digits when only one agent is attached)
 
-use agend_pty_poc::paths;
 use agend_pty_poc::vterm::VTerm;
+use agend_pty_poc::{ipc, paths};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal;
 use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
+use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -75,7 +75,7 @@ fn send_resize(w: &mut impl Write, cols: u16, rows: u16) -> std::io::Result<()> 
 
 struct Tab {
     name: String,
-    write: Mutex<UnixStream>,
+    write: Mutex<TcpStream>,
     vterm: Mutex<VTerm>,
     alive: AtomicBool,
 }
@@ -348,12 +348,12 @@ fn forward_to_active(app: &App, bytes: &[u8]) {
 
 struct PendingTab {
     tab: Arc<Tab>,
-    read_stream: UnixStream,
+    read_stream: TcpStream,
 }
 
 fn connect_agent(name: &str, cols: u16, content: u16) -> Option<PendingTab> {
-    let sock = paths::find_agent_tui_socket(name)?;
-    let stream = UnixStream::connect(&sock).ok()?;
+    let agent_dir = paths::find_agent_dir(name)?;
+    let stream = ipc::connect_named(&agent_dir, "tui").ok()?;
     let write_stream = stream.try_clone().ok()?;
     let read_stream = stream;
 
@@ -371,7 +371,7 @@ fn connect_agent(name: &str, cols: u16, content: u16) -> Option<PendingTab> {
     Some(PendingTab { tab, read_stream })
 }
 
-fn spawn_output_thread(app: Arc<App>, index: usize, tab: Arc<Tab>, mut read_stream: UnixStream) {
+fn spawn_output_thread(app: Arc<App>, index: usize, tab: Arc<Tab>, mut read_stream: TcpStream) {
     std::thread::Builder::new()
         .name(format!("tui-out-{}", tab.name))
         .spawn(move || {
@@ -459,7 +459,7 @@ fn parse_mode() -> Result<Mode, i32> {
     let mut args = std::env::args().skip(1);
     match args.next() {
         Some(name) => {
-            if paths::find_agent_tui_socket(&name).is_none() {
+            if paths::find_agent_dir(&name).is_none() {
                 eprintln!("Agent '{name}' not found.");
                 let avail = paths::list_agents();
                 if avail.is_empty() {
@@ -642,6 +642,7 @@ fn key_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> Vec<u8> {
 // ── Tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

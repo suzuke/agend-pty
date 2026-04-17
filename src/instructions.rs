@@ -216,6 +216,7 @@ fn generate_opencode(wd: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

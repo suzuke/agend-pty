@@ -246,6 +246,7 @@ pub fn dependency_layers(cfg: &config::FleetConfig) -> Result<Vec<Vec<String>>, 
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
