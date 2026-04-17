@@ -5,6 +5,7 @@ pub mod bugreport;
 pub mod channel;
 pub mod config;
 pub mod demo;
+pub mod deployments;
 pub mod doctor;
 pub mod event_log;
 pub mod features;

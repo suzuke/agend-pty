@@ -184,6 +184,77 @@ pub fn squash_merge(repo_dir: &Path, branch: &str, message: &str) -> Result<(), 
     Ok(())
 }
 
+/// Restrict branch names to safe characters. Same rules as agend-terminal.
+/// Rejects empty, "..", leading '-', and anything outside
+/// `[A-Za-z0-9/_.-]`.
+pub fn validate_branch(branch: &str) -> bool {
+    !branch.is_empty()
+        && !branch.contains("..")
+        && !branch.starts_with('-')
+        && branch
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '-' | '.'))
+}
+
+/// Mount `source` (a git repo path) as a detached worktree under
+/// `dest_root/{instance}-{source_slug}`. Returns the worktree path on
+/// success, or an error string.
+pub fn checkout_repo(
+    dest_root: &Path,
+    instance: &str,
+    source_path: &Path,
+    branch: &str,
+) -> Result<PathBuf, String> {
+    if !validate_branch(branch) {
+        return Err(format!("invalid branch name '{branch}'"));
+    }
+    let slug: String = source_path
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let dest = dest_root
+        .join("worktrees")
+        .join(format!("{instance}-{slug}"));
+    if let Some(parent) = dest.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return Err(format!("create dir: {e}"));
+        }
+    }
+    // --detach: don't create a new branch; just check out the ref read-only
+    match std::process::Command::new("git")
+        .args([
+            "worktree",
+            "add",
+            "--detach",
+            &dest.display().to_string(),
+            branch,
+        ])
+        .current_dir(source_path)
+        .output()
+    {
+        Ok(o) if o.status.success() => Ok(dest),
+        Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
+        Err(e) => Err(format!("git: {e}")),
+    }
+}
+
+/// Remove a worktree by path. Tries `git worktree remove --force` first;
+/// falls back to `rm -rf` of the directory if git refuses (e.g., already
+/// pruned upstream).
+pub fn release_repo(path: &Path) -> Result<(), String> {
+    let p = path.display().to_string();
+    match std::process::Command::new("git")
+        .args(["worktree", "remove", "--force", &p])
+        .output()
+    {
+        Ok(o) if o.status.success() => Ok(()),
+        _ => {
+            std::fs::remove_dir_all(path).map_err(|e| format!("remove_dir_all: {e}"))
+        }
+    }
+}
+
 pub fn cleanup_worktrees(repo_dir: &Path) -> usize {
     let wts = list_worktrees(repo_dir);
     let mut removed = 0;
@@ -230,6 +301,43 @@ mod tests {
         assert_eq!(wt, wt2);
         remove_worktree(repo.path(), "alice").unwrap();
         assert!(!wt.exists());
+    }
+
+    #[test]
+    fn test_validate_branch() {
+        assert!(validate_branch("main"));
+        assert!(validate_branch("feature/foo"));
+        assert!(validate_branch("v1.0.0"));
+        assert!(validate_branch("release_2.0"));
+        assert!(!validate_branch(""));
+        assert!(!validate_branch(".."));
+        assert!(!validate_branch("foo/../bar"));
+        assert!(!validate_branch("-main"));
+        assert!(!validate_branch("main branch"));
+        assert!(!validate_branch("foo;bar"));
+        assert!(!validate_branch("$(echo)"));
+        assert!(!validate_branch("main\ninjected"));
+    }
+
+    #[test]
+    fn test_checkout_and_release_repo() {
+        let source = setup_repo();
+        let dest_root = tempfile::tempdir().unwrap();
+        // Get current branch name (default varies: master/main)
+        let branch = git(source.path(), &["symbolic-ref", "--short", "HEAD"]).unwrap();
+        let wt = checkout_repo(dest_root.path(), "alice", source.path(), &branch).unwrap();
+        assert!(wt.exists(), "checkout dir should exist: {wt:?}");
+        assert!(wt.join("README.md").exists(), "source file should appear");
+        release_repo(&wt).unwrap();
+        assert!(!wt.exists(), "release should remove the worktree");
+    }
+
+    #[test]
+    fn test_checkout_repo_rejects_bad_branch() {
+        let source = setup_repo();
+        let dest_root = tempfile::tempdir().unwrap();
+        let err = checkout_repo(dest_root.path(), "alice", source.path(), "../bad").unwrap_err();
+        assert!(err.contains("invalid"), "expected invalid branch: {err}");
     }
 
     #[test]
