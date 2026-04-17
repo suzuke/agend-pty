@@ -66,6 +66,11 @@ impl HealthMonitor {
         }
     }
 
+    pub fn clear_max_session_hours(&mut self) {
+        self.max_session_secs = None;
+        self.session_warned = false;
+    }
+
     pub fn status(&self) -> HealthStatus {
         self.status
     }

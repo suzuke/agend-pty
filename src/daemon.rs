@@ -3,7 +3,7 @@
 
 use agend_pty_poc::{
     api, backend, channel, config, event_log, features, fleet_store, git, health, inbox,
-    instructions, ipc, mcp_config, paths, scheduler, snapshot, state, telegram, vterm,
+    instructions, ipc, mcp_config, paths, reload, scheduler, snapshot, state, telegram, vterm,
 };
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -202,6 +202,104 @@ fn do_respawn(name: &str, sctx: &SpawnContext) {
 /// Agent working directory that holds the TUI port file + related artifacts.
 fn agent_run_dir(name: &str) -> std::path::PathBuf {
     paths::agent_dir(name)
+}
+
+/// Apply a reloaded fleet.yaml to running daemon state.
+/// - Added instances: spawned via spawn_agent (no dependency ordering — best effort).
+/// - Role / max_session_hours changes: applied in-place.
+/// - Removed / command_changed: logged only (safety: user must explicitly delete/replace).
+fn apply_fleet_reload(
+    new_cfg: &config::FleetConfig,
+    known_digest: &Arc<Mutex<HashMap<String, reload::InstanceDigest>>>,
+    sctx: &SpawnContext,
+    agent_states: &api::AgentStateMap,
+    spawn_configs: &SpawnConfigs,
+) {
+    let new_digest = reload::digest_from_config(new_cfg);
+    let current = {
+        let g = known_digest.lock().unwrap_or_else(|e| e.into_inner());
+        g.clone()
+    };
+    let diff = reload::compute_diff(&current, &new_digest);
+    if diff.is_empty() {
+        return;
+    }
+    tracing::info!(
+        added = ?diff.added,
+        removed = ?diff.removed,
+        command_changed = ?diff.command_changed,
+        role_changed = ?diff.role_changed,
+        session_hours_changed = ?diff.session_hours_changed,
+        "fleet.yaml reload"
+    );
+
+    // Spawn added instances.
+    for name in &diff.added {
+        let Some(ic) = new_cfg.instances.get(name) else {
+            continue;
+        };
+        let command = ic.build_command(&new_cfg.defaults);
+        let wd = Some(ic.effective_working_dir(&new_cfg.defaults, name));
+        let worktree = ic.worktree_enabled(&new_cfg.defaults);
+        let branch = ic.branch.clone();
+        std::fs::create_dir_all(paths::agent_dir(name)).ok();
+        let ctx = sctx.clone();
+        let name_owned = name.clone();
+        std::thread::Builder::new()
+            .name(format!("reload_spawn_{name_owned}"))
+            .spawn(move || {
+                spawn_agent(name_owned, command, wd, worktree, branch, false, ctx);
+            })
+            .ok();
+    }
+
+    // Warn on removed / command changes. No automatic teardown for safety.
+    for name in &diff.removed {
+        tracing::warn!(agent = %name, "instance removed from fleet.yaml — use `agend-pty delete` to stop runtime");
+    }
+    for name in &diff.command_changed {
+        tracing::warn!(agent = %name, "command changed in fleet.yaml — use `agend-pty replace` to respawn");
+    }
+
+    // Apply role changes in-place.
+    for name in &diff.role_changed {
+        let Some(ic) = new_cfg.instances.get(name) else {
+            continue;
+        };
+        if let Some(handle) = agent_states
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(name)
+        {
+            handle.role = ic.role.clone();
+            tracing::info!(agent = %name, role = ?ic.role, "role updated from fleet.yaml");
+        }
+    }
+
+    // Apply session_hours changes in-place on the health monitor.
+    for name in &diff.session_hours_changed {
+        let Some(ic) = new_cfg.instances.get(name) else {
+            continue;
+        };
+        let hours = ic.max_session_hours.or(new_cfg.defaults.max_session_hours);
+        if let Some(sc) = spawn_configs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+        {
+            if let Ok(mut hm) = sc.health.lock() {
+                match hours {
+                    Some(h) => hm.set_max_session_hours(h),
+                    None => hm.clear_max_session_hours(),
+                }
+                tracing::info!(agent = %name, hours = ?hours, "session timer updated from fleet.yaml");
+            }
+        }
+    }
+
+    // Commit new digest only after applying — so a partial failure retries.
+    let mut g = known_digest.lock().unwrap_or_else(|e| e.into_inner());
+    *g = new_digest;
 }
 
 /// Unified PTY write — appends submit_key and writes atomically.
@@ -1167,6 +1265,20 @@ fn main() {
             .ok();
     }
 
+    // Resolve fleet.yaml path for hot-reload watching.
+    // If CLI args were given instead of a config file, reload is disabled.
+    let reload_path: Option<std::path::PathBuf> = config_path
+        .clone()
+        .or_else(|| if args.is_empty() { config::FleetConfig::find_path() } else { None });
+    let known_digest: Arc<Mutex<HashMap<String, reload::InstanceDigest>>> = {
+        let initial = if let Ok(cfg) = load_config() {
+            reload::digest_from_config(&cfg)
+        } else {
+            HashMap::new()
+        };
+        Arc::new(Mutex::new(initial))
+    };
+
     // Health tick thread — drives time-based state transitions + health actions
     {
         let reg = Arc::clone(&registry);
@@ -1182,13 +1294,36 @@ fn main() {
         let aw = Arc::clone(&agent_writers);
         let api_ctx_tick = Arc::clone(&api_ctx);
         let sctx_for_snap = tick_sctx.clone();
+        let sctx_for_reload = tick_sctx.clone();
+        let reload_path_for_tick = reload_path.clone();
+        let known_digest_tick = Arc::clone(&known_digest);
+        let agent_states_for_reload = Arc::clone(&agent_states);
+        let spawn_configs_for_reload = Arc::clone(&spawn_configs);
         std::thread::Builder::new()
             .name("health_tick".into())
             .spawn(move || {
                 let mut last_snapshot_json = String::new();
+                let mut watcher = reload_path_for_tick.map(reload::FleetWatcher::new);
+                let mut reload_counter: u32 = 0;
                 loop {
                     std::thread::sleep(std::time::Duration::from_secs(3));
                     let now = std::time::Instant::now();
+
+                    // Poll fleet.yaml for changes every ~15s (5 ticks).
+                    reload_counter = reload_counter.wrapping_add(1);
+                    if reload_counter.is_multiple_of(5) {
+                        if let Some(w) = watcher.as_mut() {
+                            if let Some(new_cfg) = w.check() {
+                                apply_fleet_reload(
+                                    &new_cfg,
+                                    &known_digest_tick,
+                                    &sctx_for_reload,
+                                    &agent_states_for_reload,
+                                    &spawn_configs_for_reload,
+                                );
+                            }
+                        }
+                    }
 
                     // Snapshot agent names + their Arc handles to avoid holding registry lock
                     let agents: Vec<AgentTickInfo> = {

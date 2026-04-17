@@ -17,6 +17,7 @@ pub mod ipc;
 pub mod mcp_config;
 pub mod paths;
 pub mod quickstart;
+pub mod reload;
 pub mod scheduler;
 pub mod snapshot;
 pub mod state;

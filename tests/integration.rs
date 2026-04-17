@@ -60,6 +60,7 @@ struct DaemonHandle {
     port: u16,
     run_dir: PathBuf,
     agend_home: PathBuf,
+    fleet_yaml: PathBuf,
 }
 
 fn start_daemon(fleet_yaml: &str) -> DaemonHandle {
@@ -91,6 +92,7 @@ fn start_daemon(fleet_yaml: &str) -> DaemonHandle {
         port,
         run_dir,
         agend_home,
+        fleet_yaml: cfg,
     }
 }
 
@@ -459,5 +461,43 @@ fn int_fleet_snapshot_written() {
         !snap["timestamp"].as_str().unwrap_or_default().is_empty(),
         "timestamp should be set"
     );
+    drop(handle);
+}
+
+#[test]
+fn int_fleet_hot_reload_adds_instance() {
+    // Hot-reload tick runs every 5 * 3s = 15s. Start with one agent, then add
+    // another to fleet.yaml and wait for the reload loop to spawn it.
+    let yaml = format!("instances:\n  alice:\n    command: {}\n", mock_bash());
+    let handle = start_daemon(&yaml);
+    wait_for_agents(handle.port, 1, 15);
+
+    // Mutate fleet.yaml: add bob. Sleep briefly to ensure mtime advances
+    // past the file-creation mtime captured at watcher construction.
+    std::thread::sleep(Duration::from_millis(1100));
+    let new_yaml = format!(
+        "instances:\n  alice:\n    command: {}\n  bob:\n    command: {}\n",
+        mock_bash(),
+        mock_bash()
+    );
+    std::fs::write(&handle.fleet_yaml, &new_yaml).expect("rewrite fleet.yaml");
+
+    // Up to 30s for reload poll (15s interval) + spawn + ready.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let r = api_call(handle.port, "list", &serde_json::json!({}));
+        let names: Vec<String> = r["result"]["instances"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|i| i.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        if names.iter().any(|n| n == "bob") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "bob did not appear after reload; currently: {names:?}"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
     drop(handle);
 }

@@ -145,6 +145,21 @@ impl FleetConfig {
         Err("fleet.yaml not found. Create one or use: agend-pty quickstart (checked ./fleet.yaml, ~/.agend/fleet.yaml)".into())
     }
 
+    /// Return the path that `find_and_load` would load from, if any exists.
+    /// Used by hot-reload to know which file to watch.
+    pub fn find_path() -> Option<PathBuf> {
+        for p in &[
+            PathBuf::from("fleet.yaml"),
+            PathBuf::from("fleet.yml"),
+            dirs(),
+        ] {
+            if p.exists() {
+                return Some(p.clone());
+            }
+        }
+        None
+    }
+
     /// Save fleet config back to YAML (atomic write).
     pub fn save(&self, path: &Path) -> Result<(), String> {
         let yaml =
