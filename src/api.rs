@@ -497,10 +497,15 @@ fn handle_mcp_tool(ctx: &DaemonCtx, instance: &str, tool: &str, args: &Value) ->
                     .write_all(b"\x03\x04");
                 drop(w);
                 remove_from_fleet(ctx, name);
-                // 3. Clean up MCP config files in working dir
+                // 3. Clean up generated files in the agent's working dir:
+                //    MCP config entries + per-instance instruction artifacts.
+                //    (Wrapper scripts live under agent_dir/ which the reaper
+                //    thread removes via `std::fs::remove_dir_all` after the
+                //    PTY closes — no extra cleanup needed for those here.)
                 if let Some(ref cfg) = saved_config {
                     if let Some(ref wd) = cfg.working_dir {
                         crate::mcp_config::remove_mcp_config(wd, &cfg.command, name);
+                        crate::instructions::remove(wd, &cfg.command, name);
                     }
                 }
                 let mut resp = json!({"deleted": name});

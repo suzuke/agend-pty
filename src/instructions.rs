@@ -51,6 +51,32 @@ pub fn generate(working_dir: &Path, command: &str, instance_name: &str) {
     }
 }
 
+/// Remove per-instance instruction artifacts left behind by `generate`.
+/// Intentionally only removes files that are scoped to a single instance —
+/// shared files like `AGENTS.md` or `GEMINI.md` (marker-appended) may still
+/// be read by sibling agents sharing the same working_dir, so they are left
+/// in place even after the last agent is deleted. Orphaned marker blocks
+/// are harmless.
+pub fn remove(working_dir: &Path, command: &str, instance_name: &str) {
+    let cmd = command.to_lowercase();
+    // Kiro: .kiro/steering/agend-{name}.md is per-instance.
+    if cmd.contains("kiro") {
+        let path = working_dir
+            .join(".kiro")
+            .join("steering")
+            .join(format!("agend-{instance_name}.md"));
+        if path.exists() {
+            if let Err(e) = std::fs::remove_file(&path) {
+                tracing::debug!(path = %path.display(), error = %e, "failed to remove steering file");
+            } else {
+                tracing::debug!(path = %path.display(), "removed per-instance instructions");
+            }
+        }
+    }
+    // Other backends (Claude/Codex/Gemini/OpenCode) emit only shared files
+    // — intentionally no-op here.
+}
+
 fn is_current(path: &Path) -> bool {
     if std::env::var("AGEND_TEST_PASSPHRASE").is_ok() {
         return false;
@@ -192,6 +218,82 @@ fn generate_opencode(wd: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remove_deletes_kiro_steering_file() {
+        std::env::remove_var("AGEND_TEST_PASSPHRASE");
+        let tmp = tempfile::tempdir().unwrap();
+        generate_kiro(tmp.path(), "alice").unwrap();
+        let steering = tmp
+            .path()
+            .join(".kiro")
+            .join("steering")
+            .join("agend-alice.md");
+        let agents_md = tmp.path().join("AGENTS.md");
+        assert!(steering.exists(), "steering file should be generated");
+        assert!(agents_md.exists(), "AGENTS.md should be generated");
+
+        remove(tmp.path(), "kiro-cli chat", "alice");
+
+        assert!(
+            !steering.exists(),
+            "kiro steering file should be deleted after remove"
+        );
+        // AGENTS.md is shared — intentionally left alone.
+        assert!(
+            agents_md.exists(),
+            "shared AGENTS.md should survive per-instance remove"
+        );
+    }
+
+    #[test]
+    fn remove_leaves_other_instance_steering_files() {
+        std::env::remove_var("AGEND_TEST_PASSPHRASE");
+        let tmp = tempfile::tempdir().unwrap();
+        generate_kiro(tmp.path(), "alice").unwrap();
+        generate_kiro(tmp.path(), "bob").unwrap();
+
+        remove(tmp.path(), "kiro", "alice");
+
+        let alice = tmp
+            .path()
+            .join(".kiro")
+            .join("steering")
+            .join("agend-alice.md");
+        let bob = tmp
+            .path()
+            .join(".kiro")
+            .join("steering")
+            .join("agend-bob.md");
+        assert!(!alice.exists(), "alice's steering should be gone");
+        assert!(bob.exists(), "bob's steering should survive");
+    }
+
+    #[test]
+    fn remove_is_noop_when_file_missing() {
+        std::env::remove_var("AGEND_TEST_PASSPHRASE");
+        let tmp = tempfile::tempdir().unwrap();
+        // No prior generate — remove should not panic or create anything.
+        remove(tmp.path(), "kiro", "ghost");
+        assert!(
+            !tmp.path().join(".kiro").exists(),
+            "remove should not create dirs"
+        );
+    }
+
+    #[test]
+    fn remove_noop_for_non_kiro_backend() {
+        std::env::remove_var("AGEND_TEST_PASSPHRASE");
+        let tmp = tempfile::tempdir().unwrap();
+        generate_claude(tmp.path()).unwrap();
+        let rules = tmp.path().join(".claude").join("rules").join("agend.md");
+        assert!(rules.exists());
+
+        remove(tmp.path(), "claude --model opus", "alice");
+
+        // Claude's rules file is shared — remove is intentionally a no-op.
+        assert!(rules.exists(), "claude rules file must survive remove");
+    }
 
     #[test]
     fn instructions_content_default() {
