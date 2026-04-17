@@ -87,16 +87,15 @@ fn start_daemon(fleet_yaml: &str, tmp: &Path) -> (DaemonGuard, u16) {
         .spawn()
         .expect("spawn daemon");
     let run_base = tmp.join(".agend").join("run");
+    // Build guard up-front so a timeout panic still reaps the child.
+    let guard = DaemonGuard {
+        child,
+        run_dir: run_base.clone(),
+    };
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
         if let Some((_run, port)) = find_api_port(&run_base) {
-            return (
-                DaemonGuard {
-                    child,
-                    run_dir: run_base,
-                },
-                port,
-            );
+            return (guard, port);
         }
         assert!(
             std::time::Instant::now() < deadline,
@@ -125,7 +124,7 @@ fn e2e_daemon_startup_and_list() {
     assert_eq!(resp["ok"].as_bool(), Some(true), "list failed: {resp}");
     let instances = resp["result"]["instances"]
         .as_array()
-        .expect(&format!("bad response: {resp}"));
+        .unwrap_or_else(|| panic!("bad response: {resp}"));
     assert!(
         instances.len() >= 2,
         "expected >=2 agents, got {}: {resp}",
@@ -201,16 +200,15 @@ fn e2e_pid_isolation() {
             .spawn()
             .expect("spawn d1");
         let run_base = agend_home.join("run");
+        // Build guard up-front so a timeout panic still reaps the child.
+        let guard = DaemonGuard {
+            child,
+            run_dir: run_base.clone(),
+        };
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
             if let Some(sock) = find_api_port(&run_base) {
-                break (
-                    DaemonGuard {
-                        child,
-                        run_dir: run_base,
-                    },
-                    sock,
-                );
+                break (guard, sock);
             }
             assert!(
                 std::time::Instant::now() < deadline,

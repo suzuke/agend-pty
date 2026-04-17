@@ -137,7 +137,7 @@ impl Backend {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::items_after_test_module)]
 mod tests {
     use super::*;
 

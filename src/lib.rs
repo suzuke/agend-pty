@@ -640,10 +640,8 @@ instances:
         let action = health::HealthAction::Restart;
 
         // Normal: action should proceed
-        if !TEST_FLAG.load(Ordering::Relaxed) {
-            if action == health::HealthAction::Restart {
-                actions_taken += 1;
-            }
+        if !TEST_FLAG.load(Ordering::Relaxed) && action == health::HealthAction::Restart {
+            actions_taken += 1;
         }
         assert_eq!(actions_taken, 1, "action should proceed when flag is false");
 
