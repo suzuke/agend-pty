@@ -137,12 +137,12 @@ pub fn run() {
             if let Ok(entries) = std::fs::read_dir(&agents_dir) {
                 for entry in entries.flatten() {
                     let name = entry.file_name().to_string_lossy().to_string();
-                    let tui = entry.path().join("tui.sock").exists();
+                    let tui = entry.path().join("tui.port").exists();
                     if tui {
-                        println!("  ✓ {name}: tui.sock ready");
+                        println!("  ✓ {name}: tui.port ready");
                         ok += 1;
                     } else {
-                        println!("  ✗ {name}: tui.sock missing");
+                        println!("  ✗ {name}: tui.port missing");
                         warn += 1;
                     }
                 }

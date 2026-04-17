@@ -20,19 +20,19 @@ pub fn agent_dir(name: &str) -> PathBuf {
     run_dir().join("agents").join(safe)
 }
 
-/// TUI socket path for an agent.
-pub fn tui_socket(name: &str) -> PathBuf {
-    agent_dir(name).join("tui.sock")
+/// Daemon API port-file path (`run_dir/api.port`).
+pub fn api_port_file() -> PathBuf {
+    run_dir().join(format!("{}.port", crate::ipc::API_NAME))
 }
 
-/// MCP socket path for an agent (for daemon — uses own PID).
-pub fn mcp_socket(name: &str) -> PathBuf {
-    agent_dir(name).join("mcp.sock")
+/// Daemon control port-file path (`run_dir/ctrl.port`).
+pub fn ctrl_port_file() -> PathBuf {
+    run_dir().join(format!("{}.port", crate::ipc::CTRL_NAME))
 }
 
-/// Control socket path.
-pub fn ctrl_socket() -> PathBuf {
-    run_dir().join("ctrl.sock")
+/// Per-agent TUI port-file path (`run_dir/agents/<name>/tui.port`).
+pub fn tui_port_file(name: &str) -> PathBuf {
+    agent_dir(name).join("tui.port")
 }
 
 /// Daemon lock file path.
@@ -216,14 +216,18 @@ pub fn cleanup() {
     cleanup_stale();
 }
 
-/// Find the active daemon's run directory (for TUI client).
-/// Returns the first run dir with a ctrl.sock that exists.
+/// Find the active daemon's run directory (for TUI/CLI clients).
+/// Returns the most recently modified run dir with a `ctrl.port` sentinel.
 pub fn find_active_run_dir() -> Option<PathBuf> {
     let run_base = home().join("run");
     let mut entries: Vec<_> = std::fs::read_dir(&run_base)
         .ok()?
         .flatten()
-        .filter(|e| e.path().join("ctrl.sock").exists())
+        .filter(|e| {
+            e.path()
+                .join(format!("{}.port", crate::ipc::CTRL_NAME))
+                .exists()
+        })
         .collect();
     entries.sort_by(|a, b| {
         b.metadata()
@@ -238,13 +242,13 @@ pub fn find_active_run_dir() -> Option<PathBuf> {
     entries.first().map(|e| e.path())
 }
 
-/// Find TUI socket for an agent name (for TUI client).
-pub fn find_agent_tui_socket(name: &str) -> Option<PathBuf> {
+/// Find the agent's directory within the active daemon's run dir.
+pub fn find_agent_dir(name: &str) -> Option<PathBuf> {
     let run = find_active_run_dir()?;
     let safe = crate::util::sanitize_name(name);
-    let sock = run.join("agents").join(safe).join("tui.sock");
-    if sock.exists() {
-        Some(sock)
+    let dir = run.join("agents").join(safe);
+    if dir.join("tui.port").exists() {
+        Some(dir)
     } else {
         None
     }
@@ -261,7 +265,7 @@ pub fn list_agents() -> Vec<String> {
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|e| e.path().join("tui.sock").exists())
+        .filter(|e| e.path().join("tui.port").exists())
         .filter_map(|e| e.file_name().to_str().map(|s| s.to_owned()))
         .collect()
 }

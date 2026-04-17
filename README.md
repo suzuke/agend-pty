@@ -44,7 +44,7 @@ cargo build --release
 │  │ PTY: alice │ PTY: bob │ ...  │    One PTY per agent
 │  └─────────┘  └─────────┘      │
 │  ┌─────────────────────────┐    │
-│  │  API socket (api.sock)  │    │    JSON-RPC + MCP protocol
+│  │  API port (api.port)    │    │    JSON-RPC + MCP (TCP loopback)
 │  └─────────────────────────┘    │
 └─────────────────────────────────┘
 ```

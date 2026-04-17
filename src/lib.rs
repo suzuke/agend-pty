@@ -311,7 +311,7 @@ instances:
             "gemini --yolo",
             "test",
             "/bin/agend-mcp",
-            &["--socket", "/tmp/test.sock"],
+            &["--port", "12345"],
             tmp.path(),
         );
         assert!(path.exists(), "settings.json should be created");
@@ -334,7 +334,7 @@ instances:
             "gemini",
             "test",
             "/bin/agend-mcp",
-            &["--socket", "/s"],
+            &["--port", "1"],
             tmp.path(),
         );
         let content: serde_json::Value =
@@ -363,7 +363,7 @@ instances:
             "gemini",
             "test",
             "/bin/agend-mcp",
-            &["--socket", "/s"],
+            &["--port", "1"],
             tmp.path(),
         );
         // File should NOT be overwritten
@@ -850,17 +850,16 @@ instances:
     }
 
     #[test]
-    fn paths_tui_socket_ends_with_tui_sock() {
-        let sock = paths::tui_socket("alice");
-        assert!(sock.to_str().unwrap().ends_with("tui.sock"));
-        assert!(sock.to_str().unwrap().contains("alice"));
+    fn paths_tui_port_file_ends_with_tui_port() {
+        let p = paths::tui_port_file("alice");
+        assert!(p.to_str().unwrap().ends_with("tui.port"));
+        assert!(p.to_str().unwrap().contains("alice"));
     }
 
     #[test]
-    fn paths_mcp_socket_ends_with_mcp_sock() {
-        let sock = paths::mcp_socket("bob");
-        assert!(sock.to_str().unwrap().ends_with("mcp.sock"));
-        assert!(sock.to_str().unwrap().contains("bob"));
+    fn paths_api_and_ctrl_port_files_end_in_port() {
+        assert!(paths::api_port_file().to_str().unwrap().ends_with("api.port"));
+        assert!(paths::ctrl_port_file().to_str().unwrap().ends_with("ctrl.port"));
     }
 
     #[test]

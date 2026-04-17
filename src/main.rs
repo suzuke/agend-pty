@@ -77,8 +77,7 @@ fn main() {
         }
         "--shutdown" | "shutdown" | "stop" => {
             if let Some(run) = paths::find_active_run_dir() {
-                let ctrl = run.join("ctrl.sock");
-                match std::os::unix::net::UnixStream::connect(&ctrl) {
+                match agend_pty_poc::ipc::connect_named(&run, agend_pty_poc::ipc::CTRL_NAME) {
                     Ok(mut s) => {
                         use std::io::Write;
                         let _ = s.write_all(b"shutdown");
@@ -134,7 +133,7 @@ fn main() {
                 std::process::exit(1);
             }
             if let Some(run) = paths::find_active_run_dir() {
-                match std::os::unix::net::UnixStream::connect(run.join("api.sock")) {
+                match agend_pty_poc::ipc::connect_named(&run, agend_pty_poc::ipc::API_NAME) {
                     Ok(mut s) => {
                         use std::io::{BufRead, BufReader, Write};
                         let req = serde_json::json!({"method":"inject","params":{"instance":agent,"message":msg,"sender":"cli"}});
@@ -224,14 +223,14 @@ fn print_help() {
 }
 
 fn logs_stream(agent: &str, follow: bool) {
-    let sock = match paths::find_agent_tui_socket(agent) {
-        Some(s) => s,
+    let agent_dir = match paths::find_agent_dir(agent) {
+        Some(d) => d,
         None => {
             eprintln!("Agent '{agent}' not found. Start with: agend-pty daemon");
             std::process::exit(1);
         }
     };
-    let mut stream = match std::os::unix::net::UnixStream::connect(&sock) {
+    let mut stream = match agend_pty_poc::ipc::connect_named(&agent_dir, "tui") {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Cannot connect to {agent}: {e}");
@@ -240,7 +239,7 @@ fn logs_stream(agent: &str, follow: bool) {
     };
     use std::io::{Read, Write};
     // Read frames: tag(1) + len(4 BE) + payload
-    let read_frame = |r: &mut std::os::unix::net::UnixStream| -> std::io::Result<Vec<u8>> {
+    let read_frame = |r: &mut std::net::TcpStream| -> std::io::Result<Vec<u8>> {
         let mut hdr = [0u8; 5];
         r.read_exact(&mut hdr)?;
         let len = u32::from_be_bytes([hdr[1], hdr[2], hdr[3], hdr[4]]) as usize;
@@ -283,13 +282,12 @@ fn status_live() {
             std::process::exit(1);
         }
     };
-    let sock = run.join("api.sock");
     loop {
         // Clear screen + home
         print!("\x1b[2J\x1b[H");
         let resp = {
             use std::io::{BufRead, Write};
-            std::os::unix::net::UnixStream::connect(&sock)
+            agend_pty_poc::ipc::connect_named(&run, agend_pty_poc::ipc::API_NAME)
                 .and_then(|mut s| {
                     s.set_read_timeout(Some(std::time::Duration::from_secs(2)))
                         .ok();

@@ -3,13 +3,13 @@
 
 use agend_pty_poc::{
     api, backend, channel, config, event_log, features, fleet_store, git, health, inbox,
-    instructions, mcp_config, paths, scheduler, state, telegram, vterm,
+    instructions, ipc, mcp_config, paths, scheduler, state, telegram, vterm,
 };
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -199,8 +199,9 @@ fn do_respawn(name: &str, sctx: &SpawnContext) {
         .ok();
 }
 
-fn socket_path(name: &str) -> std::path::PathBuf {
-    paths::tui_socket(name)
+/// Agent working directory that holds the TUI port file + related artifacts.
+fn agent_run_dir(name: &str) -> std::path::PathBuf {
+    paths::agent_dir(name)
 }
 
 /// Unified PTY write — appends submit_key and writes atomically.
@@ -275,9 +276,9 @@ fn spawn_agent(
     // Ensure agent_dir exists — the reaper removes it after PTY close, so
     // a respawn path would otherwise try to bind the TUI socket into a
     // non-existent directory and fail with ENOENT.
-    let _ = std::fs::create_dir_all(paths::agent_dir(&name));
-    let sock = socket_path(&name);
-    let _ = std::fs::remove_file(&sock);
+    let agent_dir = paths::agent_dir(&name);
+    let _ = std::fs::create_dir_all(&agent_dir);
+    ipc::remove_port(&agent_dir, "tui");
 
     let (cols, rows) = crossterm::terminal::size().unwrap_or((DEFAULT_COLS, DEFAULT_ROWS));
 
@@ -619,14 +620,19 @@ fn spawn_agent(
         .ok();
 
     // TUI socket server (blocks this thread)
-    let listener = match UnixListener::bind(&sock) {
+    let listener = match ipc::bind_loopback() {
         Ok(l) => l,
         Err(e) => {
-            tracing::error!(agent = %name, path = %sock.display(), error = %e, "failed to bind TUI socket");
+            tracing::error!(agent = %name, error = %e, "failed to bind TUI port");
             return;
         }
     };
-    tracing::info!(agent = %name, path = %sock.display(), command = %command, "TUI socket ready");
+    let port = ipc::local_port(&listener);
+    if let Err(e) = ipc::write_port(&agent_dir, "tui", port) {
+        tracing::error!(agent = %name, error = %e, "failed to advertise TUI port");
+        return;
+    }
+    tracing::info!(agent = %name, port, command = %command, "TUI listening");
 
     channel_mgr
         .lock()
@@ -780,16 +786,15 @@ fn main() {
     }
 
     if args.first().map(|s| s.as_str()) == Some("--shutdown") {
-        // Find active daemon's ctrl socket
+        // Find active daemon's ctrl port
         if let Some(run) = paths::find_active_run_dir() {
-            let ctrl = run.join("ctrl.sock");
-            match UnixStream::connect(&ctrl) {
+            match ipc::connect_named(&run, ipc::CTRL_NAME) {
                 Ok(mut s) => {
                     let _ = s.write_all(b"shutdown");
                     tracing::info!("shutdown signal sent");
                 }
                 Err(e) => {
-                    tracing::error!(path = %ctrl.display(), error = %e, "cannot connect to ctrl socket")
+                    tracing::error!(error = %e, "cannot connect to ctrl port")
                 }
             }
         } else {
@@ -1245,26 +1250,37 @@ fn main() {
             .ok();
     }
 
+    // Control port for shutdown
+    let run_dir_for_ctrl = paths::run_dir();
+    let listener = match ipc::bind_loopback() {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to bind ctrl port");
+            paths::cleanup();
+            std::process::exit(1);
+        }
+    };
+    let ctrl_port = ipc::local_port(&listener);
+    if let Err(e) = ipc::write_port(&run_dir_for_ctrl, ipc::CTRL_NAME, ctrl_port) {
+        tracing::error!(error = %e, "failed to advertise ctrl port");
+        paths::cleanup();
+        std::process::exit(1);
+    }
+
     // Graceful shutdown on Ctrl+C
-    let ctrl_sock = paths::ctrl_socket();
-    let ctrl_sock2 = ctrl_sock.clone();
     ctrlc::set_handler(move || {
         SHUTTING_DOWN.store(true, Ordering::Relaxed);
         tracing::info!("shutting down...");
-        if let Ok(mut s) = UnixStream::connect(&ctrl_sock2) {
+        if let Ok(mut s) = ipc::connect_port(ctrl_port) {
             let _ = s.write_all(b"shutdown");
         }
     })
     .ok();
 
-    // Control socket for shutdown
-    let _ = std::fs::remove_file(&ctrl_sock);
-    if let Ok(listener) = UnixListener::bind(&ctrl_sock) {
-        tracing::info!("use `agend-daemon --shutdown` or Ctrl+C to stop");
-        if let Ok((mut stream, _)) = listener.accept() {
-            let mut buf = [0u8; 64];
-            let _ = stream.read(&mut buf);
-        }
+    tracing::info!("use `agend-daemon --shutdown` or Ctrl+C to stop");
+    if let Ok((mut stream, _)) = listener.accept() {
+        let mut buf = [0u8; 64];
+        let _ = stream.read(&mut buf);
     }
 
     tracing::info!("cleaning up...");

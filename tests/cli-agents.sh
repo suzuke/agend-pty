@@ -21,10 +21,11 @@ export AGEND_TEST_PASSPHRASE="招弟"
 read_screen() {
     python3 -c "
 import socket, struct, os, glob, re
-socks = glob.glob(os.path.expanduser('~/.agend/run/*/agents/$1/tui.sock'))
-if not socks: print('NO_SOCKET'); exit()
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect(socks[0])
+ports = glob.glob(os.path.expanduser('~/.agend/run/*/agents/$1/tui.port'))
+if not ports: print('NO_PORT'); exit()
+port = int(open(ports[0]).read().strip())
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.connect(('127.0.0.1', port))
 s.settimeout(10)
 tag = s.recv(1); hdr = s.recv(4)
 length = struct.unpack('>I', hdr)[0]
@@ -49,11 +50,11 @@ wait_for_pattern() {
 
 check_mcp() {
     local name=$1
-    # Check MCP socket exists
-    if ! ls ~/.agend/run/*/agents/$name/mcp.sock >/dev/null 2>&1; then
-        fail "$name: MCP socket missing"; return
+    # Check API port exists (MCP calls bridge through the daemon API)
+    if ! ls ~/.agend/run/*/api.port >/dev/null 2>&1; then
+        fail "$name: API port missing"; return
     fi
-    pass "$name: MCP socket exists"
+    pass "$name: API port exists"
 
     # Check MCP handshake via agend-mcp
     local result=$(python3 -c "
@@ -91,10 +92,11 @@ send_input() {
     python3 - "$name" "$input" <<'PYEOF'
 import socket, struct, os, glob, sys
 name, text = sys.argv[1], sys.argv[2]
-socks = glob.glob(os.path.expanduser(f'~/.agend/run/*/agents/{name}/tui.sock'))
-if not socks: exit(1)
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect(socks[0])
+ports = glob.glob(os.path.expanduser(f'~/.agend/run/*/agents/{name}/tui.port'))
+if not ports: exit(1)
+port = int(open(ports[0]).read().strip())
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.connect(('127.0.0.1', port))
 s.settimeout(5)
 tag = s.recv(1); hdr = s.recv(4); length = struct.unpack('>I', hdr)[0]
 while length > 0:
@@ -122,11 +124,12 @@ check_reconnect() {
     local name=$1
     local result=$(python3 -c "
 import socket, struct, os, glob, re, time
-socks = glob.glob(os.path.expanduser('~/.agend/run/*/agents/$name/tui.sock'))
-if not socks: print('no_socket'); exit()
+ports = glob.glob(os.path.expanduser('~/.agend/run/*/agents/$name/tui.port'))
+if not ports: print('no_port'); exit()
+port = int(open(ports[0]).read().strip())
 # Connect 1: read screen
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect(socks[0])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.connect(('127.0.0.1', port))
 s.settimeout(5)
 tag = s.recv(1); hdr = s.recv(4); length = struct.unpack('>I', hdr)[0]
 data1 = b''
@@ -134,8 +137,8 @@ while len(data1) < length: data1 += s.recv(length - len(data1))
 s.close()
 time.sleep(0.5)
 # Connect 2: should get screen dump again
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect(socks[0])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.connect(('127.0.0.1', port))
 s.settimeout(5)
 tag = s.recv(1); hdr = s.recv(4); length = struct.unpack('>I', hdr)[0]
 data2 = b''
@@ -151,10 +154,11 @@ check_resize() {
     local name=$1
     local result=$(python3 -c "
 import socket, struct, os, glob
-socks = glob.glob(os.path.expanduser('~/.agend/run/*/agents/$name/tui.sock'))
-if not socks: print('no_socket'); exit()
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect(socks[0])
+ports = glob.glob(os.path.expanduser('~/.agend/run/*/agents/$name/tui.port'))
+if not ports: print('no_port'); exit()
+port = int(open(ports[0]).read().strip())
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.connect(('127.0.0.1', port))
 s.settimeout(5)
 # Drain screen dump
 tag = s.recv(1); hdr = s.recv(4); length = struct.unpack('>I', hdr)[0]
@@ -181,10 +185,11 @@ name, passphrase = sys.argv[1], sys.argv[2]
 submit = sys.argv[3].encode().decode('unicode_escape').encode()
 prefix = sys.argv[4].encode().decode('unicode_escape').encode() if sys.argv[4] else b""
 typed = sys.argv[5] == "true"
-socks = glob.glob(os.path.expanduser(f'~/.agend/run/*/agents/{name}/tui.sock'))
-if not socks: print("no_socket"); exit()
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect(socks[0])
+ports = glob.glob(os.path.expanduser(f'~/.agend/run/*/agents/{name}/tui.port'))
+if not ports: print("no_port"); exit()
+port = int(open(ports[0]).read().strip())
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.connect(('127.0.0.1', port))
 s.settimeout(60)
 tag = s.recv(1); hdr = s.recv(4); length = struct.unpack('>I', hdr)[0]
 while length > 0:

@@ -174,20 +174,20 @@ pub fn run() {
     }
     writeln!(report).ok();
 
-    // Socket status
-    writeln!(report, "=== Socket Status ===").ok();
+    // IPC port status
+    writeln!(report, "=== IPC Port Status ===").ok();
     if let Some(run) = paths::find_active_run_dir() {
-        let api = run.join("api.sock");
-        let ctrl = run.join("ctrl.sock");
+        let api = run.join("api.port");
+        let ctrl = run.join("ctrl.port");
         writeln!(
             report,
-            "api.sock: {}",
+            "api.port: {}",
             if api.exists() { "exists" } else { "missing" }
         )
         .ok();
         writeln!(
             report,
-            "ctrl.sock: {}",
+            "ctrl.port: {}",
             if ctrl.exists() { "exists" } else { "missing" }
         )
         .ok();
@@ -195,8 +195,8 @@ pub fn run() {
         if let Ok(entries) = std::fs::read_dir(&agents_dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                let tui = entry.path().join("tui.sock").exists();
-                writeln!(report, "  {name}/tui.sock: {}", if tui { "✓" } else { "✗" }).ok();
+                let tui = entry.path().join("tui.port").exists();
+                writeln!(report, "  {name}/tui.port: {}", if tui { "✓" } else { "✗" }).ok();
             }
         }
     } else {

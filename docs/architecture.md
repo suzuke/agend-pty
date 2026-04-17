@@ -16,7 +16,7 @@ MCP tools.
                  |PTY1|  |PTY2|  |PTY3|    (claude, codex, gemini, ...)
                  +----+  +----+  +----+
                    |        |       |
-              tui.sock  tui.sock  tui.sock   <-- tagged binary frames
+              tui.port  tui.port  tui.port   <-- tagged binary frames
                    |
               agend-tui                       <-- Ctrl+B d detach
                    |
@@ -24,7 +24,7 @@ MCP tools.
 
                        agend-daemon
                             |
-                        api.sock              <-- newline-delimited JSON
+                        api.port              <-- newline-delimited JSON
                        /    |    \
               agend-mcp  inject   channel adapter
               (stdin/    (CLI)    (Telegram)
@@ -62,7 +62,7 @@ Dispatcher with subcommands. Delegates to sibling binaries via `exec`:
 | `status`         | Show running daemons with uptime              |
 | `inject`         | Send message to agent via API socket          |
 | `cleanup`        | Remove leftover git worktrees                 |
-| `shutdown`       | Signal daemon to stop via ctrl.sock           |
+| `shutdown`       | Signal daemon to stop via ctrl.port           |
 
 Supports symlink aliases: `agend-daemon` binary name maps to `daemon` subcommand,
 `agend-tui` maps to `attach`.
@@ -98,7 +98,7 @@ The core process. Responsibilities:
 
 **Global threads**:
 
-- `api_server`: Accepts connections on api.sock, spawns per-connection handlers
+- `api_server`: Accepts connections on api.port, spawns per-connection handlers
 - `channel_poll`: Polls Telegram adapter, routes messages to agent PTYs
 - `health_tick`: Every 3s, drives time-based state transitions (idle detection,
   hang timeout) and backoff-gated restarts
@@ -108,7 +108,7 @@ The core process. Responsibilities:
 
 **Source**: `src/tui.rs`
 
-Connects to an agent's `tui.sock` Unix domain socket. Features:
+Connects to an agent's `tui.port` TCP loopback port. Features:
 
 - Raw terminal mode with RAII guard (`RawModeGuard` -- restores on drop/panic)
 - Sends initial terminal size, tracks resize events
@@ -127,7 +127,7 @@ Translates between JSON-RPC 2.0 on stdin/stdout and the daemon's API socket:
 3. Returns JSON-RPC responses on stdout
 
 Identity via `AGEND_INSTANCE_NAME` env var. Auto-discovers API socket by scanning
-`~/.agend/run/*/api.sock`, with retry loop (up to 5s for daemon startup).
+`~/.agend/run/*/api.port`, with retry loop (up to 5s for daemon startup).
 
 Handles `initialize` locally (returns protocol version, capabilities, server info).
 
@@ -293,9 +293,9 @@ Warns if `.agend/` is not in `.gitignore`.
 
 ## Socket Protocol
 
-### TUI <-> Daemon (tui.sock)
+### TUI <-> Daemon (tui.port)
 
-Tagged binary frames over Unix domain socket:
+Tagged binary frames over TCP loopback (port advertised via `tui.port` file):
 
 ```
 +------+--------+---------+
@@ -312,7 +312,7 @@ Tagged binary frames over Unix domain socket:
 Max frame size: 1MB. On connect, daemon sends a VTerm screen dump as the first
 DATA frame so reattach shows the current screen state.
 
-### API Socket (api.sock)
+### API Socket (api.port)
 
 Newline-delimited JSON. One request per line, one response per line.
 
@@ -355,8 +355,8 @@ shared functions used by every store:
 ~/.agend/
   run/<pid>/
     daemon.lock          # flock-based daemon lock
-    api.sock             # API socket
-    ctrl.sock            # Shutdown control socket
+    api.port             # API port advertisement (TCP loopback)
+    ctrl.port            # Shutdown control port (TCP loopback)
     events.jsonl         # Event log (state changes, health actions, PTY close)
     schedules.jsonl      # Cron schedules
     decisions.jsonl      # Fleet-wide decisions
@@ -366,7 +366,7 @@ shared functions used by every store:
       <agent>.jsonl      # Per-agent message queue
     agents/
       <agent>/
-        tui.sock         # TUI socket
+        tui.port         # TUI port advertisement (TCP loopback)
         mcp-config.json  # Auto-generated MCP server config
         prompt.md        # Auto-generated fleet context prompt
   topics.json            # Telegram topic ID mappings
