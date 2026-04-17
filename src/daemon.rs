@@ -272,6 +272,10 @@ fn spawn_agent(
     let channel_mgr = ctx.channel_mgr;
     let spawn_configs = ctx.spawn_configs;
     let deleted_names = ctx.deleted_names;
+    // Ensure agent_dir exists — the reaper removes it after PTY close, so
+    // a respawn path would otherwise try to bind the TUI socket into a
+    // non-existent directory and fail with ENOENT.
+    let _ = std::fs::create_dir_all(paths::agent_dir(&name));
     let sock = socket_path(&name);
     let _ = std::fs::remove_file(&sock);
 

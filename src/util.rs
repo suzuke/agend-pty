@@ -22,15 +22,18 @@ pub fn sanitize_name(name: &str) -> String {
     s.trim_start_matches('-').to_owned()
 }
 
-/// Split a command string respecting double-quoted segments.
+/// Split a command string respecting single- and double-quoted segments.
+/// Matching quote characters are consumed (not part of the token).
+/// Non-matching quotes inside the opposite quote style are kept literal.
 pub fn split_command(cmd: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current = String::new();
-    let mut in_quotes = false;
+    let mut quote: Option<char> = None;
     for ch in cmd.chars() {
         match ch {
-            '"' => in_quotes = !in_quotes,
-            ' ' if !in_quotes => {
+            '"' | '\'' if quote.is_none() => quote = Some(ch),
+            c if Some(c) == quote => quote = None,
+            ' ' if quote.is_none() => {
                 if !current.is_empty() {
                     parts.push(std::mem::take(&mut current));
                 }
@@ -93,6 +96,19 @@ mod tests {
             split_command("unmatched \"quote"),
             vec!["unmatched", "quote"]
         );
+        // Single-quote support (shell idiom): keep spaces inside '...' together.
+        assert_eq!(
+            split_command("env PS1='> ' bash --norc"),
+            vec!["env", "PS1=> ", "bash", "--norc"]
+        );
+        assert_eq!(split_command("a 'b c' d"), vec!["a", "b c", "d"]);
+        // Mixed quoting: single quotes can wrap double-quote chars literally.
+        assert_eq!(
+            split_command("echo 'say \"hi\"'"),
+            vec!["echo", "say \"hi\""]
+        );
+        // Unmatched single quote behaves like unmatched double: consume to end.
+        assert_eq!(split_command("x 'y z"), vec!["x", "y z"]);
     }
 
     #[test]
